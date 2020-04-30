@@ -235,8 +235,8 @@ func internalIsAssignable(m *mapping, t1 *exprpb.Type, t2 *exprpb.Type) bool {
 	}
 }
 
-// isValidTypeSubstitution returns whether t2 (or its type substituion) is a valid type
-// substituion for t1.
+// isValidTypeSubstitution returns whether t2 (or its type substitution) is a valid type
+// substitution for t1.
 //
 // The type t2 is a valid substitution for t1 if any of the following statements is true
 // - t2 has a type substitition (t2sub) equal to t1
