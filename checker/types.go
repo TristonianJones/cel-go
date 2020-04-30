@@ -179,43 +179,13 @@ func isEqualOrLessSpecific(t1 *exprpb.Type, t2 *exprpb.Type) bool {
 
 /// internalIsAssignable returns true if t1 is assignable to t2.
 func internalIsAssignable(m *mapping, t1 *exprpb.Type, t2 *exprpb.Type) bool {
-	// A type is always assignable to itself.
-	// Early terminate the call to avoid cases of infinite recursion.
-	if proto.Equal(t1, t2) {
-		return true
-	}
 	// Process type parameters.
 	kind1, kind2 := kindOf(t1), kindOf(t2)
 	if kind2 == kindTypeParam {
-		if t2Sub, found := m.find(t2); found {
-			// If the types are compatible, pick the more general type and return true
-			if internalIsAssignable(m, t1, t2Sub) {
-				m.add(t2, mostGeneral(t1, t2Sub))
-				return true
-			}
-			return false
-		}
-		if notReferencedIn(m, t2, t1) {
-			m.add(t2, t1)
-			return true
-		}
+		return isValidTypeSubstitution(m, t1, t2)
 	}
 	if kind1 == kindTypeParam {
-		// For the lower type bound, we currently do not perform adjustment. The restricted
-		// way we use type parameters in lower type bounds, it is not necessary, but may
-		// become if we generalize type unification.
-		if t1Sub, found := m.find(t1); found {
-			// If the types are compatible, pick the more general type and return true
-			if internalIsAssignable(m, t1Sub, t2) {
-				m.add(t1, mostGeneral(t1Sub, t2))
-				return true
-			}
-			return false
-		}
-		if notReferencedIn(m, t1, t2) {
-			m.add(t1, t2)
-			return true
-		}
+		return isValidTypeSubstitution(m, t2, t1)
 	}
 
 	// Next check for wildcard types.
@@ -263,6 +233,32 @@ func internalIsAssignable(m *mapping, t1 *exprpb.Type, t2 *exprpb.Type) bool {
 	default:
 		return false
 	}
+}
+
+// isValidTypeSubstitution returns whether t2 (or its type substituion) is a valid type
+// substituion for t1.
+//
+// The type t2 is a valid substitution for t1 if any of the following statements is true
+// - t2 has a type substitition (t2sub) equal to t1
+// - t2 has a type substitution (t2sub) assignable to t1
+// - t2 does not occur within t1.
+func isValidTypeSubstitution(m *mapping, t1, t2 *exprpb.Type) bool {
+	if t2Sub, found := m.find(t2); found {
+		if proto.Equal(t1, t2Sub) {
+			return true
+		}
+		// If the types are compatible, pick the more general type and return true
+		if internalIsAssignable(m, t1, t2Sub) {
+			m.add(t2, mostGeneral(t1, t2Sub))
+			return true
+		}
+		return false
+	}
+	if notReferencedIn(m, t2, t1) {
+		m.add(t2, t1)
+		return true
+	}
+	return false
 }
 
 // internalIsAssignableAbstractType returns true if the abstract type names agree and all type
