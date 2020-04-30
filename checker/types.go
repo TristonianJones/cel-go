@@ -182,10 +182,23 @@ func internalIsAssignable(m *mapping, t1 *exprpb.Type, t2 *exprpb.Type) bool {
 	// Process type parameters.
 	kind1, kind2 := kindOf(t1), kindOf(t2)
 	if kind2 == kindTypeParam {
-		return isValidTypeSubstitution(m, t1, t2)
+		// If t2 is a valid type substitution for t1, return true.
+		valid, hasSub := isValidTypeSubstitution(m, t1, t2)
+		if valid {
+			return true
+		}
+		// If t2 is not a valid type sub for t1, and already has a known substitution return false
+		// since it is not possible for t1 to be a substitution for t2.
+		if !valid && hasSub {
+			return false
+		}
+		// Otherwise, fall through to check whether t1 is a possible substitution for t2.
 	}
 	if kind1 == kindTypeParam {
-		return isValidTypeSubstitution(m, t2, t1)
+		// Return whether t1 is a valid substitution for t2. If not, do no additional checks as the
+		// possible type substitutions have been searched in both directions.
+		valid, _ := isValidTypeSubstitution(m, t2, t1)
+		return valid
 	}
 
 	// Next check for wildcard types.
@@ -242,23 +255,23 @@ func internalIsAssignable(m *mapping, t1 *exprpb.Type, t2 *exprpb.Type) bool {
 // - t2 has a type substitition (t2sub) equal to t1
 // - t2 has a type substitution (t2sub) assignable to t1
 // - t2 does not occur within t1.
-func isValidTypeSubstitution(m *mapping, t1, t2 *exprpb.Type) bool {
+func isValidTypeSubstitution(m *mapping, t1, t2 *exprpb.Type) (valid, hasSub bool) {
 	if t2Sub, found := m.find(t2); found {
 		if proto.Equal(t1, t2Sub) {
-			return true
+			return true, true
 		}
 		// If the types are compatible, pick the more general type and return true
 		if internalIsAssignable(m, t1, t2Sub) {
 			m.add(t2, mostGeneral(t1, t2Sub))
-			return true
+			return true, true
 		}
-		return false
+		return false, true
 	}
 	if notReferencedIn(m, t2, t1) {
 		m.add(t2, t1)
-		return true
+		return true, false
 	}
-	return false
+	return false, false
 }
 
 // internalIsAssignableAbstractType returns true if the abstract type names agree and all type
