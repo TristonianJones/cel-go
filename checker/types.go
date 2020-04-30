@@ -187,16 +187,16 @@ func internalIsAssignable(m *mapping, t1 *exprpb.Type, t2 *exprpb.Type) bool {
 		if valid {
 			return true
 		}
-		// If t2 is not a valid type sub for t1, and already has a known substitution return false
-		// since it is not possible for t1 to be a substitution for t2.
+		// If t2 is not a valid type sub for t1, and already has a known substitution return
+		// false since it is not possible for t1 to be a substitution for t2.
 		if !valid && t2HasSub {
 			return false
 		}
 		// Otherwise, fall through to check whether t1 is a possible substitution for t2.
 	}
 	if kind1 == kindTypeParam {
-		// Return whether t1 is a valid substitution for t2. If not, do no additional checks as the
-		// possible type substitutions have been searched in both directions.
+		// Return whether t1 is a valid substitution for t2. If not, do no additional checks as
+		// the possible type substitutions have been searched in both directions.
 		valid, _ := isValidTypeSubstitution(m, t2, t1)
 		return valid
 	}
