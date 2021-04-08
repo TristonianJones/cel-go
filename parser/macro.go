@@ -225,34 +225,44 @@ type ExprHelper interface {
 }
 
 var (
+	// HasMacro expands "has(m.f)" which tests the presence of a field, avoiding the need to
+	// specify the field as a string.
+	HasMacro = NewGlobalMacro(operators.Has, 1, makeHas)
+
+	// AllMacro expands "range.all(var, predicate)" into a comprehension which ensures that all
+	// elements in the range satisfy the predicate.
+	AllMacro = NewReceiverMacro(operators.All, 2, makeAll)
+
+	// ExistsMacro expands "range.exists(var, predicate)" into a comprehension which ensures that
+	// some element in the range satisfies the predicate.
+	ExistsMacro = NewReceiverMacro(operators.Exists, 2, makeExists)
+
+	// ExistsOneMacro expands "range.exists_one(var, predicate)", which is true if for exactly one
+	// element in range the predicate holds.
+	ExistsOneMacro = NewReceiverMacro(operators.ExistsOne, 2, makeExistsOne)
+
+	// MapMacro expands "range.map(var, function)" into a comprehension which applies the function
+	// to each element in the range to produce a new list.
+	MapMacro = NewReceiverMacro(operators.Map, 2, makeMap)
+
+	// MapFilterMacro expands "range.map(var, predicate, function)" into a comprehension which
+	// first filters the elements in the range by the predicate, then applies the transform function
+	// to produce a new list.
+	MapFilterMacro = NewReceiverMacro(operators.Map, 3, makeMap)
+
+	// FilterMacro expands "range.filter(var, predicate)" into a comprehension which filters
+	// elements in the range, producing a new list from the elements that satisfy the predicate.
+	FilterMacro = NewReceiverMacro(operators.Filter, 2, makeFilter)
+
 	// AllMacros includes the list of all spec-supported macros.
 	AllMacros = []Macro{
-		// The macro "has(m.f)" which tests the presence of a field, avoiding the need to specify
-		// the field as a string.
-		NewGlobalMacro(operators.Has, 1, makeHas),
-
-		// The macro "range.all(var, predicate)", which is true if for all elements in range the
-		// predicate holds.
-		NewReceiverMacro(operators.All, 2, makeAll),
-
-		// The macro "range.exists(var, predicate)", which is true if for at least one element in
-		// range the predicate holds.
-		NewReceiverMacro(operators.Exists, 2, makeExists),
-
-		// The macro "range.exists_one(var, predicate)", which is true if for exactly one element
-		// in range the predicate holds.
-		NewReceiverMacro(operators.ExistsOne, 2, makeExistsOne),
-
-		// The macro "range.map(var, function)", applies the function to the vars in the range.
-		NewReceiverMacro(operators.Map, 2, makeMap),
-
-		// The macro "range.map(var, predicate, function)", applies the function to the vars in
-		// the range for which the predicate holds true. The other variables are filtered out.
-		NewReceiverMacro(operators.Map, 3, makeMap),
-
-		// The macro "range.filter(var, predicate)", filters out the variables for which the
-		// predicate is false.
-		NewReceiverMacro(operators.Filter, 2, makeFilter),
+		HasMacro,
+		AllMacro,
+		ExistsMacro,
+		ExistsOneMacro,
+		MapMacro,
+		MapFilterMacro,
+		FilterMacro,
 	}
 
 	// NoMacros list.

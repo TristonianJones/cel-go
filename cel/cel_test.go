@@ -273,15 +273,7 @@ func TestAbbrevs_Disambiguation(t *testing.T) {
 	// This expression will return either a string or a protobuf Expr value depending on the value
 	// of the 'test' argument. The fully qualified type name is used indicate that the protobuf
 	// typed 'Expr' should be used rather than the abbreviatation for 'external.Expr'.
-	ast, iss := env.Compile(`test ? dyn(Expr) : google.api.expr.v1alpha1.Expr{id: 1}`)
-	if iss.Err() != nil {
-		t.Fatal(iss.Err())
-	}
-	prg, err := env.Program(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-	out, _, err := prg.Eval(
+	out, err := interpret(t, env, `test ? dyn(Expr) : google.api.expr.v1alpha1.Expr{id: 1}`,
 		map[string]interface{}{
 			"test":          true,
 			"external.Expr": "string expr",
@@ -293,7 +285,7 @@ func TestAbbrevs_Disambiguation(t *testing.T) {
 	if out.Value() != "string expr" {
 		t.Errorf("got %v, wanted 'string expr'", out)
 	}
-	out, _, err = prg.Eval(
+	out, err = interpret(t, env, `test ? dyn(Expr) : google.api.expr.v1alpha1.Expr{id: 1}`,
 		map[string]interface{}{
 			"test":          false,
 			"external.Expr": "wrong expr",
@@ -303,7 +295,10 @@ func TestAbbrevs_Disambiguation(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := &exprpb.Expr{Id: 1}
-	got, _ := out.ConvertToNative(reflect.TypeOf(want))
+	got, err := out.ConvertToNative(reflect.TypeOf(want))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !proto.Equal(got.(*exprpb.Expr), want) {
 		t.Errorf("got %v, wanted '%v'", out, want)
 	}
@@ -321,8 +316,7 @@ func TestCustomEnvError(t *testing.T) {
 }
 
 func TestCustomEnv(t *testing.T) {
-	e, _ := NewCustomEnv(
-		Declarations(decls.NewVar("a.b.c", decls.Bool)))
+	e, _ := NewCustomEnv(Declarations(decls.NewVar("a.b.c", decls.Bool)))
 
 	t.Run("err", func(t *testing.T) {
 		_, iss := e.Compile("a.b.c == true")
@@ -332,12 +326,10 @@ func TestCustomEnv(t *testing.T) {
 	})
 
 	t.Run("ok", func(t *testing.T) {
-		ast, iss := e.Compile("a.b.c")
-		if iss.Err() != nil {
-			t.Fatal(iss.Err())
+		out, err := interpret(t, e, "a.b.c", map[string]interface{}{"a.b.c": true})
+		if err != nil {
+			t.Fatal(err)
 		}
-		prg, _ := e.Program(ast)
-		out, _, _ := prg.Eval(map[string]interface{}{"a.b.c": true})
 		if out != types.True {
 			t.Errorf("got '%v', wanted 'true'", out.Value())
 		}
@@ -701,6 +693,34 @@ func TestGlobalVars(t *testing.T) {
 	})
 }
 
+func TestMacroSubset(t *testing.T) {
+	// Only enable the 'has' macro rather than all parser macros.
+	env, err := NewEnv(
+		ClearMacros(),
+		Macros(parser.HasMacro),
+		Declarations(decls.NewVar("name", decls.NewMapType(decls.String, decls.String))),
+	)
+	if err != nil {
+		t.Fatalf("NewEnv() failed: %v", err)
+	}
+	out, err := interpret(t, env, `has(name.first)`,
+		map[string]interface{}{
+			"name": map[string]string{
+				"first": "Jim",
+			},
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != types.True {
+		t.Errorf("got %v, wanted true", out)
+	}
+	out, err = interpret(t, env, `[1, 2].all(i, i > 0)`, NoVars)
+	if err == nil {
+		t.Errorf("got %v, wanted err", out)
+	}
+}
+
 func TestCustomMacro(t *testing.T) {
 	joinMacro := parser.NewReceiverMacro("join", 1,
 		func(eh parser.ExprHelper,
@@ -855,7 +875,7 @@ func TestResidualAst(t *testing.T) {
 	}
 }
 
-func TestResidualAst_Complex(t *testing.T) {
+func TestResidualAstComplex(t *testing.T) {
 	e, _ := NewEnv(
 		Declarations(
 			decls.NewVar("resource.name", decls.String),
@@ -1238,4 +1258,21 @@ func TestResidualAst_Modified(t *testing.T) {
 			t.Errorf("residual ast: got expr: %s, wanted %s", expr, want)
 		}
 	}
+}
+
+func interpret(t *testing.T, env *Env, expr string, vars interface{}) (ref.Val, error) {
+	t.Helper()
+	ast, iss := env.Compile(expr)
+	if iss.Err() != nil {
+		return nil, fmt.Errorf("env.Compile(%s) failed: %v", expr, iss.Err())
+	}
+	prg, err := env.Program(ast)
+	if err != nil {
+		return nil, fmt.Errorf("env.Program() failed: %v", err)
+	}
+	out, _, err := prg.Eval(vars)
+	if err != nil {
+		return nil, fmt.Errorf("prg.Eval(%v) failed: %v", vars, err)
+	}
+	return out, nil
 }
