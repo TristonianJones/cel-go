@@ -20,8 +20,10 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/google/cel-go/test/proto3pb"
 	"google.golang.org/protobuf/proto"
 
+	dynamicpb "google.golang.org/protobuf/types/dynamicpb"
 	anypb "google.golang.org/protobuf/types/known/anypb"
 	structpb "google.golang.org/protobuf/types/known/structpb"
 )
@@ -57,9 +59,22 @@ func TestNullConvertToNative(t *testing.T) {
 		{goType: stringWrapperType},
 		{goType: uint32WrapperType},
 		{goType: uint64WrapperType},
+		{goType: durationValueType},
+		{goType: timestampValueType},
+		{goType: reflect.TypeOf((*dynamicpb.Message)(nil))},
+		{goType: reflect.TypeOf(&proto3pb.TestAllTypes{})},
+		{goType: reflect.TypeOf((*proto3pb.TestAllTypes)(nil))},
 		{
 			goType: reflect.TypeOf(1),
 			err:    errors.New("type conversion error from 'null_type' to 'int'"),
+		},
+		{
+			goType: jsonListValueType,
+			err:    errors.New("type conversion error from 'null_type' to '*structpb.ListValue'"),
+		},
+		{
+			goType: jsonStructType,
+			err:    errors.New("type conversion error from 'null_type' to '*structpb.Struct'"),
 		},
 	}
 
