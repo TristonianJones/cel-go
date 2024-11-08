@@ -599,16 +599,17 @@ func (p *planner) planComprehension(expr ast.Expr) (Interpretable, error) {
 		return nil, err
 	}
 	return &evalFold{
-		id:        expr.ID(),
-		accuVar:   fold.AccuVar(),
-		accu:      accu,
-		iterVar:   fold.IterVar(),
-		iterVar2:  fold.IterVar2(),
-		iterRange: iterRange,
-		cond:      cond,
-		step:      step,
-		result:    result,
-		adapter:   p.adapter,
+		id:             expr.ID(),
+		accuVar:        fold.AccuVar(),
+		accu:           accu,
+		iterVar:        fold.IterVar(),
+		iterVar2:       fold.IterVar2(),
+		iterRange:      iterRange,
+		cond:           cond,
+		step:           step,
+		result:         result,
+		adapter:        p.adapter,
+		iterationLimit: 0,
 	}, nil
 }
 

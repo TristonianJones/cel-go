@@ -323,8 +323,13 @@ func TestTwoVarComprehensionsRuntimeErrors(t *testing.T) {
 			expr: `[0, 0u].transformMapEntry(i, v, {v: i})`,
 			err:  "insert failed: key 0 already exists",
 		},
+		{
+			// Test to ensure comprehension iteration limits are respected
+			expr: `[0, 1, 2, 3].transformMapEntry(i, v, {v: i})`,
+			err:  "operation interrupted",
+		},
 	}
-	env := testCompreEnv(t)
+	env := testCompreEnv(t, cel.ComprehensionLimits(2, 3))
 	for i, tst := range tests {
 		tc := tst
 		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {

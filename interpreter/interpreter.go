@@ -121,6 +121,18 @@ func Optimize() InterpretableDecorator {
 	return decOptimize()
 }
 
+// ComprehensionIterationLimit tracks the individual comprehension iteration limit of a given
+// comprehension.
+//
+// This decorator should be used in conjunction with AST validators that limit the amount of
+// comprehension nesting permitted in order to control the total iteration count. For example,
+// a limit of 100 and a nesting limit of 2 will ensure that no individual comprehension exceeds
+// 100 iterations and that the total iteration count will at most be 10,000 iterations in an
+// O(n^2) comprehension.
+func ComprehensionIterationLimit(limit int64) InterpretableDecorator {
+	return decComprehensionIterationLimit(limit)
+}
+
 // RegexOptimization provides a way to replace an InterpretableCall for a regex function when the
 // RegexIndex argument is a string constant. Typically, the Factory would compile the regex pattern at
 // RegexIndex and report any errors (at program creation time) and then use the compiled regex for

@@ -345,6 +345,45 @@ func TestValidateComprehensionNestingLimit(t *testing.T) {
 	}
 }
 
+func TestValidateDisableComprehensions(t *testing.T) {
+	env, err := NewEnv(
+		ASTValidators(ValidateComprehensionNestingLimit(0)),
+	)
+	if err != nil {
+		t.Fatalf("NewEnv() failed: %v", err)
+	}
+	tests := []struct {
+		expr string
+		iss  string
+	}{
+		{
+			expr: `[1, 2, 3].exists(i, i < 1)`,
+			iss: `
+			ERROR: <input>:1:17: comprehension exceeds nesting limit
+             | [1, 2, 3].exists(i, i < 1)
+             | ................^`,
+		},
+	}
+	for _, tst := range tests {
+		tc := tst
+		t.Run(tc.expr, func(t *testing.T) {
+			_, iss := env.Compile(tc.expr)
+			if tc.iss != "" {
+				if iss.Err() == nil {
+					t.Fatalf("e.Compile(%v) returned ast, expected error: %v", tc.expr, tc.iss)
+				}
+				if !test.Compare(iss.Err().Error(), tc.iss) {
+					t.Fatalf("e.Compile(%v) returned %v, expected error: %v", tc.expr, iss.Err(), tc.iss)
+				}
+				return
+			}
+			if iss.Err() != nil {
+				t.Fatalf("e.Compile(%v) failed: %v", tc.expr, iss.Err())
+			}
+		})
+	}
+}
+
 func TestExtendedValidations(t *testing.T) {
 	env, err := NewEnv(
 		Variable("x", types.StringType),
@@ -392,6 +431,82 @@ func TestExtendedValidations(t *testing.T) {
 			}
 			if iss.Err() != nil {
 				t.Fatalf("e.Compile(%v) failed: %v", tc.expr, iss.Err())
+			}
+		})
+	}
+}
+
+func TestComprehensionLimits(t *testing.T) {
+	tests := []struct {
+		expr       string
+		iss        string
+		runtimeErr string
+		opts       []EnvOption
+		out        ref.Val
+	}{
+		{
+			expr: `[1, 2, 3].exists(i, [1, 2, 3].exists(j, i * j == 9))`,
+			opts: []EnvOption{ComprehensionLimits(1, 3)},
+			iss: `ERROR: <input>:1:37: comprehension exceeds nesting limit
+             | [1, 2, 3].exists(i, [1, 2, 3].exists(j, i * j == 9))
+             | ....................................^`,
+		},
+		{
+			expr: `[1, 2, 3, 4, 5].exists(i, i % 4 == 0)`,
+			opts: []EnvOption{DisableComprehensions()},
+			iss: `ERROR: <input>:1:23: comprehension exceeds nesting limit
+             | [1, 2, 3, 4, 5].exists(i, i % 4 == 0)
+             | ......................^`,
+		},
+		{
+			expr:       `[1, 2, 3, 4, 5].exists(i, i % 4 == 0)`,
+			opts:       []EnvOption{ComprehensionLimits(1, 3)},
+			runtimeErr: `operation interrupted`,
+		},
+		{
+			// if either loop reaches 3 iterations the expression will terminate
+			expr:       `[1, 2, 3, 4].exists(i, [1, 2, 3, 4, 5].exists(j, j * i == 6))`,
+			opts:       []EnvOption{ComprehensionLimits(2, 3)},
+			runtimeErr: `operation interrupted`,
+		},
+		{
+			// both loops only ever get to index 1, so this succeeds.
+			expr: `[1, 2, 3, 4].exists(i, [1, 2, 3, 4, 5].exists(j, j * i == 4))`,
+			opts: []EnvOption{ComprehensionLimits(2, 3)},
+			out:  types.True,
+		},
+	}
+	for _, tst := range tests {
+		tc := tst
+		t.Run(tc.expr, func(t *testing.T) {
+			env, err := NewEnv(tc.opts...)
+			if err != nil {
+				t.Fatalf("NewEnv(ComprehensionLimits()) failed: %v", err)
+			}
+			ast, iss := env.Compile(tc.expr)
+			if tc.iss != "" {
+				if iss.Err() == nil {
+					t.Fatalf("e.Compile(%v) returned ast, expected error: %v", tc.expr, tc.iss)
+				}
+				if !test.Compare(iss.Err().Error(), tc.iss) {
+					t.Fatalf("e.Compile(%v) returned %v, expected error: %v", tc.expr, iss.Err(), tc.iss)
+				}
+				return
+			}
+			if iss.Err() != nil {
+				t.Fatalf("e.Compile(%v) failed: %v", tc.expr, iss.Err())
+			}
+			prg, err := env.Program(ast)
+			if err != nil {
+				t.Fatalf("env.Program(ast) failed: %v", ast)
+			}
+			out, _, err := prg.Eval(NoVars())
+			if err != nil {
+				if !test.Compare(err.Error(), tc.runtimeErr) {
+					t.Fatalf("prg.Eval() got %v, wanted error", err)
+				}
+			} else if out != tc.out {
+				t.Errorf("prg.Eval() got %v, wanted %v", out, tc.out)
 			}
 		})
 	}

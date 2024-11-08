@@ -752,6 +752,21 @@ func testData(t testing.TB) []testCase {
 			expr: `[1, 2, 3].exists_one(x, (x % 2) == 0)`,
 		},
 		{
+			name: "macro_exists_one_limit_reached",
+			expr: `[1, 2, 3].exists_one(x, (x % 2) == 0)`,
+			extraOpts: []InterpretableDecorator{
+				ComprehensionIterationLimit(1),
+			},
+			err: `operation interrupted`,
+		},
+		{
+			name: "macro_exists_one_limit_not_reached",
+			expr: `[1, 2, 3].exists_one(x, (x % 2) == 0)`,
+			extraOpts: []InterpretableDecorator{
+				ComprehensionIterationLimit(4),
+			},
+		},
+		{
 			name: "macro_filter",
 			expr: `[-10, -9, -8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 3].filter(x, x > 0)`,
 			out:  []int64{1, 2, 3},
@@ -1529,22 +1544,9 @@ func TestInterpreter(t *testing.T) {
 			if tc.out != nil {
 				want = tc.out.(ref.Val)
 			}
-			got := prg.Eval(vars)
-			_, expectUnk := want.(*types.Unknown)
-			if expectUnk {
-				if !reflect.DeepEqual(got, want) {
-					t.Fatalf("Got %v, wanted %v", got, want)
-				}
-			} else if tc.err != "" {
-				if !types.IsError(got) || !strings.Contains(got.(*types.Err).String(), tc.err) {
-					t.Fatalf("Got %v (%T), wanted error: %s", got, got, tc.err)
-				}
-			} else if got.Equal(want) != types.True {
-				t.Fatalf("Got %v, wanted %v", got, want)
-			}
-
 			state := NewEvalState()
 			opts := map[string][]InterpretableDecorator{
+				"standard":   {},
 				"optimize":   {Optimize()},
 				"exhaustive": {ExhaustiveEval(), Observe(EvalStateObserver(state))},
 				"track":      {Observe(EvalStateObserver(state))},
@@ -1556,8 +1558,8 @@ func TestInterpreter(t *testing.T) {
 				}
 				prg, vars, err = program(t, &tc, opts...)
 				if tc.progErr != "" {
-					if !types.IsError(got) || !strings.Contains(got.(*types.Err).String(), tc.progErr) {
-						t.Errorf("Got %v (%T), wanted error: %s", got, got, tc.progErr)
+					if err == nil || !strings.Contains(err.Error(), tc.progErr) {
+						t.Errorf("Got %v (%T), wanted error: %v", err, err, tc.progErr)
 					}
 					continue
 				}
@@ -1573,7 +1575,7 @@ func TestInterpreter(t *testing.T) {
 						}
 					} else if tc.err != "" {
 						if !types.IsError(got) || !strings.Contains(got.(*types.Err).String(), tc.err) {
-							t.Errorf("Got %v (%T), wanted error: %s", got, got, tc.err)
+							t.Fatalf("Got %v (%T), wanted error: %s", got, got, tc.err)
 						}
 						type nodeIDer interface {
 							NodeID() int64

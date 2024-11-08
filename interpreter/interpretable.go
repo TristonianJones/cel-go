@@ -746,8 +746,9 @@ type evalFold struct {
 	// note an exhaustive fold will ensure that all branches are evaluated
 	// when using mutable values, these branches will mutate the final result
 	// rather than make a throw-away computation.
-	exhaustive    bool
-	interruptable bool
+	exhaustive     bool
+	interruptable  bool
+	iterationLimit int64
 }
 
 // ID implements the Interpretable interface method.
@@ -1202,6 +1203,29 @@ func (a *evalAttr) Resolve(ctx Activation) (any, error) {
 	return a.attr.Resolve(ctx)
 }
 
+type evalWatchCall struct {
+	InterpretableCall
+	observer EvalObserver
+}
+
+func (c *evalWatchCall) Function() string {
+	return c.InterpretableCall.Function()
+}
+
+func (c *evalWatchCall) OverloadID() string {
+	return c.InterpretableCall.OverloadID()
+}
+
+func (c *evalWatchCall) Args() []Interpretable {
+	return c.InterpretableCall.Args()
+}
+
+func (c *evalWatchCall) Eval(ctx Activation) ref.Val {
+	val := c.InterpretableCall.Eval(ctx)
+	c.observer(c.ID(), c.InterpretableCall, val)
+	return val
+}
+
 type evalWatchConstructor struct {
 	constructor InterpretableConstructor
 	observer    EvalObserver
@@ -1270,10 +1294,11 @@ type folder struct {
 	iterVar2Val any
 
 	// bookkeeping flags to modify Activation and fold behaviors.
-	initialized   bool
-	mutableValue  bool
-	interrupted   bool
-	computeResult bool
+	initialized    bool
+	mutableValue   bool
+	interrupted    bool
+	computeResult  bool
+	iterationCount int64
 }
 
 func (f *folder) foldIterable(iterable traits.Iterable) ref.Val {
@@ -1293,6 +1318,13 @@ func (f *folder) foldIterable(iterable traits.Iterable) ref.Val {
 		if f.interruptable && checkInterrupt(f.Activation) {
 			f.interrupted = true
 			return f.evalResult()
+		}
+		if f.iterationLimit > 0 {
+			f.iterationCount++
+			if f.iterationCount >= f.iterationLimit {
+				f.interrupted = true
+				return f.evalResult()
+			}
 		}
 	}
 	return f.evalResult()
@@ -1319,6 +1351,13 @@ func (f *folder) FoldEntry(key, val any) bool {
 	if f.interruptable && checkInterrupt(f.Activation) {
 		f.interrupted = true
 		return false
+	}
+	if f.iterationLimit > 0 {
+		f.iterationCount++
+		if f.iterationCount >= f.iterationLimit {
+			f.interrupted = true
+			return false
+		}
 	}
 	return true
 }
@@ -1362,7 +1401,7 @@ func (f *folder) ResolveName(name string) (any, bool) {
 func (f *folder) evalResult() ref.Val {
 	f.computeResult = true
 	if f.interrupted {
-		return types.NewErr("operation interrupted")
+		return types.NewErrWithNodeID(f.ID(), "operation interrupted")
 	}
 	res := f.result.Eval(f)
 	// Convert a mutable list or map to an immutable one if the comprehension has generated a list or
@@ -1390,6 +1429,7 @@ func (f *folder) reset() {
 	f.mutableValue = false
 	f.interrupted = false
 	f.computeResult = false
+	f.iterationCount = 0
 }
 
 func checkInterrupt(a Activation) bool {

@@ -665,3 +665,46 @@ func maybeInteropProvider(provider any) (types.Provider, error) {
 		return nil, fmt.Errorf("unsupported type provider: %T", provider)
 	}
 }
+
+// DisableComprehensions disables comprehension support at compilation and runtime.
+func DisableComprehensions() EnvOption {
+	return Lib(&comprehensionLimits{
+		nestingLimit:   0,
+		iterationLimit: 1,
+	})
+}
+
+// ComprehensionLimits configures nesting limits validated at compilation and iteration
+// limits validated at runtime.
+func ComprehensionLimits(nestingLimit int, iterationLimit int64) EnvOption {
+	return Lib(&comprehensionLimits{
+		nestingLimit:   nestingLimit,
+		iterationLimit: iterationLimit,
+	})
+}
+
+// comprehensionLimits represents a purpose-built library to support comprehension limits
+// at compile-time and runtime.
+type comprehensionLimits struct {
+	nestingLimit   int
+	iterationLimit int64
+}
+
+// LibraryName returns the singleton library name for these limits.
+func (l *comprehensionLimits) LibraryName() string {
+	return "cel.lib.std.comprehension_limits"
+}
+
+// CompileOptions implements the Library interface methods.
+func (l *comprehensionLimits) CompileOptions() []EnvOption {
+	return []EnvOption{
+		ASTValidators(ValidateComprehensionNestingLimit(l.nestingLimit)),
+	}
+}
+
+// ProgramOptions implements the Library interface methods.
+func (l *comprehensionLimits) ProgramOptions() []ProgramOption {
+	return []ProgramOption{
+		CustomDecorator(interpreter.ComprehensionIterationLimit(l.iterationLimit)),
+	}
+}

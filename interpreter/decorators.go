@@ -29,7 +29,7 @@ type InterpretableDecorator func(Interpretable) (Interpretable, error)
 func decObserveEval(observer EvalObserver) InterpretableDecorator {
 	return func(i Interpretable) (Interpretable, error) {
 		switch inst := i.(type) {
-		case *evalWatch, *evalWatchAttr, *evalWatchConst, *evalWatchConstructor:
+		case *evalWatch, *evalWatchAttr, *evalWatchConst, *evalWatchConstructor, *evalWatchCall:
 			// these instruction are already watching, return straight-away.
 			return i, nil
 		case InterpretableAttribute:
@@ -46,6 +46,11 @@ func decObserveEval(observer EvalObserver) InterpretableDecorator {
 			return &evalWatchConstructor{
 				constructor: inst,
 				observer:    observer,
+			}, nil
+		case InterpretableCall:
+			return &evalWatchCall{
+				InterpretableCall: inst,
+				observer:          observer,
 			}, nil
 		default:
 			return &evalWatch{
@@ -162,6 +167,23 @@ func decRegexOptimizer(regexOptimizations ...*RegexOptimization) InterpretableDe
 			return i, nil
 		}
 		return matcher.Factory(call, string(pattern))
+	}
+}
+
+func decComprehensionIterationLimit(limit int64) InterpretableDecorator {
+	return func(i Interpretable) (Interpretable, error) {
+		var fold *evalFold = nil
+		watched, ok := i.(*evalWatch)
+		if ok {
+			fold, ok = watched.Interpretable.(*evalFold)
+		} else {
+			fold, ok = i.(*evalFold)
+		}
+		if !ok {
+			return i, nil
+		}
+		fold.iterationLimit = limit
+		return fold, nil
 	}
 }
 
