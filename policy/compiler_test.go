@@ -139,55 +139,6 @@ func BenchmarkCompileSetup(b *testing.B) {
 	}
 }
 
-func BenchmarkRegoSetup(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		ctx := context.Background()
-		r := rego.New(
-			rego.Query("data.authz.required_labels"),
-			rego.Module("example.rego",
-				`package authz
-
-			import rego.v1
-
-			# This definition checks if the costcenter label is not provided. Each rule definition
-			# contributes to the set of error messages.
-			required_labels contains output if {
-				some i, _ in input.spec.labels
-				not input.resource.labels[i]
-				output := sprintf("missing one or more required labels: %v", [i])
-			}
-			
-			required_labels contains output if {
-				some i, v in input.spec.labels
-				input.resource.labels[i] != v
-				output := sprintf("invalid values provided on one or more labels: %v", [i])
-			}
-	`,
-			),
-			rego.Input(map[string]any{
-				"spec": map[string]any{
-					"labels": map[string]string{
-						"env":        "prod",
-						"experiment": "group b",
-					},
-				},
-				"resource": map[string]any{
-					"labels": map[string]string{
-						"env":        "prod",
-						"experiment": "group b",
-						"release":    "v0.1.0",
-					},
-				},
-			},
-			),
-		)
-		_, err := r.Eval(ctx)
-		if err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
 func BenchmarkRego(b *testing.B) {
 	ctx := context.Background()
 	r := rego.New(
@@ -204,7 +155,7 @@ func BenchmarkRego(b *testing.B) {
 				not input.resource.labels[i]
 				output := sprintf("missing one or more required labels: %v", [i])
 			}
-			
+
 			required_labels contains output if {
 				some i, v in input.spec.labels
 				input.resource.labels[i] != v
@@ -237,6 +188,55 @@ func BenchmarkRego(b *testing.B) {
 			},
 		},
 		))
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRegoSetup(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		ctx := context.Background()
+		r := rego.New(
+			rego.Query("data.authz.required_labels"),
+			rego.Module("example.rego",
+				`package authz
+
+			import rego.v1
+
+			# This definition checks if the costcenter label is not provided. Each rule definition
+			# contributes to the set of error messages.
+			required_labels contains output if {
+				some i, _ in input.spec.labels
+				not input.resource.labels[i]
+				output := sprintf("missing one or more required labels: %v", [i])
+			}
+
+			required_labels contains output if {
+				some i, v in input.spec.labels
+				input.resource.labels[i] != v
+				output := sprintf("invalid values provided on one or more labels: %v", [i])
+			}
+	`,
+			),
+			rego.Input(map[string]any{
+				"spec": map[string]any{
+					"labels": map[string]string{
+						"env":        "prod",
+						"experiment": "group b",
+					},
+				},
+				"resource": map[string]any{
+					"labels": map[string]string{
+						"env":        "prod",
+						"experiment": "group b",
+						"release":    "v0.1.0",
+					},
+				},
+			},
+			),
+		)
+		_, err := r.Eval(ctx)
 		if err != nil {
 			b.Fatal(err)
 		}
