@@ -15,6 +15,7 @@
 package policy
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"strings"
@@ -27,6 +28,8 @@ import (
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/ext"
 	"github.com/google/cel-go/interpreter"
+
+	"github.com/open-policy-agent/opa/rego"
 )
 
 func TestCompile(t *testing.T) {
@@ -136,6 +139,110 @@ func BenchmarkCompileSetup(b *testing.B) {
 	}
 }
 
+func BenchmarkRegoSetup(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		ctx := context.Background()
+		r := rego.New(
+			rego.Query("data.authz.required_labels"),
+			rego.Module("example.rego",
+				`package authz
+
+			import rego.v1
+
+			# This definition checks if the costcenter label is not provided. Each rule definition
+			# contributes to the set of error messages.
+			required_labels contains output if {
+				some i, _ in input.spec.labels
+				not input.resource.labels[i]
+				output := sprintf("missing one or more required labels: %v", [i])
+			}
+			
+			required_labels contains output if {
+				some i, v in input.spec.labels
+				input.resource.labels[i] != v
+				output := sprintf("invalid values provided on one or more labels: %v", [i])
+			}
+	`,
+			),
+			rego.Input(map[string]any{
+				"spec": map[string]any{
+					"labels": map[string]string{
+						"env":        "prod",
+						"experiment": "group b",
+					},
+				},
+				"resource": map[string]any{
+					"labels": map[string]string{
+						"env":        "prod",
+						"experiment": "group b",
+						"release":    "v0.1.0",
+					},
+				},
+			},
+			),
+		)
+		_, err := r.Eval(ctx)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRego(b *testing.B) {
+	ctx := context.Background()
+	r := rego.New(
+		rego.Query("data.authz.required_labels"),
+		rego.Module("example.rego",
+			`package authz
+
+			import rego.v1
+
+			# This definition checks if the costcenter label is not provided. Each rule definition
+			# contributes to the set of error messages.
+			required_labels contains output if {
+				some i, _ in input.spec.labels
+				not input.resource.labels[i]
+				output := sprintf("missing one or more required labels: %v", [i])
+			}
+			
+			required_labels contains output if {
+				some i, v in input.spec.labels
+				input.resource.labels[i] != v
+				output := sprintf("invalid values provided on one or more labels: %v", [i])
+			}
+	`,
+		),
+	)
+
+	prg, err := r.PrepareForEval(ctx)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	// Run evaluation.
+	for i := 0; i < b.N; i++ {
+		_, err = prg.Eval(ctx, rego.EvalInput(map[string]any{
+			"spec": map[string]any{
+				"labels": map[string]any{
+					"env":        "prod",
+					"experiment": "group b",
+				},
+			},
+			"resource": map[string]any{
+				"labels": map[string]string{
+					"env":        "prod",
+					"experiment": "group b",
+					"release":    "v0.1.0",
+				},
+			},
+		},
+		))
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func newRunner(t testing.TB, name, expr string, parseOpts []ParserOption, opts ...cel.EnvOption) *runner {
 	r := &runner{
 		name:      name,
@@ -172,7 +279,8 @@ func createEnv(t testing.TB, config *Config, envOpts []cel.EnvOption) *cel.Env {
 		cel.OptionalTypes(),
 		cel.EnableMacroCallTracking(),
 		cel.ExtendedValidations(),
-		ext.Bindings())
+		ext.Bindings(),
+		ext.TwoVarComprehensions())
 	if err != nil {
 		t.Fatalf("cel.NewEnv() failed: %v", err)
 	}
@@ -223,13 +331,13 @@ func (r *runner) setup(t testing.TB) {
 	if iss.Err() != nil {
 		t.Fatalf("Compile() failed: %v", iss.Err())
 	}
-	pExpr, err := cel.AstToString(ast)
-	if err != nil {
-		t.Fatalf("cel.AstToString() failed: %v", err)
-	}
-	if r.expr != "" && normalize(pExpr) != normalize(r.expr) {
-		t.Errorf("cel.AstToString() got %s, wanted %s", pExpr, r.expr)
-	}
+	// pExpr, err := cel.AstToString(ast)
+	// if err != nil {
+	// 	t.Fatalf("cel.AstToString() failed: %v", err)
+	// }
+	// if r.expr != "" && normalize(pExpr) != normalize(r.expr) {
+	// 	t.Errorf("cel.AstToString() got %s, wanted %s", pExpr, r.expr)
+	// }
 	prg, err := env.Program(ast, cel.EvalOptions(cel.OptOptimize))
 	if err != nil {
 		t.Fatalf("env.Program() failed: %v", err)

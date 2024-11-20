@@ -21,8 +21,8 @@ rule:
       expression: variables.want.filter(l, !(l in resource.labels))
     - name: invalid
       expression: >
-        resource.labels.filter(l,
-          l in variables.want && variables.want[l] != resource.labels[l])
+        resource.labels.transformList(l, value,
+          l in variables.want && value != variables.want[l], l)
   match:
     - condition: variables.missing.size() > 0
       output: |
