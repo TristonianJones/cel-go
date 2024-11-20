@@ -38,7 +38,10 @@ func TestCompile(t *testing.T) {
 
 func TestCompileError(t *testing.T) {
 	for _, tst := range policyErrorTests {
-		_, _, iss := compile(t, tst.name, []ParserOption{}, []cel.EnvOption{}, tst.compilerOpts)
+		config := readPolicyConfig(t, fmt.Sprintf("testdata/%s/config.yaml", tst.name))
+		env := createEnv(t, config, []cel.EnvOption{})
+		policy := parsePolicy(t, tst.name, []ParserOption{})
+		_, iss := compilePolicy(t, env, policy, tst.compilerOpts)
 		if iss.Err() == nil {
 			t.Fatalf("compile(%s) did not error, wanted %s", tst.name, tst.err)
 		}
@@ -96,7 +99,10 @@ func TestMaxNestedExpressions_Error(t *testing.T) {
 	wantError := `ERROR: testdata/required_labels/policy.yaml:15:8: error configuring compiler option: nested expression limit must be non-negative, non-zero value: -1
  | name: "required_labels"
  | .......^`
-	_, _, iss := compile(t, policyName, []ParserOption{}, []cel.EnvOption{}, []CompilerOption{MaxNestedExpressions(-1)})
+	config := readPolicyConfig(t, fmt.Sprintf("testdata/%s/config.yaml", policyName))
+	env := createEnv(t, config, []cel.EnvOption{})
+	policy := parsePolicy(t, policyName, []ParserOption{})
+	_, iss := compilePolicy(t, env, policy, []CompilerOption{MaxNestedExpressions(-1)})
 	if iss.Err() == nil {
 		t.Fatalf("compile(%s) did not error, wanted %s", policyName, wantError)
 	}
@@ -109,6 +115,24 @@ func BenchmarkCompile(b *testing.B) {
 	for _, tst := range policyTests {
 		r := newRunner(b, tst.name, tst.expr, tst.parseOpts, tst.envOpts...)
 		r.bench(b)
+	}
+}
+
+func BenchmarkCompileSetup(b *testing.B) {
+	for _, tst := range policyTests {
+		tc := tst
+		config := readPolicyConfig(b, fmt.Sprintf("testdata/%s/config.yaml", tc.name))
+		env := createEnv(b, config, tc.envOpts)
+		policy := parsePolicy(b, tc.name, tc.parseOpts)
+		ast, iss := compilePolicy(b, env, policy, []CompilerOption{})
+		if iss.Err() != nil {
+			b.Fatalf("compilePolicy() failed: %v", iss.Err())
+		}
+		b.Run(tc.name, func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				env.Program(ast, cel.EvalOptions(cel.OptOptimize))
+			}
+		})
 	}
 }
 
@@ -141,21 +165,8 @@ func mustCompileExpr(t testing.TB, env *cel.Env, expr string) *cel.Ast {
 	return out
 }
 
-func compile(t testing.TB, name string, parseOpts []ParserOption, envOpts []cel.EnvOption, compilerOpts []CompilerOption) (*cel.Env, *cel.Ast, *cel.Issues) {
+func createEnv(t testing.TB, config *Config, envOpts []cel.EnvOption) *cel.Env {
 	t.Helper()
-	config := readPolicyConfig(t, fmt.Sprintf("testdata/%s/config.yaml", name))
-	srcFile := readPolicy(t, fmt.Sprintf("testdata/%s/policy.yaml", name))
-	parser, err := NewParser(parseOpts...)
-	if err != nil {
-		t.Fatalf("NewParser() failed: %v", err)
-	}
-	policy, iss := parser.Parse(srcFile)
-	if iss.Err() != nil {
-		t.Fatalf("Parse() failed: %v", iss.Err())
-	}
-	if policy.name.Value != name {
-		t.Errorf("policy name is %v, wanted %q", policy.name, name)
-	}
 	env, err := cel.NewEnv(
 		cel.DefaultUTCTimeZone(true),
 		cel.OptionalTypes(),
@@ -179,12 +190,36 @@ func compile(t testing.TB, name string, parseOpts []ParserOption, envOpts []cel.
 	if err != nil {
 		t.Fatalf("env.Extend() with config options %v, failed: %v", config, err)
 	}
-	ast, iss := Compile(env, policy, compilerOpts...)
-	return env, ast, iss
+	return env
+}
+
+func parsePolicy(t testing.TB, name string, parseOpts []ParserOption) *Policy {
+	policySrc := readPolicy(t, fmt.Sprintf("testdata/%s/policy.yaml", name))
+	parser, err := NewParser(parseOpts...)
+	if err != nil {
+		t.Fatalf("NewParser() failed: %v", err)
+	}
+	policy, iss := parser.Parse(policySrc)
+	if iss.Err() != nil {
+		t.Fatalf("Parse() failed: %v", iss.Err())
+	}
+	if policy.name.Value != name {
+		t.Errorf("policy name is %v, wanted %q", policy.name, name)
+	}
+	return policy
+}
+
+func compilePolicy(t testing.TB, env *cel.Env, policy *Policy, compilerOpts []CompilerOption) (*cel.Ast, *cel.Issues) {
+	t.Helper()
+	return Compile(env, policy, compilerOpts...)
 }
 
 func (r *runner) setup(t testing.TB) {
-	env, ast, iss := compile(t, r.name, r.parseOpts, r.envOpts, r.compilerOpts)
+	t.Helper()
+	config := readPolicyConfig(t, fmt.Sprintf("testdata/%s/config.yaml", r.name))
+	env := createEnv(t, config, r.envOpts)
+	policy := parsePolicy(t, r.name, r.parseOpts)
+	ast, iss := compilePolicy(t, env, policy, r.compilerOpts)
 	if iss.Err() != nil {
 		t.Fatalf("Compile() failed: %v", iss.Err())
 	}
