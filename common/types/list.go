@@ -91,15 +91,9 @@ func NewJSONList(adapter Adapter, l *structpb.ListValue) traits.Lister {
 func NewMutableList(adapter Adapter) traits.MutableLister {
 	var mutableValues []ref.Val
 	l := &mutableList{
-		baseList: &baseList{
-			Adapter: adapter,
-			value:   mutableValues,
-			size:    0,
-		},
+		baseList:      nil,
+		adapter:       adapter,
 		mutableValues: mutableValues,
-	}
-	l.get = func(i int) any {
-		return l.mutableValues[i]
 	}
 	return l
 }
@@ -302,6 +296,7 @@ func (l *baseList) String() string {
 // mutableList aggregates values into its internal storage. For use with internal CEL variables only.
 type mutableList struct {
 	*baseList
+	adapter       Adapter
 	mutableValues []ref.Val
 }
 
@@ -311,10 +306,10 @@ func (l *mutableList) Add(other ref.Val) ref.Val {
 	switch otherList := other.(type) {
 	case *mutableList:
 		l.mutableValues = append(l.mutableValues, otherList.mutableValues...)
-		l.size += len(otherList.mutableValues)
+	case *singleElemList:
+		l.mutableValues = append(l.mutableValues, otherList.val)
 	case traits.Lister:
 		for i := IntZero; i < otherList.Size().(Int); i++ {
-			l.size++
 			l.mutableValues = append(l.mutableValues, otherList.Get(i))
 		}
 	default:
@@ -327,7 +322,97 @@ func (l *mutableList) Add(other ref.Val) ref.Val {
 func (l *mutableList) ToImmutableList() traits.Lister {
 	// The reference to internal state is guaranteed to be safe as this call is only performed
 	// when mutations have been completed.
-	return NewRefValList(l.Adapter, l.mutableValues)
+	return NewRefValList(l.adapter, l.mutableValues)
+}
+
+func NewSingleElemList(adapter Adapter, val ref.Val) *singleElemList {
+	return &singleElemList{
+		adapter: adapter,
+		val:     val,
+	}
+}
+
+type singleElemList struct {
+	adapter Adapter
+	val     ref.Val
+}
+
+func (l *singleElemList) Add(other ref.Val) ref.Val {
+	otherList, ok := other.(traits.Lister)
+	if !ok {
+		return MaybeNoSuchOverloadErr(other)
+	}
+	if otherList.Size() == IntZero {
+		return l
+	}
+	return &concatList{
+		Adapter:  l.adapter,
+		prevList: l,
+		nextList: otherList}
+}
+
+func (l *singleElemList) Contains(elem ref.Val) ref.Val {
+	return l.val.Equal(elem)
+}
+
+func (l *singleElemList) ConvertToNative(typeDesc reflect.Type) (any, error) {
+	return NewRefValList(l.adapter, []ref.Val{l.val}).ConvertToNative(typeDesc)
+}
+
+func (l *singleElemList) ConvertToType(typeVal ref.Type) ref.Val {
+	switch typeVal {
+	case ListType:
+		return l
+	case TypeType:
+		return ListType
+	}
+	return NewErr("type conversion error from '%s' to '%s'", ListType, typeVal)
+}
+
+func (l *singleElemList) Equal(other ref.Val) ref.Val {
+	otherList, ok := other.(traits.Lister)
+	if !ok {
+		return False
+	}
+	if IntOne != otherList.Size() {
+		return False
+	}
+	return l.val.Equal(otherList.Get(IntZero))
+}
+
+func (l *singleElemList) Get(index ref.Val) ref.Val {
+	_, err := IndexOrError(index)
+	if err != nil {
+		return ValOrErr(index, err.Error())
+	}
+	if index.Equal(IntZero) == True {
+		return l.val
+	}
+	return NewErr("index '%d' out of range in list size '%d'", index, 1)
+}
+
+func (l *singleElemList) IsZeroValue() bool {
+	return false
+}
+
+func (l *singleElemList) Fold(f traits.Folder) {
+	f.FoldEntry(IntZero, l.val)
+}
+
+func (l *singleElemList) Iterator() traits.Iterator {
+	return newListIterator(l)
+}
+
+func (l *singleElemList) Size() ref.Val {
+	return IntOne
+}
+
+func (l *singleElemList) Type() ref.Type {
+	return ListType
+}
+
+func (l *singleElemList) Value() any {
+	return []ref.Val{l.val}
 }
 
 // concatList combines two list implementations together into a view.

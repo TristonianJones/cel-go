@@ -84,7 +84,7 @@ func decDisableShortcircuits() InterpretableDecorator {
 				terms: expr.terms,
 			}, nil
 		case *evalFold:
-			expr.exhaustive = true
+			expr.markExhaustive()
 			return expr, nil
 		case InterpretableAttribute:
 			cond, isCond := expr.Attr().(*conditionalAttribute)

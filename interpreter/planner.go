@@ -506,7 +506,7 @@ func (p *planner) planCreateList(expr ast.Expr) (Interpretable, error) {
 		id:           expr.ID(),
 		elems:        elems,
 		optionals:    optionals,
-		hasOptionals: len(optionals) != 0,
+		hasOptionals: len(optionalIndices) != 0,
 		adapter:      p.adapter,
 	}, nil
 }
@@ -598,17 +598,33 @@ func (p *planner) planComprehension(expr ast.Expr) (Interpretable, error) {
 	if err != nil {
 		return nil, err
 	}
+	var initValFactory accumulaterInitFactory = nil
+	// if accuInit, isConst := accu.(InterpretableConst); isConst {
+	// 	initVal := accuInit.Value()
+	// 	if _, isList := initVal.(traits.Lister); isList {
+	// 		initValFactory = func(ctx Activation) (ref.Val, bool) {
+	// 			return types.NewMutableList(p.adapter), true
+	// 		}
+	// 	}
+	// 	if _, isMap := initVal.(traits.Mapper); isMap {
+	// 		initValFactory = func(ctx Activation) (ref.Val, bool) {
+	// 			return types.NewMutableMap(p.adapter, map[ref.Val]ref.Val{}), true
+	// 		}
+	// 	}
+	// }
+
 	return &evalFold{
-		id:        expr.ID(),
-		accuVar:   fold.AccuVar(),
-		accu:      accu,
-		iterVar:   fold.IterVar(),
-		iterVar2:  fold.IterVar2(),
-		iterRange: iterRange,
-		cond:      cond,
-		step:      step,
-		result:    result,
-		adapter:   p.adapter,
+		id:              expr.ID(),
+		accuVar:         fold.AccuVar(),
+		accuInit:        accu,
+		accuInitFactory: initValFactory,
+		iterVar:         fold.IterVar(),
+		iterVar2:        fold.IterVar2(),
+		iterRange:       iterRange,
+		cond:            cond,
+		step:            step,
+		result:          result,
+		adapter:         p.adapter,
 	}, nil
 }
 

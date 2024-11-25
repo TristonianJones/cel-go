@@ -588,6 +588,13 @@ func (l *evalList) ID() int64 {
 
 // Eval implements the Interpretable interface method.
 func (l *evalList) Eval(ctx Activation) ref.Val {
+	if len(l.elems) == 1 && !l.hasOptionals {
+		elemVal := l.elems[0].Eval(ctx)
+		if types.IsUnknownOrError(elemVal) {
+			return elemVal
+		}
+		return types.NewSingleElemList(l.adapter, elemVal)
+	}
 	elemVals := make([]ref.Val, 0, len(l.elems))
 	// If any argument is unknown or error early terminate.
 	for i, elem := range l.elems {
@@ -731,17 +738,20 @@ func (o *evalObj) Type() ref.Type {
 	return types.NewObjectType(o.typeName)
 }
 
+type accumulaterInitFactory func(Activation) (ref.Val, bool)
+
 type evalFold struct {
-	id        int64
-	accuVar   string
-	iterVar   string
-	iterVar2  string
-	iterRange Interpretable
-	accu      Interpretable
-	cond      Interpretable
-	step      Interpretable
-	result    Interpretable
-	adapter   types.Adapter
+	id              int64
+	accuVar         string
+	iterVar         string
+	iterVar2        string
+	iterRange       Interpretable
+	accuInit        Interpretable
+	accuInitFactory accumulaterInitFactory
+	cond            Interpretable
+	step            Interpretable
+	result          Interpretable
+	adapter         types.Adapter
 
 	// note an exhaustive fold will ensure that all branches are evaluated
 	// when using mutable values, these branches will mutate the final result
@@ -781,6 +791,11 @@ func (fold *evalFold) Eval(ctx Activation) ref.Val {
 	}
 	iterable := foldRange.(traits.Iterable)
 	return f.foldIterable(iterable)
+}
+
+func (fold *evalFold) markExhaustive() {
+	fold.exhaustive = true
+	fold.accuInitFactory = nil
 }
 
 // Optional Interpretable implementations that specialize, subsume, or extend the core evaluation
@@ -1330,18 +1345,11 @@ func (f *folder) ResolveName(name string) (any, bool) {
 	if name == f.accuVar {
 		if !f.initialized {
 			f.initialized = true
-			initVal := f.accu.Eval(f.Activation)
-			if !f.exhaustive {
-				if l, isList := initVal.(traits.Lister); isList && l.Size() == types.IntZero {
-					initVal = types.NewMutableList(f.adapter)
-					f.mutableValue = true
-				}
-				if m, isMap := initVal.(traits.Mapper); isMap && m.Size() == types.IntZero {
-					initVal = types.NewMutableMap(f.adapter, map[ref.Val]ref.Val{})
-					f.mutableValue = true
-				}
+			if f.accuInitFactory != nil {
+				f.accuVal, f.mutableValue = f.accuInitFactory(f.Activation)
+			} else {
+				f.accuVal = f.accuInit.Eval(f.Activation)
 			}
-			f.accuVal = initVal
 		}
 		return f.accuVal, true
 	}
