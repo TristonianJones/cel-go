@@ -24,6 +24,7 @@ go_library(
     deps = [
         "//cel:go_default_library",
         "//checker:go_default_library",
+        "//common:go_default_library",
         "//common/ast:go_default_library",
         "//common/decls:go_default_library",
         "//common/overloads:go_default_library",
@@ -48,7 +49,7 @@ go_test(
     srcs = [
         "bindings_test.go",
         "comprehensions_test.go",
-        "encoders_test.go",        
+        "encoders_test.go",
         "lists_test.go",
         "math_test.go",
         "native_test.go",

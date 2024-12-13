@@ -295,7 +295,7 @@ func TestSets(t *testing.T) {
 			if len(tc.hints) != 0 {
 				hints = tc.hints
 			}
-			est, err := env.EstimateCost(cAst, testSetsCostEstimator{hints: hints})
+			est, err := env.EstimateCost(cAst, testCostEstimator{hints: hints})
 			if err != nil {
 				t.Fatalf("env.EstimateCost() failed: %v", err)
 			}
@@ -514,17 +514,17 @@ func testSetsEnv(t *testing.T, opts ...cel.EnvOption) *cel.Env {
 	return env
 }
 
-type testSetsCostEstimator struct {
+type testCostEstimator struct {
 	hints map[string]uint64
 }
 
-func (tc testSetsCostEstimator) EstimateSize(element checker.AstNode) *checker.SizeEstimate {
+func (tc testCostEstimator) EstimateSize(element checker.AstNode) *checker.SizeEstimate {
 	if l, ok := tc.hints[strings.Join(element.Path(), ".")]; ok {
 		return &checker.SizeEstimate{Min: 0, Max: l}
 	}
 	return nil
 }
 
-func (testSetsCostEstimator) EstimateCallCost(function, overloadID string, target *checker.AstNode, args []checker.AstNode) *checker.CallEstimate {
+func (testCostEstimator) EstimateCallCost(function, overloadID string, target *checker.AstNode, args []checker.AstNode) *checker.CallEstimate {
 	return nil
 }

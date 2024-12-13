@@ -544,14 +544,9 @@ func TestCost(t *testing.T) {
 			wanted: CostEstimate{Min: 81, Max: 81},
 		},
 		{
-			// Estimated cost does not track the sizes of nested aggregate types
-			// (lists, maps, ...) and so assumes a worst case cost when an
-			// expression applies a comprehension to a nested aggregated type,
-			// even if the size information is available.
-			// TODO: This should be fixed.
 			name:   "comprehension on nested list",
 			expr:   `[1,2,3,4,5].map(x, [x, x]).all(y, y.all(y, y == 1))`,
-			wanted: CostEstimate{Min: 157, Max: 18446744073709551615},
+			wanted: CostEstimate{Min: 157, Max: 292},
 		},
 		{
 			// Make sure we're accounting for not just the iteration range size,

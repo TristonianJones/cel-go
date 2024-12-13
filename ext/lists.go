@@ -17,27 +17,20 @@ package ext
 import (
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/checker"
+	"github.com/google/cel-go/common"
 	"github.com/google/cel-go/common/ast"
 	"github.com/google/cel-go/common/decls"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/common/types/traits"
+	"github.com/google/cel-go/interpreter"
 	"github.com/google/cel-go/parser"
 )
-
-var comparableTypes = []*cel.Type{
-	cel.IntType,
-	cel.UintType,
-	cel.DoubleType,
-	cel.BoolType,
-	cel.DurationType,
-	cel.TimestampType,
-	cel.StringType,
-	cel.BytesType,
-}
 
 // Lists returns a cel.EnvOption to configure extended functions for list manipulation.
 // As a general note, all indices are zero-based.
@@ -134,7 +127,7 @@ var comparableTypes = []*cel.Type{
 //
 //	<list(T)>.sortBy(<bindingName>, <keyExpr>) -> <list(T)>
 //	keyExpr returns a value in {int, uint, double, bool, duration, timestamp, string, bytes}
-
+//
 // Examples:
 //
 //	[
@@ -143,7 +136,6 @@ var comparableTypes = []*cel.Type{
 //	  Player { name: "baz", score: 1000 },
 //	].sortBy(e, e.score).map(e, e.name)
 //	== ["bar", "foo", "baz"]
-
 func Lists(options ...ListsOption) cel.EnvOption {
 	l := &listsLib{version: math.MaxUint32}
 	for _, o := range options {
@@ -292,7 +284,6 @@ func (lib listsLib) CompileOptions() []cel.EnvOption {
 						if err != nil {
 							return types.WrapErr(err)
 						}
-
 						return sorted
 					},
 					// List traits
@@ -306,11 +297,7 @@ func (lib listsLib) CompileOptions() []cel.EnvOption {
 				[]*cel.Type{cel.IntType}, cel.ListType(cel.IntType),
 				cel.FunctionBinding(func(args ...ref.Val) ref.Val {
 					n := args[0].(types.Int)
-					result, err := genRange(n)
-					if err != nil {
-						return types.WrapErr(err)
-					}
-					return result
+					return genRange(n)
 				}),
 			),
 		))
@@ -319,11 +306,7 @@ func (lib listsLib) CompileOptions() []cel.EnvOption {
 				[]*cel.Type{listType}, listType,
 				cel.FunctionBinding(func(args ...ref.Val) ref.Val {
 					list := args[0].(traits.Lister)
-					result, err := reverseList(list)
-					if err != nil {
-						return types.WrapErr(err)
-					}
-					return result
+					return reverseList(list)
 				}),
 			),
 		))
@@ -331,40 +314,281 @@ func (lib listsLib) CompileOptions() []cel.EnvOption {
 			cel.MemberOverload("list_distinct",
 				[]*cel.Type{listType}, listType,
 				cel.UnaryBinding(func(list ref.Val) ref.Val {
-					result, err := distinctList(list.(traits.Lister))
-					if err != nil {
-						return types.WrapErr(err)
-					}
-					return result
+					return distinctList(list.(traits.Lister))
 				}),
 			),
 		))
-	}
+		opts = append(opts, cel.CostEstimatorOptions(
+			checker.OverloadCostEstimate("list_distinct", estimateListDistinct()),
+			checker.OverloadCostEstimate("list_flatten", estimateListFlatten()),
+			checker.OverloadCostEstimate("list_flatten_int", estimateListFlatten()),
+			checker.OverloadCostEstimate("list_reverse", estimateListReverse()),
+			checker.OverloadCostEstimate("list_slice", estimateListSlice()),
+			checker.OverloadCostEstimate("lists_range", estimateListsRangeCost()),
+		))
+		sortCostOpts := make([]checker.CostOption, len(comparableTypes))
+		for i, t := range comparableTypes {
+			cmpFactor := 0.2
+			sortCostOpts[i] = checker.OverloadCostEstimate(
+				fmt.Sprintf("list_%s_sortByAssociatedKeys", t.TypeName()),
+				estimateListSortType(cmpFactor, t),
+			)
+		}
+		sortByCostOpts := make([]checker.CostOption, len(comparableTypes))
+		for i, t := range comparableTypes {
+			cmpFactor := 0.1
+			sortByCostOpts[i] = checker.OverloadCostEstimate(
+				fmt.Sprintf("list_%s_sort", t.TypeName()),
+				estimateListSortType(cmpFactor, t),
+			)
+		}
+		opts = append(opts, cel.CostEstimatorOptions(sortCostOpts...))
+		opts = append(opts, cel.CostEstimatorOptions(sortByCostOpts...))
 
+	}
 	return opts
 }
 
 // ProgramOptions implements the Library interface method.
 func (listsLib) ProgramOptions() []cel.ProgramOption {
-	return []cel.ProgramOption{}
-}
-
-func genRange(n types.Int) (ref.Val, error) {
-	var newList []ref.Val
-	for i := types.Int(0); i < n; i++ {
-		newList = append(newList, i)
+	return []cel.ProgramOption{
+		cel.CostTrackerOptions(
+			interpreter.OverloadCostTracker("list_distinct", trackListDistinctCost()),
+			interpreter.OverloadCostTracker("list_flatten", trackListFlattenCost()),
+			interpreter.OverloadCostTracker("list_flatten_int", trackListFlattenCost()),
+			interpreter.OverloadCostTracker("list_reverse", trackListReverseCost()),
+			interpreter.OverloadCostTracker("list_slice", trackListSliceCost()),
+			interpreter.OverloadCostTracker("lists_range", trackListsRangeCost()),
+		),
 	}
-	return types.DefaultTypeAdapter.NativeToValue(newList), nil
 }
 
-func reverseList(list traits.Lister) (ref.Val, error) {
-	var newList []ref.Val
+func estimateListDistinct() checker.FunctionEstimator {
+	return func(estimator checker.CostEstimator, target *checker.AstNode, args []checker.AstNode) *checker.CallEstimate {
+		t := *target
+		targetSize := checker.EstimateSize(estimator, t)
+		costEstimate := targetSize.Multiply(targetSize).
+			MultiplyByCostFactor(1).
+			Add(createListCostEstimate).
+			Add(callCostEstimate)
+		return &checker.CallEstimate{CostEstimate: costEstimate, ResultSize: &targetSize}
+	}
+}
+
+func estimateListFlatten() checker.FunctionEstimator {
+	// The cost of a flatten operation is proportional to the depth of flattening, and the number of
+	// elements copied, so the expectation is that the cost factor is based on an expectation that
+	// elements within a list will be small (~16 elements) and that this quantity of elements is
+	// proportial to the flatten depth.
+	return estimateListCopy( /*variableCost=*/ true, func(args []checker.AstNode) *float64 {
+		depthRet := float64(1)
+		if len(args) == 0 {
+			return &depthRet
+		}
+		depth := args[0].Expr()
+		if depth.Kind() != ast.LiteralKind {
+			depthRet = 256
+			return &depthRet
+		}
+		if depth.AsLiteral().Type() != types.IntType {
+			return nil
+		}
+		depthVal := depth.AsLiteral().(types.Int)
+		depthRet = float64(depthVal)
+		return &depthRet
+	})
+}
+
+func estimateListsRangeCost() checker.FunctionEstimator {
+	return func(estimator checker.CostEstimator, target *checker.AstNode, args []checker.AstNode) *checker.CallEstimate {
+		sizeExpr := args[0].Expr()
+		if sizeExpr.Kind() != ast.LiteralKind {
+			return &checker.CallEstimate{CostEstimate: checker.UnknownCostEstimate()}
+		}
+		sizeEstimate := checker.UnknownSizeEstimate()
+		sz := sizeExpr.AsLiteral()
+		if szInt, ok := sz.(types.Int); ok {
+			sizeEstimate = checker.FixedSizeEstimate(uint64(szInt))
+		}
+		costEstimate := sizeEstimate.MultiplyByCostFactor(1).Add(createListCostEstimate).Add(callCostEstimate)
+		return &checker.CallEstimate{CostEstimate: costEstimate, ResultSize: &sizeEstimate}
+	}
+}
+
+func estimateListReverse() checker.FunctionEstimator {
+	return estimateListCopy( /* variableCost= */ false, func([]checker.AstNode) *float64 {
+		depth := float64(1)
+		return &depth
+	})
+}
+
+func estimateListSlice() checker.FunctionEstimator {
+	return func(estimator checker.CostEstimator, target *checker.AstNode, args []checker.AstNode) *checker.CallEstimate {
+		sizeEstimate := checker.EstimateSize(estimator, *target)
+		startVal := uint64(0)
+		startExpr := args[0].Expr()
+		if startExpr.Kind() == ast.LiteralKind && startExpr.AsLiteral().Type() == types.IntType {
+			startVal = uint64(startExpr.AsLiteral().(types.Int))
+		}
+		endVal := sizeEstimate.Max
+		endExpr := args[1].Expr()
+		if endExpr.Kind() == ast.LiteralKind && endExpr.AsLiteral().Type() == types.IntType {
+			endVal = uint64(endExpr.AsLiteral().(types.Int))
+		}
+		if endVal >= startVal {
+			sizeEstimate = checker.FixedSizeEstimate(endVal - startVal)
+		}
+		costEstimate := sizeEstimate.MultiplyByCostFactor(1).Add(createListCostEstimate).Add(callCostEstimate)
+		return &checker.CallEstimate{CostEstimate: costEstimate, ResultSize: &sizeEstimate}
+	}
+}
+
+func estimateListSortType(cmpFactor float64, elemType *types.Type) checker.FunctionEstimator {
+	return func(estimator checker.CostEstimator, target *checker.AstNode, args []checker.AstNode) *checker.CallEstimate {
+		// the input keys will be copied, and then the sort will take size(list) * log(size(list))
+		// then a new list constructed based on key order
+		t := *target
+		targetSize := checker.EstimateSize(estimator, t)
+		minSize := math.Ceil(math.Log2(float64(targetSize.Min)))
+		maxSize := math.Ceil(math.Log2(float64(targetSize.Max)))
+		costScale := checker.CostEstimate{Min: uint64(minSize), Max: uint64(maxSize)}
+		costEstimate := targetSize.MultiplyByCost(costScale).
+			MultiplyByCostFactor(cmpFactor).
+			Add(createListCostEstimate).
+			Add(callCostEstimate)
+		return &checker.CallEstimate{CostEstimate: costEstimate, ResultSize: &targetSize}
+	}
+}
+
+func estimateListCopy(variableCost bool, depthEstimator func([]checker.AstNode) *float64) checker.FunctionEstimator {
+	return func(estimator checker.CostEstimator, target *checker.AstNode, args []checker.AstNode) *checker.CallEstimate {
+		depth := depthEstimator(args)
+		if depth == nil {
+			return nil
+		}
+		costFactor := 1.0
+		targetSize := checker.EstimateSize(estimator, *target)
+		if *depth > 1 {
+			if variableCost {
+				itemsNode := newItemsNode(*target)
+				elemSize := checker.EstimateSize(estimator, itemsNode)
+				targetSize = targetSize.Multiply(elemSize)
+			}
+			sz := math.Ceil(costFactor * *depth)
+			targetSize = targetSize.Multiply(checker.FixedSizeEstimate(uint64(sz)))
+		}
+		costEstimate := targetSize.MultiplyByCostFactor(1).Add(createListCostEstimate).Add(callCostEstimate)
+		return &checker.CallEstimate{CostEstimate: costEstimate, ResultSize: &targetSize}
+	}
+}
+
+func newItemsNode(n checker.AstNode) itemsNode {
+	p := make([]string, len(n.Path())+1)
+	copy(p, n.Path())
+	p[len(n.Path())] = "@items"
+	return itemsNode{
+		AstNode: n,
+		path:    p,
+	}
+}
+
+type itemsNode struct {
+	checker.AstNode
+	path []string
+}
+
+func (n itemsNode) Path() []string {
+	return n.path
+}
+
+func (n itemsNode) Type() *types.Type {
+	t := n.AstNode.Type()
+	if t.TypeName() == "list" {
+		return t.Parameters()[0]
+	}
+	return types.DynType
+}
+
+func (n itemsNode) ComputedSize() *checker.SizeEstimate {
+	return nil
+}
+
+func trackListDistinctCost() interpreter.FunctionTracker {
+	return func(args []ref.Val, _ ref.Val) *uint64 {
+		cmpFactor := float64(0.0)
+		size := float64(0.0)
+		target := args[0]
+		if l, ok := target.(traits.Lister); ok {
+			it := l.Iterator()
+			for it.HasNext() == types.True {
+				elem := it.Next()
+				elemSize := float64(interpreter.ActualSize(elem))
+				cmpFactor += elemSize * 0.1
+				size += 1.0
+			}
+		}
+		cost := common.ListCreateBaseCost + callCost + uint64(math.Ceil(cmpFactor*size))
+		return &cost
+	}
+}
+
+func trackListFlattenCost() interpreter.FunctionTracker {
+	return func(args []ref.Val, result ref.Val) *uint64 {
+		target := args[0]
+		depth := int64(1)
+		if len(args) == 2 {
+			if d, ok := numberToInt(args[1]); ok {
+				depth = d
+			}
+		}
+		if l, ok := target.(traits.Lister); ok {
+			cost := flattenCount(l, depth) + common.ListCreateBaseCost + callCost
+			return &cost
+		}
+		return nil
+	}
+}
+
+func trackListReverseCost() interpreter.FunctionTracker {
+	return func(_ []ref.Val, result ref.Val) *uint64 {
+		size := interpreter.ActualSize(result)
+		cost := common.ListCreateBaseCost + callCost + size
+		return &cost
+	}
+}
+
+func trackListSliceCost() interpreter.FunctionTracker {
+	return func(_ []ref.Val, result ref.Val) *uint64 {
+		size := interpreter.ActualSize(result)
+		cost := common.ListCreateBaseCost + callCost + size
+		return &cost
+	}
+}
+
+func trackListsRangeCost() interpreter.FunctionTracker {
+	return func(_ []ref.Val, result ref.Val) *uint64 {
+		size := interpreter.ActualSize(result)
+		cost := common.ListCreateBaseCost + callCost + size
+		return &cost
+	}
+}
+
+func genRange(n types.Int) ref.Val {
+	newList := make([]ref.Val, n)
+	for i := types.Int(0); i < n; i++ {
+		newList[i] = i
+	}
+	return types.DefaultTypeAdapter.NativeToValue(newList)
+}
+
+func reverseList(list traits.Lister) ref.Val {
 	listLength := list.Size().(types.Int)
+	newList := make([]ref.Val, listLength)
 	for i := types.Int(0); i < listLength; i++ {
 		val := list.Get(listLength - i - 1)
-		newList = append(newList, val)
+		newList[i] = val
 	}
-	return types.DefaultTypeAdapter.NativeToValue(newList), nil
+	return types.DefaultTypeAdapter.NativeToValue(newList)
 }
 
 func slice(list traits.Lister, start, end types.Int) (ref.Val, error) {
@@ -394,7 +618,6 @@ func flatten(list traits.Lister, depth int64) ([]ref.Val, error) {
 
 	var newList []ref.Val
 	iter := list.Iterator()
-
 	for iter.HasNext() == types.True {
 		val := iter.Next()
 		nestedList, isList := val.(traits.Lister)
@@ -402,21 +625,59 @@ func flatten(list traits.Lister, depth int64) ([]ref.Val, error) {
 		if !isList || depth == 0 {
 			newList = append(newList, val)
 			continue
-		} else {
-			flattenedList, err := flatten(nestedList, depth-1)
-			if err != nil {
-				return nil, err
-			}
-
-			newList = append(newList, flattenedList...)
 		}
+		flattenedList, err := flatten(nestedList, depth-1)
+		if err != nil {
+			return nil, err
+		}
+		newList = append(newList, flattenedList...)
 	}
 
 	return newList, nil
 }
 
+func flattenCount(list traits.Lister, depth int64) uint64 {
+	if depth <= 1 {
+		sz := list.Size().(types.Int)
+		return uint64(sz)
+	}
+	count := uint64(0)
+	iter := list.Iterator()
+	for iter.HasNext() == types.True {
+		val := iter.Next()
+		nestedList, isList := val.(traits.Lister)
+		if !isList {
+			count++
+			continue
+		}
+		count += flattenCount(nestedList, depth-1)
+	}
+	return count
+}
+
 func sortList(list traits.Lister) (ref.Val, error) {
-	return sortListByAssociatedKeys(list, list)
+	listLength := list.Size().(types.Int)
+	if listLength == 0 {
+		return list, nil
+	}
+	elem := list.Get(types.IntZero)
+	if _, ok := elem.(traits.Comparer); !ok {
+		return nil, fmt.Errorf("list elements must be comparable")
+	}
+	sortedList := make([]ref.Val, listLength)
+	for i := types.IntZero; i < listLength; i++ {
+		value := list.Get(i)
+		if value.Type() != elem.Type() {
+			return nil, fmt.Errorf("list elements must have the same type")
+		}
+		sortedList[i] = value
+	}
+	slices.SortFunc(sortedList, func(a, b ref.Val) int {
+		cmp := a.(traits.Comparer).Compare(b)
+		result := cmp.(types.Int)
+		return int(result)
+	})
+	return types.DefaultTypeAdapter.NativeToValue(sortedList), nil
 }
 
 // Internal function used for the implementation of sort() and sortBy().
@@ -448,24 +709,22 @@ func sortListByAssociatedKeys(list, keys traits.Lister) (ref.Val, error) {
 	if _, ok := elem.(traits.Comparer); !ok {
 		return nil, fmt.Errorf("list elements must be comparable")
 	}
-
-	sortedIndices := make([]ref.Val, 0, listLength)
+	sortedList := make([]ref.Val, listLength)
 	for i := types.IntZero; i < listLength; i++ {
 		if keys.Get(i).Type() != elem.Type() {
 			return nil, fmt.Errorf("list elements must have the same type")
 		}
-		sortedIndices = append(sortedIndices, i)
+		sortedList[i] = i
 	}
-
-	sort.Slice(sortedIndices, func(i, j int) bool {
-		iKey := keys.Get(sortedIndices[i])
-		jKey := keys.Get(sortedIndices[j])
+	sort.Slice(sortedList, func(i, j int) bool {
+		iKey := keys.Get(sortedList[i])
+		jKey := keys.Get(sortedList[j])
 		return iKey.(traits.Comparer).Compare(jKey) == types.IntNegOne
 	})
 
 	sorted := make([]ref.Val, 0, listLength)
 
-	for _, sortedIdx := range sortedIndices {
+	for _, sortedIdx := range sortedList {
 		sorted = append(sorted, list.Get(sortedIdx))
 	}
 	return types.DefaultTypeAdapter.NativeToValue(sorted), nil
@@ -517,10 +776,10 @@ func sortByMacro(meh cel.MacroExprFactory, target ast.Expr, args []ast.Expr) (as
 	return bindExpr, nil
 }
 
-func distinctList(list traits.Lister) (ref.Val, error) {
+func distinctList(list traits.Lister) ref.Val {
 	listLength := list.Size().(types.Int)
 	if listLength == 0 {
-		return list, nil
+		return list
 	}
 	uniqueList := make([]ref.Val, 0, listLength)
 	for i := types.IntZero; i < listLength; i++ {
@@ -531,7 +790,7 @@ func distinctList(list traits.Lister) (ref.Val, error) {
 				continue
 			}
 			other := uniqueList[j]
-			if val.Equal(other) == types.True {
+			if types.Equal(val, other) == types.True {
 				seen = true
 				break
 			}
@@ -540,8 +799,7 @@ func distinctList(list traits.Lister) (ref.Val, error) {
 			uniqueList = append(uniqueList, val)
 		}
 	}
-
-	return types.DefaultTypeAdapter.NativeToValue(uniqueList), nil
+	return types.DefaultTypeAdapter.NativeToValue(uniqueList)
 }
 
 func templatedOverloads(types []*cel.Type, template func(t *cel.Type) cel.FunctionOpt) []cel.FunctionOpt {
@@ -551,3 +809,53 @@ func templatedOverloads(types []*cel.Type, template func(t *cel.Type) cel.Functi
 	}
 	return overloads
 }
+
+func numberToUint(v ref.Val) (uint64, bool) {
+	switch val := v.(type) {
+	case types.Int:
+		if val >= types.IntZero {
+			return uint64(val), true
+		}
+	case types.Uint:
+		return uint64(val), true
+	case types.Double:
+		conv := val.ConvertToType(types.UintType)
+		if !types.IsError(conv) {
+			return uint64(conv.(types.Uint)), true
+		}
+	}
+	return 0, false
+}
+
+func numberToInt(v ref.Val) (int64, bool) {
+	switch val := v.(type) {
+	case types.Int:
+		return int64(val), true
+	case types.Uint:
+		if val <= math.MaxInt64 {
+			return int64(val), true
+		}
+	case types.Double:
+		conv := val.ConvertToType(types.UintType)
+		if !types.IsError(conv) {
+			return int64(conv.(types.Uint)), true
+		}
+	}
+	return 0, false
+}
+
+var (
+	comparableTypes = []*cel.Type{
+		cel.IntType,
+		cel.UintType,
+		cel.DoubleType,
+		cel.BoolType,
+		cel.DurationType,
+		cel.TimestampType,
+		cel.StringType,
+		cel.BytesType,
+	}
+
+	createListCostEstimate = checker.FixedCostEstimate(common.ListCreateBaseCost)
+	compareCostFactor      = float64(0.1)
+)

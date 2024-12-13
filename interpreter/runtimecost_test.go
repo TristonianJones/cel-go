@@ -30,7 +30,6 @@ import (
 	"github.com/google/cel-go/common/overloads"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
-	"github.com/google/cel-go/common/types/traits"
 	"github.com/google/cel-go/parser"
 
 	proto3pb "github.com/google/cel-go/test/proto3pb"
@@ -739,8 +738,8 @@ func TestRuntimeCost(t *testing.T) {
 			options: []CostTrackerOption{
 				OverloadCostTracker(overloads.ContainsString,
 					func(args []ref.Val, result ref.Val) *uint64 {
-						strCost := uint64(math.Ceil(float64(actualSize(args[0])) * 0.2))
-						substrCost := uint64(math.Ceil(float64(actualSize(args[1])) * 0.2))
+						strCost := uint64(math.Ceil(float64(ActualSize(args[0])) * 0.2))
+						substrCost := uint64(math.Ceil(float64(ActualSize(args[1])) * 0.2))
 						cost := strCost * substrCost
 						return &cost
 					}),
@@ -887,11 +886,4 @@ func TestRuntimeCost(t *testing.T) {
 			}
 		})
 	}
-}
-
-func actualSize(val ref.Val) uint64 {
-	if sz, ok := val.(traits.Sizer); ok {
-		return uint64(sz.Size().(types.Int))
-	}
-	return 1
 }
