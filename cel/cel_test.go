@@ -2776,6 +2776,10 @@ func TestOptionalValuesEval(t *testing.T) {
 			out:  "no such key: foo",
 		},
 		{
+			expr: `{'foo': optional.none()}.foo.value`,
+			out:  types.OptionalNone,
+		},
+		{
 			expr: `{}.?invalid`,
 			out:  types.OptionalNone,
 		},

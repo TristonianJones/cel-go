@@ -1329,6 +1329,22 @@ func refQualify(adapter types.Adapter, obj any, idx ref.Val, presenceTest, prese
 		return v, true, nil
 	case *types.Err:
 		return nil, false, v
+	case *types.Optional:
+		if presenceTest {
+			return nil, v.HasValue(), nil
+		}
+		if !v.HasValue() {
+			return v, false, nil
+		}
+		optVal := v.Value()
+		child, found, err := refQualify(adapter, optVal, idx, presenceTest, presenceOnly, errorOnBadPresenceTest)
+		if err != nil {
+			return nil, false, err
+		}
+		if !found {
+			return types.OptionalNone, false, nil
+		}
+		return types.OptionalOf(child), true, nil
 	case traits.Mapper:
 		val, found := v.Find(idx)
 		// If the index is of the wrong type for the map, then it is possible

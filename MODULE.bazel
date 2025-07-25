@@ -52,8 +52,6 @@ go_deps.gazelle_override(
         # Provide hints to gazelle about how includes and imports map to build targets
         "gazelle:resolve go cel.dev/expr @dev_cel_expr//:expr",
         "gazelle:resolve go cel.dev/expr/conformance @dev_cel_expr//conformance:go_default_library",
-        "gazelle:resolve proto go google/rpc/status.proto @org_golang_google_genproto_googleapis_rpc//status",
-        "gazelle:resolve proto proto google/rpc/status.proto @googleapis//google/rpc:status_proto",
     ],
     path = "cel.dev/expr",
 )

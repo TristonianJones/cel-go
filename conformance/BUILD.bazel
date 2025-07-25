@@ -37,16 +37,9 @@ _ALL_TESTS = [
 ]
 
 _TESTS_TO_SKIP = [
-    "comparisons/eq_literal/eq_mixed_types_error,eq_list_elem_mixed_types_error,eq_map_value_mixed_types_error",
-    "comparisons/ne_literal/ne_mixed_types_error",
-    "comparisons/in_list_literal/elem_in_mixed_type_list_error",
-    "comparisons/in_map_literal/key_in_mixed_key_type_map_error",
-    "macros/exists/list_elem_type_exhaustive,map_key_type_exhaustive",
-
     # Failing conformance tests.
     "fields/qualified_identifier_resolution/map_key_float,map_key_null,map_value_repeat_key",
     "fields/qualified_identifier_resolution/map_value_repeat_key_heterogeneous",
-    "macros/map/map_extract_keys",
     "timestamps/duration_converters/get_milliseconds",
 
     # Temporarily failing tests, need a spec update
