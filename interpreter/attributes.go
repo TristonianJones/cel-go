@@ -40,7 +40,7 @@ type AttributeFactory interface {
 
 	// ConditionalAttribute creates an attribute with two Attribute branches, where the Attribute
 	// that is resolved depends on the boolean evaluation of the input 'expr'.
-	ConditionalAttribute(id int64, expr Interpretable, t, f Attribute) Attribute
+	ConditionalAttribute(id int64, expr InterpretableV2, t, f Attribute) Attribute
 
 	// MaybeAttribute creates an attribute that refers to either a field selection or a namespaced
 	// variable name.
@@ -50,7 +50,7 @@ type AttributeFactory interface {
 
 	// RelativeAttribute creates an attribute whose value is a qualification of a dynamic
 	// computation rather than a static variable reference.
-	RelativeAttribute(id int64, operand Interpretable) Attribute
+	RelativeAttribute(id int64, operand InterpretableV2) Attribute
 
 	// NewQualifier creates a qualifier on the target object with a given value.
 	//
@@ -187,7 +187,7 @@ func (r *attrFactory) AbsoluteAttribute(id int64, names ...string) NamespacedAtt
 
 // ConditionalAttribute supports the case where an attribute selection may occur on a conditional
 // expression, e.g. (cond ? a : b).c
-func (r *attrFactory) ConditionalAttribute(id int64, expr Interpretable, t, f Attribute) Attribute {
+func (r *attrFactory) ConditionalAttribute(id int64, expr InterpretableV2, t, f Attribute) Attribute {
 	return &conditionalAttribute{
 		id:      id,
 		expr:    expr,
@@ -222,7 +222,7 @@ func (r *attrFactory) MaybeAttribute(id int64, name string) Attribute {
 }
 
 // RelativeAttribute refers to an expression and an optional qualifier path.
-func (r *attrFactory) RelativeAttribute(id int64, operand Interpretable) Attribute {
+func (r *attrFactory) RelativeAttribute(id int64, operand InterpretableV2) Attribute {
 	return &relativeAttribute{
 		id:                     id,
 		operand:                operand,
@@ -384,7 +384,7 @@ func (a *absoluteAttribute) Resolve(vars Activation) (any, error) {
 
 type conditionalAttribute struct {
 	id      int64
-	expr    Interpretable
+	expr    InterpretableV2
 	truthy  Attribute
 	falsy   Attribute
 	adapter types.Adapter
@@ -571,7 +571,7 @@ func (a *maybeAttribute) String() string {
 
 type relativeAttribute struct {
 	id         int64
-	operand    Interpretable
+	operand    InterpretableV2
 	qualifiers []Qualifier
 	adapter    types.Adapter
 	fac        AttributeFactory

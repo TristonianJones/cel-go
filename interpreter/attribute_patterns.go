@@ -314,20 +314,20 @@ func (fac *partialAttributeFactory) matchesUnknownPatterns(
 				if qual, ok := newQuals[i].(ConstantQualifier); ok {
 					switch v := qual.Value().Value().(type) {
 					case bool:
-						types.QualifyAttribute[bool](attr, v)
+						types.QualifyAttribute(attr, v)
 					case float64:
-						types.QualifyAttribute[int64](attr, int64(v))
+						types.QualifyAttribute(attr, int64(v))
 					case int64:
-						types.QualifyAttribute[int64](attr, v)
+						types.QualifyAttribute(attr, v)
 					case string:
-						types.QualifyAttribute[string](attr, v)
+						types.QualifyAttribute(attr, v)
 					case uint64:
-						types.QualifyAttribute[uint64](attr, v)
+						types.QualifyAttribute(attr, v)
 					default:
-						types.QualifyAttribute[string](attr, fmt.Sprintf("%v", v))
+						types.QualifyAttribute(attr, fmt.Sprintf("%v", v))
 					}
 				} else {
-					types.QualifyAttribute[string](attr, "*")
+					types.QualifyAttribute(attr, "*")
 				}
 			}
 			return types.NewUnknown(matchExprID, attr), nil

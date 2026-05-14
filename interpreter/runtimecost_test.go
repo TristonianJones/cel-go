@@ -161,12 +161,13 @@ func computeCost(t *testing.T, expr string, vars []*decls.VariableDecl, ctx Acti
 			}
 		}
 	}()
-	prg.Eval(ctx)
+	frame := AsFrame(ctx)
+	prg.Exec(frame)
 	// TODO: enable this once all attributes are properly pushed and popped from stack.
 	//if len(costTracker.stack) != 1 {
 	//	t.Fatalf(`Expected resulting stack size to be 1 but got %d: %#+v`, len(costTracker.stack), costTracker.stack)
 	//}
-	return costTracker.cost, est, err
+	return frame.ctx.costs.cost, est, err
 }
 
 func constructActivation(t *testing.T, in any) Activation {

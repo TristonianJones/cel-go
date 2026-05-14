@@ -336,3 +336,99 @@ func genAttr(fac AttributeFactory, a attr) Attribute {
 	}
 	return attr
 }
+
+func TestQualifierValueEquals(t *testing.T) {
+	tests := []struct {
+		name  string
+		qual  qualifierValueEquator
+		value any
+		want  bool
+	}{
+		{
+			name:  "bool_match",
+			qual:  &boolQualifier{value: true},
+			value: true,
+			want:  true,
+		},
+		{
+			name:  "bool_mismatch",
+			qual:  &boolQualifier{value: true},
+			value: false,
+			want:  false,
+		},
+		{
+			name:  "bool_wrong_type",
+			qual:  &boolQualifier{value: true},
+			value: "true",
+			want:  false,
+		},
+		{
+			name:  "field_match",
+			qual:  &fieldQualifier{Name: "field"},
+			value: "field",
+			want:  true,
+		},
+		{
+			name:  "field_mismatch",
+			qual:  &fieldQualifier{Name: "field"},
+			value: "other",
+			want:  false,
+		},
+		{
+			name:  "string_match",
+			qual:  &stringQualifier{value: "string"},
+			value: "string",
+			want:  true,
+		},
+		{
+			name:  "string_mismatch",
+			qual:  &stringQualifier{value: "string"},
+			value: "other",
+			want:  false,
+		},
+		{
+			name:  "int_match",
+			qual:  &intQualifier{celValue: types.Int(1)},
+			value: int64(1),
+			want:  true,
+		},
+		{
+			name:  "int_mismatch",
+			qual:  &intQualifier{celValue: types.Int(1)},
+			value: int64(2),
+			want:  false,
+		},
+		{
+			name:  "uint_match",
+			qual:  &uintQualifier{celValue: types.Uint(1)},
+			value: uint64(1),
+			want:  true,
+		},
+		{
+			name:  "uint_mismatch",
+			qual:  &uintQualifier{celValue: types.Uint(1)},
+			value: uint64(2),
+			want:  false,
+		},
+		{
+			name:  "double_match",
+			qual:  &doubleQualifier{celValue: types.Double(1.1)},
+			value: 1.1,
+			want:  true,
+		},
+		{
+			name:  "double_mismatch",
+			qual:  &doubleQualifier{celValue: types.Double(1.1)},
+			value: 1.2,
+			want:  false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.qual.QualifierValueEquals(tc.value); got != tc.want {
+				t.Errorf("QualifierValueEquals(%v) = %v, want %v", tc.value, got, tc.want)
+			}
+		})
+	}
+}

@@ -3906,3 +3906,122 @@ func interpret(t testing.TB, env *Env, expr string, vars any) (ref.Val, error) {
 	}
 	return out, nil
 }
+
+func TestCustomInterpreterDecoratorV2(t *testing.T) {
+	var lastInstruction interpreter.InterpretableV2
+	optimizeArith := func(i interpreter.InterpretableV2) (interpreter.InterpretableV2, error) {
+		lastInstruction = i
+		// Only optimize the instruction if it is a call.
+		call, ok := i.(interpreter.InterpretableCall)
+		if !ok {
+			return i, nil
+		}
+		// Only optimize the math functions when they have constant arguments.
+		switch call.Function() {
+		case operators.Add,
+			operators.Subtract,
+			operators.Multiply,
+			operators.Divide:
+			// These are all binary operators so they should have two arguments
+			args := call.Args()
+			_, lhsIsConst := args[0].(interpreter.InterpretableConst)
+			_, rhsIsConst := args[1].(interpreter.InterpretableConst)
+			// When the values are constant then the call can be evaluated with
+			// an empty activation and the value returns as a constant.
+			if !lhsIsConst || !rhsIsConst {
+				return i, nil
+			}
+			val := call.Eval(interpreter.EmptyActivation())
+			if types.IsError(val) {
+				return nil, val.(*types.Err)
+			}
+			return interpreter.NewConstValue(call.ID(), val), nil
+		default:
+			return i, nil
+		}
+	}
+
+	env := testEnv(t, Variable("foo", IntType))
+	ast, iss := env.Compile(`foo == -1 + 2 * 3 / 3`)
+	if iss.Err() != nil {
+		t.Fatalf("env.Compile() failed: %v", iss.Err())
+	}
+	_, err := env.Program(ast,
+		EvalOptions(OptPartialEval),
+		CustomDecoratorV2(optimizeArith))
+	if err != nil {
+		t.Fatalf("env.Program() failed: %v", err)
+	}
+	call, ok := lastInstruction.(interpreter.InterpretableCall)
+	if !ok {
+		t.Errorf("got %v, expected call", lastInstruction)
+	}
+	args := call.Args()
+	lhs := args[0]
+	lastAttr, ok := lhs.(interpreter.InterpretableAttribute)
+	if !ok {
+		t.Errorf("got %v, wanted attribute", lhs)
+	}
+	absAttr := lastAttr.Attr().(interpreter.NamespacedAttribute)
+	varNames := absAttr.CandidateVariableNames()
+	if len(varNames) != 1 || varNames[0] != "foo" {
+		t.Errorf("got variables %v, wanted foo", varNames)
+	}
+	rhs := args[1]
+	lastConst, ok := rhs.(interpreter.InterpretableConst)
+	if !ok {
+		t.Errorf("got %v, wanted constant", rhs)
+	}
+	// This is the last number produced by the optimization.
+	if lastConst.Value().Equal(types.IntOne) == types.False {
+		t.Errorf("got %v as the last observed constant, wanted 1", lastConst)
+	}
+}
+
+func TestProgramEval_ExecutionFrame(t *testing.T) {
+	env := testEnv(t, Variable("x", IntType))
+	ast, iss := env.Compile(`x + 1`)
+	if iss.Err() != nil {
+		t.Fatalf("Compile() failed: %v", iss.Err())
+	}
+	prg, err := env.Program(ast)
+	if err != nil {
+		t.Fatalf("Program() failed: %v", err)
+	}
+
+	act, _ := NewActivation(map[string]any{"x": 10})
+	frame := interpreter.NewExecutionFrame(act)
+	defer frame.Close()
+
+	got, _, err := prg.Eval(frame)
+	if err != nil {
+		t.Fatalf("Eval(frame) failed: %v", err)
+	}
+	if got.Equal(types.Int(11)) != types.True {
+		t.Errorf("Eval(frame) = %v, want 11", got)
+	}
+}
+
+func TestContextEval_NilContextAndInvalidInput(t *testing.T) {
+	env := testEnv(t, Variable("x", IntType))
+	ast, iss := env.Compile(`x + 1`)
+	if iss.Err() != nil {
+		t.Fatalf("Compile() failed: %v", iss.Err())
+	}
+	prg, err := env.Program(ast)
+	if err != nil {
+		t.Fatalf("Program() failed: %v", err)
+	}
+
+	// Test nil context
+	_, _, err = prg.ContextEval(nil, map[string]any{"x": 10})
+	if err == nil || !strings.Contains(err.Error(), "context can not be nil") {
+		t.Errorf("ContextEval(nil) got %v, wanted nil context error", err)
+	}
+
+	// Test invalid input type
+	_, _, err = prg.ContextEval(context.Background(), "invalid_input")
+	if err == nil || !strings.Contains(err.Error(), "invalid input, wanted Activation or map[string]any") {
+		t.Errorf("ContextEval(invalid) got %v, wanted invalid input error", err)
+	}
+}
