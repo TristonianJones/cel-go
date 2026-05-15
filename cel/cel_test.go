@@ -1704,7 +1704,7 @@ func TestCustomInterpreterDecorator(t *testing.T) {
 	rhs := args[1]
 	lastConst, ok := rhs.(interpreter.InterpretableConst)
 	if !ok {
-		t.Errorf("got %v, wanted constant", rhs)
+		t.Fatalf("got %T, wanted constant", rhs)
 	}
 	// This is the last number produced by the optimization.
 	if lastConst.Value().Equal(types.IntOne) == types.False {
@@ -3501,6 +3501,10 @@ func TestEnableErrorOnBadPresenceTest(t *testing.T) {
 			expr: `{true: dyn(0)}[?true].?invalid`,
 			out:  "no such key: invalid",
 		},
+		{expr: `has(dyn(42).field)`, out: "no such key: field"},
+		{expr: `has(dyn('hello').field)`, out: "no such key: field"},
+		{expr: `has(dyn(true).field)`, out: "no such key: field"},
+		{expr: `has(dyn(null).field)`, out: "no such key: field"},
 	}
 
 	for i, tst := range tests {

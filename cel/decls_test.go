@@ -15,6 +15,7 @@
 package cel
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"reflect"
@@ -1013,5 +1014,44 @@ func testCompile(t testing.TB, env *Env, expr string, want any) {
 		if err == nil || want.Error() != err.Error() {
 			t.Errorf("prg.Eval() got error '%v', wanted '%v'", err, want)
 		}
+	}
+}
+
+func TestExprTypeToType(t *testing.T) {
+	exprType := chkdecls.Int
+	celType, err := ExprTypeToType(exprType)
+	if err != nil {
+		t.Fatalf("ExprTypeToType() failed: %v", err)
+	}
+	if !celType.IsExactType(IntType) {
+		t.Errorf("ExprTypeToType(int) = %v, want IntType", celType)
+	}
+}
+
+func TestSingletonBinaryImpl(t *testing.T) {
+	_, err := NewCustomEnv(
+		Function("right",
+			Overload("right_int_int", []*Type{IntType, IntType}, IntType),
+			SingletonBinaryImpl(func(arg1, arg2 ref.Val) ref.Val {
+				return arg2
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("NewCustomEnv(SingletonBinaryImpl) failed: %v", err)
+	}
+}
+
+func TestSingletonAsyncBinding(t *testing.T) {
+	_, err := NewCustomEnv(
+		Function("async_fn",
+			Overload("async_fn_int", []*Type{IntType}, IntType),
+			SingletonAsyncBinding(func(ctx context.Context, args ...ref.Val) ref.Val {
+				return args[0]
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("NewCustomEnv(SingletonAsyncBinding) failed: %v", err)
 	}
 }
