@@ -1,0 +1,25 @@
+diff --git a/cel/async/BUILD.bazel b/cel/async/BUILD.bazel
+index 08bd59b..fbc4a7a 100644
+--- a/cel/async/BUILD.bazel
++++ b/cel/async/BUILD.bazel
+@@ -8,7 +8,6 @@ go_library(
+     name = "go_default_library",
+     srcs = [
+         "async.go",
+-        "cache.go",
+     ],
+     importpath = "github.com/google/cel-go/cel/async",
+     visibility = ["//visibility:public"],
+@@ -25,12 +24,10 @@ go_test(
+     name = "go_default_test",
+     srcs = [
+         "async_test.go",
+-        "cache_test.go",
+     ],
+     deps = [
+         ":go_default_library",
+         "//cel:go_default_library",
+         "//common/types:go_default_library",
+-        "//common/types/ref:go_default_library",
+     ],
+ )
