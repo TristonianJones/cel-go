@@ -19,12 +19,14 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/google/cel-go/common/ast"
 	"github.com/google/cel-go/common/functions"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/interpreter"
+	"github.com/google/cel-go/cel/async"
 )
 
 // Program is an evaluable view of an Ast.
@@ -53,6 +55,10 @@ type Program interface {
 	//
 	// The output contract for `ContextEval` is otherwise identical to the `Eval` method.
 	ContextEval(context.Context, any) (ref.Val, *EvalDetails, error)
+
+	// ConcurrentEval evaluates the program concurrently, returning a channel that will receive
+	// the final EvalResult when all asynchronous operations complete, or the context expires.
+	ConcurrentEval(context.Context, any) <-chan EvalResult
 }
 
 // Activation used to resolve identifiers by name and references by id.
@@ -172,6 +178,8 @@ type prog struct {
 	callCostEstimator interpreter.ActualCostEstimator
 	costOptions       []interpreter.CostTrackerOption
 	costLimit         *uint64
+	drainStrategy     async.DrainStrategy
+	asyncObserver             async.Observer
 	asyncCompletionBufferSize int
 	asyncMaxConcurrency       int
 }
@@ -191,6 +199,7 @@ func newProgram(e *Env, a *ast.AST, opts []ProgramOption) (Program, error) {
 		plannerOptions: []interpreter.PlannerOption{},
 		dispatcher:     disp,
 		costOptions:    []interpreter.CostTrackerOption{},
+		drainStrategy:  async.DrainNone(),
 	}
 
 	// Configure the program via the ProgramOption values.
@@ -369,6 +378,143 @@ func (p *prog) ContextEval(ctx context.Context, input any) (ref.Val, *EvalDetail
 	return out, det, errEval
 }
 
+// ConcurrentEval implements the Program interface.
+func (p *prog) ConcurrentEval(ctx context.Context, input any) <-chan EvalResult {
+	resCh := make(chan EvalResult, 1)
+	if ctx == nil {
+		resCh <- EvalResult{Err: fmt.Errorf("context can not be nil")}
+		close(resCh)
+		return resCh
+	}
+
+	go func() {
+		defer close(resCh)
+
+		frame, cleanup, err := p.buildWithContext(ctx, input)
+		if err != nil {
+			resCh <- EvalResult{Err: err}
+			return
+		}
+		defer cleanup()
+
+		// We use an unbuffered channel to communicate completions.
+		// Since the asyncCallState fan-in selects on ctx.Done(), this will not leak
+		// if the evaluation returns early or errors out.
+		completions := make(chan int64, p.asyncCompletionBufferSize)
+		frame.SetCompletions(completions)
+
+		for {
+			var out ref.Val
+			var det *EvalDetails
+			var err error
+
+			if p.observable != nil {
+				det = &EvalDetails{}
+				out = p.observable.ObserveExec(frame, func(observed any) {
+					switch o := observed.(type) {
+					case interpreter.EvalState:
+						det.state = o
+					case *interpreter.CostTracker:
+						det.costTracker = o
+					}
+				})
+			} else {
+				out = p.interpretable.Exec(frame)
+			}
+
+			// Communicate errors quickly.
+			if types.IsError(out) {
+				err = out.(*types.Err)
+			}
+			if err != nil {
+				if errors.Is(err, interpreter.InterruptError{}) {
+					err = fmt.Errorf("%w: %w", err, context.Cause(ctx))
+				}
+				resCh <- EvalResult{Val: out, EvalDetails: det, Err: err}
+				return
+			}
+
+			// Check which attributes or calls are necessary to complete the call.
+			if !types.IsUnknown(out) {
+				resCh <- EvalResult{Val: out, EvalDetails: det, Err: nil}
+				return
+			}
+
+			unk := out.(*types.Unknown)
+			if unk.HasUnknownFunction() {
+				var batch []async.Call
+
+				// 1. Wait for at least one completion (or cancellation)
+				select {
+				case id := <-completions:
+					frame.NotifyCompletion(id)
+					if call := frame.AsyncCall(id); call != nil {
+						batch = append(batch, call)
+					}
+				case <-ctx.Done():
+					resCh <- EvalResult{Val: out, EvalDetails: det, Err: ctx.Err()}
+					return
+				}
+
+				// 2. Accumulate and consult strategy
+				var timer *time.Timer
+				for {
+					pending := frame.PendingAsyncCalls()
+					action := p.drainStrategy.NextAction(batch, pending)
+
+					if action.Reevaluate {
+						goto reevaluate
+					}
+
+					// Wait for next completion, guided by the strategy's wait duration
+					var timeoutCh <-chan time.Time
+					if action.WaitDuration > 0 {
+						if timer == nil {
+							timer = time.NewTimer(action.WaitDuration)
+						} else {
+							if !timer.Stop() {
+								select {
+								case <-timer.C:
+								default:
+								}
+							}
+							timer.Reset(action.WaitDuration)
+						}
+						timeoutCh = timer.C
+					}
+
+					select {
+					case id := <-completions:
+						frame.NotifyCompletion(id)
+						if call := frame.AsyncCall(id); call != nil {
+							batch = append(batch, call)
+						}
+					case <-timeoutCh:
+						// Timeout fired, re-evaluate with current batch
+						goto reevaluate
+					case <-ctx.Done():
+						if timer != nil {
+							timer.Stop()
+						}
+						resCh <- EvalResult{Val: out, EvalDetails: det, Err: ctx.Err()}
+						return
+					}
+				}
+			reevaluate:
+				if timer != nil {
+					timer.Stop()
+				}
+				continue
+			}
+
+			resCh <- EvalResult{Val: out, EvalDetails: det, Err: nil}
+			return
+		}
+	}()
+
+	return resCh
+}
+
 // buildFrame creates an ExecutionFrame for the given input without a timeout context.
 func (p *prog) buildFrame(input any) (*interpreter.ExecutionFrame, func(), error) {
 	var frame *interpreter.ExecutionFrame
@@ -409,6 +555,8 @@ func (p *prog) buildWithContext(ctx context.Context, input any) (*interpreter.Ex
 		return nil, nil, err
 	}
 	frame.SetContext(ctx, p.interruptCheckFrequency)
+	frame.SetAsyncObserver(p.asyncObserver)
+	frame.SetAsyncMaxConcurrency(p.asyncMaxConcurrency)
 	return frame, cleanup, nil
 }
 

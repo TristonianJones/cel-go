@@ -346,6 +346,31 @@ func LateFunctionBinding() OverloadOpt {
 	return decls.LateFunctionBinding()
 }
 
+// BlockingAsyncOp is a function that blocks until the result is available. When used with
+// AsyncBinding, the framework runs the function in its own goroutine and manages channel
+// lifecycle internally.
+type BlockingAsyncOp = functions.BlockingAsyncOp
+
+// AsyncBinding provides the implementation of an asynchronous overload. The provided function
+// is called in its own goroutine with the provided context. The function should block until
+// the result is available, and the framework manages goroutine and channel lifecycle.
+//
+// This follows the same pattern used by gRPC-Go and other major Go frameworks where user
+// code is synchronous and the framework manages concurrency.
+func AsyncBinding(fn BlockingAsyncOp) OverloadOpt {
+	return decls.AsyncBinding(fn)
+}
+
+// SingletonAsyncBinding creates a singleton async function definition from a blocking function,
+// to be used with all function overloads. The provided function is called in its own goroutine
+// with the provided context.
+//
+// Note, this approach works well if operand is expected to have a specific trait which it implements,
+// e.g. traits.ContainerType. Otherwise, prefer per-overload async bindings.
+func SingletonAsyncBinding(fn BlockingAsyncOp, traits ...int) FunctionOpt {
+	return decls.SingletonAsyncBinding(fn, traits...)
+}
+
 // OverloadIsNonStrict enables the function to be called with error and unknown argument values.
 //
 // Note: do not use this option unless absoluately necessary as it should be an uncommon feature.
