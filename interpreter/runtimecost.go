@@ -233,6 +233,19 @@ type CostTracker struct {
 	stack refValStack
 }
 
+// Clone makes a shallow copy of the tracker.
+// The different clones can be used independently from
+// each other.
+func (c *CostTracker) Clone() (*CostTracker, error) {
+	tracker := &CostTracker{
+		Estimator:           c.Estimator,
+		overloadTrackers:    c.overloadTrackers,
+		Limit:               c.Limit,
+		presenceTestHasCost: c.presenceTestHasCost,
+	}
+	return tracker, nil
+}
+
 // ActualCost returns the runtime cost
 func (c *CostTracker) ActualCost() uint64 {
 	return c.cost
@@ -260,7 +273,9 @@ func (c *CostTracker) costCall(call InterpretableCall, args []ref.Val, result re
 	// if user has their own implementation of ActualCostEstimator, make sure to cover the mapping between overloadId and cost calculation
 	switch call.OverloadID() {
 	// O(n) functions
-	case overloads.StartsWithString, overloads.EndsWithString, overloads.StringToBytes, overloads.BytesToString, overloads.ExtQuoteString, overloads.ExtFormatString:
+	case overloads.StartsWithString, overloads.EndsWithString:
+		cost += uint64(math.Ceil(float64(actualSize(args[1])) * common.StringTraversalCostFactor))
+	case overloads.StringToBytes, overloads.BytesToString, overloads.ExtQuoteString, overloads.ExtFormatString:
 		cost += uint64(math.Ceil(float64(actualSize(args[0])) * common.StringTraversalCostFactor))
 	case overloads.InList:
 		// If a list is composed entirely of constant values this is O(1), but we don't account for that here.
@@ -285,7 +300,7 @@ func (c *CostTracker) costCall(call InterpretableCall, args []ref.Val, result re
 		// In the worst case scenario, we would need to reallocate a new backing store and copy both operands over.
 		cost += uint64(math.Ceil(float64(actualSize(args[0])+actualSize(args[1])) * common.StringTraversalCostFactor))
 	// O(nm) functions
-	case overloads.MatchesString:
+	case overloads.Matches, overloads.MatchesString:
 		// https://swtch.com/~rsc/regexp/regexp1.html applies to RE2 implementation supported by CEL
 		// Add one to string length for purposes of cost calculation to prevent product of string and regex to be 0
 		// in case where string is empty but regex is still expensive.
