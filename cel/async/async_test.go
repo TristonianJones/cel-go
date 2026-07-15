@@ -15,11 +15,151 @@
 package async_test
 
 import (
+	"context"
+	"fmt"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/cel-go/cel/async"
+	"github.com/google/cel-go/common/decls"
+	"github.com/google/cel-go/common/functions"
+	"github.com/google/cel-go/common/types"
+	"github.com/google/cel-go/common/types/ref"
 )
+
+type retryableTestErr struct{}
+
+func (retryableTestErr) Error() string     { return "retry me" }
+func (retryableTestErr) IsRetryable() bool { return true }
+
+type nonRetryableTestErr struct{}
+
+func (nonRetryableTestErr) Error() string     { return "do not retry me" }
+func (nonRetryableTestErr) IsRetryable() bool { return false }
+
+// buildZeroArgAsync builds a zero-arity async overload from an option and returns its AsyncOp.
+func buildZeroArgAsync(t *testing.T, opt decls.OverloadOpt) functions.AsyncOp {
+	t.Helper()
+	fnDecl, err := decls.NewFunction("fn", decls.Overload("fn_zero", []*types.Type{}, types.IntType, opt))
+	if err != nil {
+		t.Fatalf("NewFunction() failed: %v", err)
+	}
+	bindings, err := fnDecl.Bindings()
+	if err != nil {
+		t.Fatalf("Bindings() failed: %v", err)
+	}
+	for _, b := range bindings {
+		if b.Async != nil {
+			return b.Async
+		}
+	}
+	t.Fatal("no async binding produced")
+	return nil
+}
+
+func TestRetryMultipleAttemptsTimerReset(t *testing.T) {
+	var attempts atomic.Int32
+	op := buildZeroArgAsync(t, async.RetryBinding(func(ctx context.Context, args ...ref.Val) ref.Val {
+		a := attempts.Add(1)
+		if a < 3 {
+			return types.WrapErr(retryableTestErr{})
+		}
+		return types.Int(100)
+	}, async.RetryAttempts(4), async.RetryBackoff(5*time.Millisecond)))
+
+	res := <-op(context.Background())
+	if res.Equal(types.Int(100)) != types.True {
+		t.Fatalf("result = %v, want 100", res)
+	}
+	if got := attempts.Load(); got != 3 {
+		t.Errorf("attempts = %d, want 3", got)
+	}
+}
+
+func TestRetryMaxAttemptsExhausted(t *testing.T) {
+	var attempts atomic.Int32
+	op := buildZeroArgAsync(t, async.RetryBinding(func(ctx context.Context, args ...ref.Val) ref.Val {
+		a := attempts.Add(1)
+		return types.WrapErr(fmt.Errorf("retry attempt %d failed: %w", a, retryableTestErr{}))
+	}, async.RetryAttempts(3), async.RetryBackoff(5*time.Millisecond)))
+
+	res := <-op(context.Background())
+	if !types.IsError(res) {
+		t.Fatalf("result = %v, want error", res)
+	}
+	msg := res.(*types.Err).Error()
+	if !strings.Contains(msg, "retry attempt 3 failed") {
+		t.Errorf("result error = %q, want last error 'retry attempt 3 failed'", msg)
+	}
+	if got := attempts.Load(); got != 3 {
+		t.Errorf("attempts = %d, want 3", got)
+	}
+}
+
+func TestRetryBindingCancellation(t *testing.T) {
+	var attempts atomic.Int32
+	op := buildZeroArgAsync(t, async.RetryBinding(func(ctx context.Context, args ...ref.Val) ref.Val {
+		attempts.Add(1)
+		return types.WrapErr(retryableTestErr{})
+	}, async.RetryAttempts(5), async.RetryBackoff(500*time.Millisecond)))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(40 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	var res ref.Val
+	select {
+	case res = <-op(ctx):
+	case <-time.After(2 * time.Second):
+		t.Fatal("retry op did not return after cancellation")
+	}
+	elapsed := time.Since(start)
+
+	if !types.IsError(res) || !strings.Contains(res.(*types.Err).Error(), "cancelled") {
+		t.Errorf("result = %v, want a cancellation error", res)
+	}
+	// Cancellation must interrupt the backoff wait rather than running it to completion.
+	if elapsed >= 500*time.Millisecond {
+		t.Errorf("retry waited the full backoff (%v); cancellation did not interrupt it", elapsed)
+	}
+}
+
+func TestRetryNonRetryableError(t *testing.T) {
+	var attempts atomic.Int32
+	op := buildZeroArgAsync(t, async.RetryBinding(func(ctx context.Context, args ...ref.Val) ref.Val {
+		attempts.Add(1)
+		return types.WrapErr(nonRetryableTestErr{})
+	}, async.RetryAttempts(5), async.RetryBackoff(10*time.Millisecond)))
+
+	res := <-op(context.Background())
+	if !types.IsError(res) || !strings.Contains(res.(*types.Err).Error(), "do not retry me") {
+		t.Fatalf("result = %v, want 'do not retry me'", res)
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Errorf("attempts = %d, want 1 (non-retryable error should not be retried)", got)
+	}
+}
+
+func TestRetryStandardError(t *testing.T) {
+	var attempts atomic.Int32
+	op := buildZeroArgAsync(t, async.RetryBinding(func(ctx context.Context, args ...ref.Val) ref.Val {
+		attempts.Add(1)
+		return types.NewErr("generic error")
+	}, async.RetryAttempts(5), async.RetryBackoff(10*time.Millisecond)))
+
+	res := <-op(context.Background())
+	if !types.IsError(res) || !strings.Contains(res.(*types.Err).Error(), "generic error") {
+		t.Fatalf("result = %v, want 'generic error'", res)
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Errorf("attempts = %d, want 1 (standard error should not be retried)", got)
+	}
+}
 
 type mockAsyncCall struct {
 	id       int64
@@ -92,5 +232,30 @@ func TestDrainReady(t *testing.T) {
 	action = s.NextAction([]async.Call{mockAsyncCall{}}, 1)
 	if action.Reevaluate || action.WaitDuration != debounce {
 		t.Errorf("DrainReady NextAction(batch, 1) = %v, want {false, %v}", action, debounce)
+	}
+}
+
+func TestTimeoutBindingEnforcesAgainstContextIgnoringOp(t *testing.T) {
+	// The wrapped op sleeps well past the timeout without consulting its context. TimeoutBinding
+	// must still return at the deadline rather than waiting for the op to finish.
+	op := buildZeroArgAsync(t, async.TimeoutBinding(func(ctx context.Context, args ...ref.Val) ref.Val {
+		time.Sleep(2 * time.Second) // ignores ctx entirely
+		return types.Int(1)
+	}, 50*time.Millisecond))
+
+	start := time.Now()
+	var res ref.Val
+	select {
+	case res = <-op(context.Background()):
+	case <-time.After(2 * time.Second):
+		t.Fatal("TimeoutBinding did not return; the op was not abandoned")
+	}
+	elapsed := time.Since(start)
+
+	if !types.IsError(res) || !strings.Contains(res.(*types.Err).Error(), "timed out") {
+		t.Errorf("result = %v, want a timeout error", res)
+	}
+	if elapsed >= 500*time.Millisecond {
+		t.Errorf("TimeoutBinding waited %v; the timeout must abandon a ctx-ignoring op", elapsed)
 	}
 }

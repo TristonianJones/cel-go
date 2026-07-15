@@ -17,9 +17,14 @@
 package async
 
 import (
+	"context"
+	"errors"
 	"time"
 
+	"github.com/google/cel-go/common/decls"
 	"github.com/google/cel-go/common/functions"
+	"github.com/google/cel-go/common/types"
+	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/interpreter"
 )
 
@@ -105,4 +110,126 @@ type drainAll struct{}
 
 func (drainAll) NextAction(completed []Call, active int) DrainAction {
 	return DrainAction{Reevaluate: active == 0}
+}
+
+// Timeout wraps a BlockingAsyncOp with a per-call timeout.
+//
+// The timeout is enforced even when the wrapped function ignores its context: the function runs on
+// its own goroutine and Timeout selects on the deadline, returning a timeout error when it
+// fires. A function that ignores cancellation cannot be forcibly stopped (Go cannot kill a
+// goroutine), so its goroutine continues running in the background until it returns on its own;
+// only its result is abandoned. This is the recommended way to bound functions that may hang or
+// are not under the caller's control. The extra goroutine is incurred only by Timeout-wrapped
+// calls, not by async evaluation in general.
+func Timeout(fn functions.BlockingAsyncOp, timeout time.Duration) functions.BlockingAsyncOp {
+	return func(ctx context.Context, args ...ref.Val) ref.Val {
+		tCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		resCh := make(chan ref.Val, 1)
+		go func() { resCh <- fn(tCtx, args...) }()
+		select {
+		case res := <-resCh:
+			return res
+		case <-tCtx.Done():
+			return types.NewErr("operation timed out after %v: %v", timeout, tCtx.Err())
+		}
+	}
+}
+
+// TimeoutBinding wraps a BlockingAsyncOp with a per-call timeout and returns an OverloadOpt.
+func TimeoutBinding(fn functions.BlockingAsyncOp, timeout time.Duration) decls.OverloadOpt {
+	return decls.AsyncBinding(Timeout(fn, timeout))
+}
+
+// RetryOption configures the behavior of RetryBinding.
+type RetryOption func(*retryConfig)
+
+type retryConfig struct {
+	maxAttempts int
+	backoff     time.Duration
+}
+
+// RetryAttempts sets the maximum number of attempts (including the first one).
+func RetryAttempts(attempts int) RetryOption {
+	return func(c *retryConfig) {
+		c.maxAttempts = attempts
+	}
+}
+
+// RetryBackoff sets the fixed backoff duration between attempts.
+func RetryBackoff(backoff time.Duration) RetryOption {
+	return func(c *retryConfig) {
+		c.backoff = backoff
+	}
+}
+
+// RetryableError is an interface that errors can implement to signal whether they are retryable.
+type RetryableError interface {
+	error
+	IsRetryable() bool
+}
+
+// Retry wraps a BlockingAsyncOp with a retry policy.
+// It will retry the operation if it returns a types.Err that wraps a RetryableError returning true for IsRetryable.
+func Retry(fn functions.BlockingAsyncOp, opts ...RetryOption) functions.BlockingAsyncOp {
+	config := &retryConfig{
+		maxAttempts: 3,
+		backoff:     100 * time.Millisecond,
+	}
+	for _, opt := range opts {
+		opt(config)
+	}
+
+	return func(ctx context.Context, args ...ref.Val) ref.Val {
+		var lastErr ref.Val
+		var backoff *time.Timer
+		defer func() {
+			if backoff != nil {
+				backoff.Stop()
+			}
+		}()
+		for i := 0; i < config.maxAttempts; i++ {
+			if i > 0 {
+				// Reuse a single timer across attempts and stop it on cancellation so the
+				// pending timer is not left to fire after the call returns.
+				if backoff == nil {
+					backoff = time.NewTimer(config.backoff)
+				} else {
+					backoff.Reset(config.backoff)
+				}
+				select {
+				case <-backoff.C:
+				case <-ctx.Done():
+					backoff.Stop()
+					return types.NewErr("operation cancelled during retry: %v", ctx.Err())
+				}
+			}
+
+			res := fn(ctx, args...)
+			if !types.IsError(res) {
+				return res
+			}
+
+			err := res.(*types.Err)
+			lastErr = res
+
+			if !isRetryable(err) {
+				return res
+			}
+		}
+		return lastErr
+	}
+}
+
+// RetryBinding wraps a BlockingAsyncOp with a retry policy and returns an OverloadOpt.
+func RetryBinding(fn functions.BlockingAsyncOp, opts ...RetryOption) decls.OverloadOpt {
+	return decls.AsyncBinding(Retry(fn, opts...))
+}
+
+func isRetryable(err *types.Err) bool {
+	var re RetryableError
+	if errors.As(err, &re) {
+		return re.IsRetryable()
+	}
+	return false
 }
