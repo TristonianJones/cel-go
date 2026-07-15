@@ -16,6 +16,7 @@ package ext
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -43,8 +44,8 @@ func TestEncoders(t *testing.T) {
 			parseOnly: true,
 		},
 		{expr: "json.encode('hello') == '\"hello\"'"},
-		{expr: "json.encode([1, 'two', true]) == '[1,\"two\",true]'"},
-		{expr: "json.encode({'items': [1, 'two', false]}) == '{\"items\":[1,\"two\",false]}'"},
+		{expr: `json.encode([1, 'two', true]) == '[1,"two",true]'`},
+		{expr: `json.encode({'items': [1, 'two', false]}) == '{"items":[1,"two",false]}'`},
 	}
 
 	env, err := cel.NewEnv(Encoders())
@@ -70,7 +71,7 @@ func TestEncoders(t *testing.T) {
 			for _, ast := range asts {
 				prg, err := env.Program(ast)
 				if err != nil {
-					t.Fatal(err)
+					t.Fatalf("env.Program(%s) failed: %v", tc.expr, err)
 				}
 				out, _, err := prg.Eval(cel.NoVars())
 				if tc.err != "" {
@@ -82,9 +83,9 @@ func TestEncoders(t *testing.T) {
 						t.Errorf("got error %v, wanted error %s for expr: %s", err, tc.err, tc.expr)
 					}
 				} else if err != nil {
-					t.Fatal(err)
+					t.Fatalf("prg.Eval() failed for expr %q: %v", tc.expr, err)
 				} else if out.Value() != true {
-					t.Errorf("got %v, wanted true for expr: %s", out.Value(), tc.expr)
+					t.Errorf("got %v, wanted true for expr %q", out.Value(), tc.expr)
 				}
 			}
 		})
@@ -235,6 +236,22 @@ func TestEncodersCosts(t *testing.T) {
 			actualCost:    3,
 			version:       1,
 		},
+		{
+			name: "json_encode_dyn",
+			expr: "json.encode(x) == '\"hello\"'",
+			vars: []cel.EnvOption{
+				cel.Variable("x", cel.DynType),
+			},
+			in: map[string]any{
+				"x": "hello",
+			},
+			hints: map[string]uint64{
+				"x": 100,
+			},
+			estimatedCost: checker.CostEstimate{Min: 2, Max: math.MaxUint64},
+			actualCost:    1,
+			version:       1,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -282,3 +299,41 @@ func TestDecodeNonBase64Error(t *testing.T) {
 		t.Fatal("expected eval error for non-base64 string decoding, got nil")
 	}
 }
+
+func TestJSONEncodeCostUnbounded(t *testing.T) {
+	env, err := cel.NewEnv(Encoders(EncodersVersion(1)))
+	if err != nil {
+		t.Fatalf("cel.NewEnv() failed: %v", err)
+	}
+	ast, iss := env.Compile("json.encode('hello')")
+	if iss.Err() != nil {
+		t.Fatalf("env.Compile() failed: %v", iss.Err())
+	}
+
+	// 1. Check Cost Estimate is unbounded: Max is MaxUint64
+	est, err := env.EstimateCost(ast, testCostHintEstimator{})
+	if err != nil {
+		t.Fatalf("env.EstimateCost() failed: %v", err)
+	}
+	wantEst := checker.CostEstimate{Min: 0, Max: math.MaxUint64}
+	if est != wantEst {
+		t.Errorf("env.EstimateCost() got %v, wanted %v", est, wantEst)
+	}
+
+	// 2. Check Actual Cost is math.MaxUint64
+	prg, err := env.Program(ast, cel.CostTracking(nil))
+	if err != nil {
+		t.Fatalf("env.Program() failed: %v", err)
+	}
+	_, det, err := prg.Eval(cel.NoVars())
+	if err != nil {
+		t.Fatalf("prg.Eval() failed: %v", err)
+	}
+	if det.ActualCost() == nil {
+		t.Fatal("det.ActualCost() got nil, wanted a value")
+	}
+	if *det.ActualCost() != math.MaxUint64 {
+		t.Errorf("det.ActualCost() got %d, wanted %d", *det.ActualCost(), uint64(math.MaxUint64))
+	}
+}
+

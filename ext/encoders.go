@@ -16,6 +16,7 @@ package ext
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"math"
 
@@ -111,6 +112,7 @@ func (lib *encoderLib) CompileOptions() []cel.EnvOption {
 		estimators := []checker.CostOption{
 			checker.OverloadCostEstimate("base64_decode_string", estimateDecode),
 			checker.OverloadCostEstimate("base64_encode_bytes", estimateEncode),
+			checker.OverloadCostEstimate("json_encode_dyn", estimateJSONEncode),
 		}
 		opts = append(opts, cel.CostEstimatorOptions(estimators...))
 		opts = append(opts,
@@ -130,6 +132,7 @@ func (lib *encoderLib) ProgramOptions() []cel.ProgramOption {
 		trackers := []interpreter.CostTrackerOption{
 			interpreter.OverloadCostTracker("base64_decode_string", trackDecode),
 			interpreter.OverloadCostTracker("base64_encode_bytes", trackEncode),
+			interpreter.OverloadCostTracker("json_encode_dyn", trackJSONEncode),
 		}
 		opts = append(opts, cel.CostTrackerOptions(trackers...))
 	}
@@ -161,6 +164,14 @@ func estimateEncode(estimator checker.CostEstimator, target *checker.AstNode, ar
 	return &checker.CallEstimate{CostEstimate: cost, ResultSize: &resSize}
 }
 
+func estimateJSONEncode(estimator checker.CostEstimator, target *checker.AstNode, args []checker.AstNode) *checker.CallEstimate {
+	if len(args) != 1 {
+		return nil
+	}
+	size := estimateJSONEncodeSize()
+	return &checker.CallEstimate{CostEstimate: checker.UnknownCostEstimate(), ResultSize: &size}
+}
+
 func estimateDecode(estimator checker.CostEstimator, target *checker.AstNode, args []checker.AstNode) *checker.CallEstimate {
 	if len(args) != 1 {
 		return nil
@@ -177,6 +188,11 @@ func trackEncode(args []ref.Val, _ ref.Val) *uint64 {
 	return &cost
 }
 
+func trackJSONEncode(args []ref.Val, _ ref.Val) *uint64 {
+	maxCost := uint64(math.MaxUint64)
+	return &maxCost
+}
+
 func trackDecode(args []ref.Val, _ ref.Val) *uint64 {
 	sz := actualSize(args[0])
 	cost := uint64(math.Ceil(float64(sz)*stringCostFactor)) + callCost
@@ -190,6 +206,11 @@ func estimateEncodeSize(sz checker.SizeEstimate) checker.SizeEstimate {
 		maxVal = math.MaxUint64
 	}
 	return checker.SizeEstimate{Min: minVal, Max: maxVal}
+}
+
+func estimateJSONEncodeSize() checker.SizeEstimate {
+	// TODO: provide a more sophisticated size estimate based on the CEL value's type.
+	return checker.UnknownSizeEstimate()
 }
 
 func estimateDecodeSize(sz checker.SizeEstimate) checker.SizeEstimate {
@@ -210,6 +231,15 @@ func jsonEncodeValue(val ref.Val) (string, error) {
 	jsonBytes, err := protojson.Marshal(jsonValue)
 	if err != nil {
 		return "", err
+	}
+	var obj interface{}
+	if err := json.Unmarshal(jsonBytes, &obj); err != nil {
+		return "", fmt.Errorf("unmarshaling protojson: %w", err)
+	}
+	// Re-marshal with standard json.Marshal for deterministic compact output
+	jsonBytes, err = json.Marshal(obj)
+	if err != nil {
+		return "", fmt.Errorf("re-marshaling value: %w", err)
 	}
 	return string(jsonBytes), nil
 }
