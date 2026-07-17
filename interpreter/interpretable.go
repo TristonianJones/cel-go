@@ -625,14 +625,19 @@ func (bin *evalBinary) ID() int64 {
 func (bin *evalBinary) Exec(frame *ExecutionFrame) ref.Val {
 	lVal := bin.lhs.Exec(frame)
 	rVal := bin.rhs.Exec(frame)
-	// Early return if any argument to the function is unknown or error.
 	strict := !bin.nonStrict
 	if strict {
-		if types.IsUnknownOrError(lVal) {
+		if types.IsError(lVal) {
 			return lVal
 		}
-		if types.IsUnknownOrError(rVal) {
+		if types.IsError(rVal) {
 			return rVal
+		}
+		var unk *types.Unknown
+		unk, _ = types.MaybeMergeUnknowns(lVal, unk)
+		unk, _ = types.MaybeMergeUnknowns(rVal, unk)
+		if unk != nil {
+			return unk
 		}
 	}
 	// If the implementation is bound and the argument value has the right traits required to
@@ -697,13 +702,19 @@ func (fn *evalVarArgs) ID() int64 {
 // Exec implements the InterpretableV2 interface method.
 func (fn *evalVarArgs) Exec(frame *ExecutionFrame) ref.Val {
 	argVals := make([]ref.Val, len(fn.args))
-	// Early return if any argument to the function is unknown or error.
 	strict := !fn.nonStrict
+	var unk *types.Unknown
 	for i, arg := range fn.args {
 		argVals[i] = arg.Exec(frame)
-		if strict && types.IsUnknownOrError(argVals[i]) {
-			return argVals[i]
+		if strict {
+			if types.IsError(argVals[i]) {
+				return argVals[i]
+			}
+			unk, _ = types.MaybeMergeUnknowns(argVals[i], unk)
 		}
+	}
+	if strict && unk != nil {
+		return unk
 	}
 	// If the implementation is bound and the argument value has the right traits required to
 	// invoke it, then call the implementation.
@@ -806,16 +817,20 @@ func (m *evalMap) ID() int64 {
 // Exec implements the InterpretableV2 interface method.
 func (m *evalMap) Exec(frame *ExecutionFrame) ref.Val {
 	entries := make(map[ref.Val]ref.Val, len(m.keys))
-	// If any argument is unknown or error early terminate.
+	var unk *types.Unknown
 	for i, key := range m.keys {
 		keyVal := key.Exec(frame)
-		if types.IsUnknownOrError(keyVal) {
+		if types.IsError(keyVal) {
 			return keyVal
 		}
+		unk, _ = types.MaybeMergeUnknowns(keyVal, unk)
+
 		valVal := m.vals[i].Exec(frame)
-		if types.IsUnknownOrError(valVal) {
+		if types.IsError(valVal) {
 			return valVal
 		}
+		unk, _ = types.MaybeMergeUnknowns(valVal, unk)
+
 		if m.hasOptionals && m.optionals[i] {
 			optVal, ok := valVal.(*types.Optional)
 			if !ok {
@@ -828,6 +843,9 @@ func (m *evalMap) Exec(frame *ExecutionFrame) ref.Val {
 			valVal = optVal.GetValue()
 		}
 		entries[keyVal] = valVal
+	}
+	if unk != nil {
+		return unk
 	}
 	return types.NewRefValMap(m.adapter, entries)
 }
@@ -875,12 +893,13 @@ func (o *evalObj) ID() int64 {
 // Exec implements the InterpretableV2 interface method.
 func (o *evalObj) Exec(frame *ExecutionFrame) ref.Val {
 	fieldVals := make(map[string]ref.Val, len(o.fields))
-	// If any argument is unknown or error early terminate.
+	var unk *types.Unknown
 	for i, field := range o.fields {
 		val := o.vals[i].Exec(frame)
-		if types.IsUnknownOrError(val) {
+		if types.IsError(val) {
 			return val
 		}
+		unk, _ = types.MaybeMergeUnknowns(val, unk)
 		if o.hasOptionals && o.optionals[i] {
 			optVal, ok := val.(*types.Optional)
 			if !ok {
@@ -893,6 +912,9 @@ func (o *evalObj) Exec(frame *ExecutionFrame) ref.Val {
 			val = optVal.GetValue()
 		}
 		fieldVals[field] = val
+	}
+	if unk != nil {
+		return unk
 	}
 	return types.LabelErrNode(o.id, o.provider.NewValue(o.typeName, fieldVals))
 }
