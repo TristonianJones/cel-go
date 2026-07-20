@@ -55,11 +55,11 @@ func Example_cel_NativeTypes() {
 			ext.NativeTypes(reflect.TypeOf(User{}), ext.ParseStructTag("json")),
 		)
 		if err != nil {
-			log.Fatalf("compile error for %q: %v\n", expr, err)
+			log.Fatalf("cel.Compile() error for %q: %v", expr, err)
 		}
 		out, _, err := prg.Eval(map[string]any{"user": u})
 		if err != nil {
-			log.Fatalf("eval error for %q: %v\n", expr, err)
+			log.Fatalf("prg.Eval() error for %q: %v", expr, err)
 		}
 		fmt.Printf("%s -> %v\n", expr, out)
 	}
@@ -83,11 +83,11 @@ func Example_cel_NativeTypes_structTags() {
 		ext.NativeTypes(reflect.TypeFor[Account](), ext.ParseStructTags(true)),
 	)
 	if err != nil {
-		log.Fatalf("compile error: %v\n", err)
+		log.Fatalf("cel.Compile() error: %v", err)
 	}
 	out, _, err := prg.Eval(map[string]any{"acc": acc})
 	if err != nil {
-		log.Fatalf("eval error: %v\n", err)
+		log.Fatalf("prg.Eval() error: %v", err)
 	}
 	fmt.Println(out)
 

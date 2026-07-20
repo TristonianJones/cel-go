@@ -38,12 +38,12 @@ func Example_cel_CustomMacros() {
 
 	prg, err := cel.Compile(`join_str("Hello", "World")`, cel.Macros(joinMacro))
 	if err != nil {
-		log.Fatalf("Compilation error: %v\n", err)
+		log.Fatalf("cel.Compile() error: %v", err)
 	}
 
 	out, _, err := prg.Eval(cel.NoVars())
 	if err != nil {
-		log.Fatalf("Evaluation error: %v\n", err)
+		log.Fatalf("prg.Eval() error: %v", err)
 	}
 
 	fmt.Println(out)

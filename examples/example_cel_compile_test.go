@@ -15,25 +15,26 @@
 package examples
 
 import (
-	"context"
 	"fmt"
 	"log"
 
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/ext"
 )
 
+// Example_cel_Compile showcases compiling a CEL expression with variable declarations
 func Example_cel_Compile() {
 	prg, err := cel.Compile(`"Hello world! I'm " + name + "."`,
 		cel.Variable("name", cel.StringType),
 	)
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatalf("cel.Compile() failed: %v", err)
 	}
 	out, _, err := prg.Eval(map[string]any{
 		"name": "CEL",
 	})
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatalf("prg.Eval() failed: %v", err)
 	}
 	fmt.Println(out)
 
@@ -41,24 +42,25 @@ func Example_cel_Compile() {
 	// Hello world! I'm CEL.
 }
 
+// Example_cel_Compile_options showcases cel.Compile with extension options and multiple variables
 func Example_cel_Compile_options() {
-	prg, err := cel.Compile(`x > 0 ? x * y : 0`,
-		cel.Variable("x", cel.IntType),
-		cel.Variable("y", cel.IntType),
+	prg, err := cel.Compile(`"%s! I'm %s.".format([greeting, name])`,
+		ext.Strings(),
+		cel.Variable("greeting", cel.StringType),
+		cel.Variable("name", cel.StringType),
 	)
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatalf("cel.Compile() failed: %v", err)
 	}
-	ctx := context.Background()
-	out, _, err := prg.ContextEval(ctx, map[string]any{
-		"x": 10,
-		"y": 5,
+	out, _, err := prg.Eval(map[string]any{
+		"greeting": "Hello world",
+		"name":     "CEL",
 	})
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatalf("prg.Eval() failed: %v", err)
 	}
 	fmt.Println(out)
 
 	// Output:
-	// 50
+	// Hello world! I'm CEL.
 }

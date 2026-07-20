@@ -69,12 +69,12 @@ func Example_cel_NameResolution() {
 		cel.Variable("items", cel.ListType(cel.IntType)),
 	)
 	if err != nil {
-		fmt.Printf("compile error: %v\n", err)
+		fmt.Printf("cel.Compile() error: %v\n", err)
 		return
 	}
 	out, _, err := prg.Eval(vars)
 	if err != nil {
-		fmt.Printf("eval error: %v\n", err)
+		fmt.Printf("prg.Eval() error: %v\n", err)
 		return
 	}
 

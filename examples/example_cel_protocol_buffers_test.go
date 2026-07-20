@@ -50,11 +50,11 @@ func Example_cel_ProtocolBuffers() {
 	for _, expr := range exprs {
 		prg, err := cel.Compile(expr, opts...)
 		if err != nil {
-			log.Fatalf("compile error for %q: %v\n", expr, err)
+			log.Fatalf("cel.Compile() error for %q: %v", expr, err)
 		}
 		out, _, err := prg.Eval(map[string]any{"user": userMsg})
 		if err != nil {
-			log.Fatalf("eval error for %q: %v\n", expr, err)
+			log.Fatalf("prg.Eval() error for %q: %v", expr, err)
 		}
 		fmt.Printf("%s -> %v\n", expr, out)
 	}
@@ -96,11 +96,11 @@ func Example_cel_WellKnownTypes() {
 	for _, expr := range exprs {
 		prg, err := cel.Compile(expr, opts...)
 		if err != nil {
-			log.Fatalf("compile error for %q: %v\n", expr, err)
+			log.Fatalf("cel.Compile() error for %q: %v", expr, err)
 		}
 		out, _, err := prg.Eval(vars)
 		if err != nil {
-			log.Fatalf("eval error for %q: %v\n", expr, err)
+			log.Fatalf("prg.Eval() error for %q: %v", expr, err)
 		}
 		fmt.Printf("%s -> %v\n", expr, out)
 	}

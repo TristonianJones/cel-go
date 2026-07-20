@@ -52,7 +52,7 @@ func Example_cel_ExecutionCost() {
 		cel.Variable("items", cel.ListType(cel.IntType)),
 	)
 	if err != nil {
-		log.Fatalf("environment creation error: %v\n", err)
+		log.Fatalf("cel.NewEnv() error: %v", err)
 	}
 
 	ast, iss := env.Compile(`items.map(x, x * x).filter(x, x > 0).size()`)
@@ -69,7 +69,7 @@ func Example_cel_ExecutionCost() {
 	}
 	costEstimate, err := env.EstimateCost(ast, estimator)
 	if err != nil {
-		log.Fatalf("cost estimation error: %v\n", err)
+		log.Fatalf("env.EstimateCost() error: %v", err)
 	}
 	fmt.Printf("Estimated cost range: min=%d max=%d\n", costEstimate.Min, costEstimate.Max)
 
@@ -79,14 +79,14 @@ func Example_cel_ExecutionCost() {
 		cel.CostLimit(1000),
 	)
 	if err != nil {
-		log.Fatalf("program creation error: %v\n", err)
+		log.Fatalf("env.Program() error: %v", err)
 	}
 
 	out, details, err := prg.Eval(map[string]any{
 		"items": []int64{1, 2, 3, 4, 5},
 	})
 	if err != nil {
-		log.Fatalf("eval error: %v\n", err)
+		log.Fatalf("prg.Eval() error: %v", err)
 	}
 
 	fmt.Printf("Result: %v\n", out)

@@ -41,7 +41,7 @@ func Example_cel_Overload() {
 		),
 	)
 	if err != nil {
-		log.Fatalf("Compilation error: %v\n", err)
+		log.Fatalf("cel.Compile() error: %v", err)
 	}
 
 	out, _, err := prg.Eval(map[string]any{
@@ -49,7 +49,7 @@ func Example_cel_Overload() {
 		"you": "world",
 	})
 	if err != nil {
-		log.Fatalf("Evaluation error: %v\n", err)
+		log.Fatalf("prg.Eval() error: %v", err)
 	}
 
 	fmt.Println(out)
@@ -64,7 +64,7 @@ func Example_cel_MemberOverload() {
 		cel.Lib(customGreetLib{}),
 	)
 	if err != nil {
-		log.Fatalf("Compilation error: %v\n", err)
+		log.Fatalf("cel.Compile() error: %v", err)
 	}
 
 	out, _, err := prg.Eval(map[string]any{
@@ -72,7 +72,7 @@ func Example_cel_MemberOverload() {
 		"you": "world",
 	})
 	if err != nil {
-		log.Fatalf("Evaluation error: %v\n", err)
+		log.Fatalf("prg.Eval() error: %v", err)
 	}
 
 	fmt.Println(out)
@@ -118,14 +118,14 @@ func Example_cel_CustomFunctions() {
 		),
 	)
 	if err != nil {
-		log.Fatalf("Compilation error: %v\n", err)
+		log.Fatalf("cel.Compile() error: %v", err)
 	}
 
 	out, _, err := prg.Eval(map[string]any{
 		"name": "Alice",
 	})
 	if err != nil {
-		log.Fatalf("Evaluation error: %v\n", err)
+		log.Fatalf("prg.Eval() error: %v", err)
 	}
 
 	fmt.Println(out)

@@ -41,11 +41,11 @@ func Example_cel_LogicAndConditions() {
 	for _, expr := range exprs {
 		prg, err := cel.Compile(expr, cel.Variable("user", cel.DynType))
 		if err != nil {
-			log.Fatalf("compile error for %q: %v\n", expr, err)
+			log.Fatalf("cel.Compile() error for %q: %v", expr, err)
 		}
 		out, _, err := prg.Eval(map[string]any{"user": userData})
 		if err != nil {
-			log.Fatalf("eval error for %q: %v\n", expr, err)
+			log.Fatalf("prg.Eval() error for %q: %v", expr, err)
 		}
 		fmt.Printf("%s -> %v\n", expr, out)
 	}
@@ -72,11 +72,11 @@ func Example_cel_LogicalOperators() {
 	for _, expr := range exprs {
 		prg, err := cel.Compile(expr)
 		if err != nil {
-			log.Fatalf("compile error for %q: %v\n", expr, err)
+			log.Fatalf("cel.Compile() error for %q: %v", expr, err)
 		}
 		out, _, err := prg.Eval(cel.NoVars())
 		if err != nil {
-			log.Fatalf("eval error for %q: %v\n", expr, err)
+			log.Fatalf("prg.Eval() error for %q: %v", expr, err)
 		}
 		fmt.Printf("%s -> %v\n", expr, out)
 	}
@@ -102,11 +102,11 @@ func Example_cel_Ternary() {
 	for _, expr := range exprs {
 		prg, err := cel.Compile(expr)
 		if err != nil {
-			log.Fatalf("compile error for %q: %v\n", expr, err)
+			log.Fatalf("cel.Compile() error for %q: %v", expr, err)
 		}
 		out, _, err := prg.Eval(cel.NoVars())
 		if err != nil {
-			log.Fatalf("eval error for %q: %v\n", expr, err)
+			log.Fatalf("prg.Eval() error for %q: %v", expr, err)
 		}
 		fmt.Printf("%s -> %v\n", expr, out)
 	}

@@ -36,17 +36,21 @@ func main() {
 }
 ```
 
-For custom environments or options:
+For custom options and extensions:
 
 ```go
-prg, err := cel.Compile(`x > 0 ? x * y : 0`,
-	cel.Variable("x", cel.IntType),
-	cel.Variable("y", cel.IntType),
+prg, err := cel.Compile(`"%s! I'm %s.".format([greeting, name])`,
+	ext.Strings(),
+	cel.Variable("greeting", cel.StringType),
+	cel.Variable("name", cel.StringType),
 )
-out, _, err := prg.ContextEval(ctx, map[string]any{"x": 10, "y": 5})
+out, _, err := prg.Eval(map[string]any{
+	"greeting": "Hello world",
+	"name":     "CEL",
+})
 ```
 
-[Source code: example_cel_compile_test.go](example_cel_compile_test.go)
+[Source code: example_cel_compile_test.go](example_cel_compile_test.go) | [Source code: example_cel_context_eval_test.go](example_cel_context_eval_test.go)
 
 ---
 
