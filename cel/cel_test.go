@@ -95,6 +95,26 @@ func Test_ExampleWithBuiltins(t *testing.T) {
 	}
 }
 
+func TestCompile(t *testing.T) {
+	prg, err := Compile(`"hello " + name`, Variable("name", StringType))
+	if err != nil {
+		t.Fatalf("Compile() unexpected error: %v", err)
+	}
+	out, _, err := prg.Eval(map[string]any{"name": "world"})
+	if err != nil {
+		t.Fatalf("prg.Eval() unexpected error: %v", err)
+	}
+	if out.Equal(types.String("hello world")) != types.True {
+		t.Errorf(`got '%v', wanted "hello world"`, out.Value())
+	}
+
+	// Test compilation error
+	_, err = Compile(`1 + "invalid"`)
+	if err == nil {
+		t.Errorf("Compile() expected error for type mismatch, got nil")
+	}
+}
+
 func TestEval(t *testing.T) {
 	env, err := NewEnv(
 		Variable("input", ListType(IntType)),

@@ -15,23 +15,17 @@
 package examples
 
 import (
+	"context"
 	"fmt"
 	"log"
 
 	"github.com/google/cel-go/cel"
 )
 
-func Example_cel_Eval() {
-	env, err := cel.NewEnv(cel.Variable("name", cel.StringType))
-	if err != nil {
-		log.Fatalf("environment creation error: %v\n", err)
-	}
-	ast, iss := env.Compile(`"Hello world! I'm " + name + "."`)
-	// Check iss for compilation errors.
-	if iss.Err() != nil {
-		log.Fatalln(iss.Err())
-	}
-	prg, err := env.Program(ast)
+func Example_cel_Compile() {
+	prg, err := cel.Compile(`"Hello world! I'm " + name + "."`,
+		cel.Variable("name", cel.StringType),
+	)
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -42,5 +36,29 @@ func Example_cel_Eval() {
 		log.Fatalln(err)
 	}
 	fmt.Println(out)
-	// Output:Hello world! I'm CEL.
+
+	// Output:
+	// Hello world! I'm CEL.
+}
+
+func Example_cel_Compile_options() {
+	prg, err := cel.Compile(`x > 0 ? x * y : 0`,
+		cel.Variable("x", cel.IntType),
+		cel.Variable("y", cel.IntType),
+	)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	ctx := context.Background()
+	out, _, err := prg.ContextEval(ctx, map[string]any{
+		"x": 10,
+		"y": 5,
+	})
+	if err != nil {
+		log.Fatalln(err)
+	}
+	fmt.Println(out)
+
+	// Output:
+	// 50
 }
