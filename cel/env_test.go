@@ -439,8 +439,10 @@ func TestEnvToConfig(t *testing.T) {
 			opts: []EnvOption{
 				ExtendedValidations(),
 				ASTValidators(ValidateComprehensionNestingLimit(1)),
+				ASTValidators(ValidateBindNestingLimit(2)),
 			},
 			want: env.NewConfig("validators").AddValidators(
+				env.NewValidator("cel.validator.bind_nesting_limit").SetConfig(map[string]any{"limit": 2}),
 				env.NewValidator("cel.validator.comprehension_nesting_limit").SetConfig(map[string]any{"limit": 1}),
 				env.NewValidator("cel.validator.duration"),
 				env.NewValidator("cel.validator.homogeneous_literals"),
@@ -1022,6 +1024,24 @@ func TestEnvFromConfigErrors(t *testing.T) {
 			conf: env.NewConfig("invalid validator config").
 				AddValidators(env.NewValidator("cel.validator.comprehension_nesting_limit").SetConfig(map[string]any{"limit": 2.5})),
 			want: errors.New("invalid validator: cel.validator.comprehension_nesting_limit, limit value is not a whole number: 2.5"),
+		},
+		{
+			name: "invalid cel_bind validator config",
+			conf: env.NewConfig("invalid validator config").
+				AddValidators(env.NewValidator("cel.validator.bind_nesting_limit")),
+			want: errors.New("invalid validator"),
+		},
+		{
+			name: "invalid cel_bind validator config type - unsupported type",
+			conf: env.NewConfig("invalid validator config").
+				AddValidators(env.NewValidator("cel.validator.bind_nesting_limit").SetConfig(map[string]any{"limit": "2"})),
+			want: errors.New("invalid validator"),
+		},
+		{
+			name: "invalid cel_bind validator config type - fractional",
+			conf: env.NewConfig("invalid validator config").
+				AddValidators(env.NewValidator("cel.validator.bind_nesting_limit").SetConfig(map[string]any{"limit": 2.5})),
+			want: errors.New("invalid validator: cel.validator.bind_nesting_limit, limit value is not a whole number: 2.5"),
 		},
 	}
 	for _, tst := range tests {

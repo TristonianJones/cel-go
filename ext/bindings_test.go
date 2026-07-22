@@ -27,6 +27,7 @@ import (
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/interpreter"
+	"github.com/google/cel-go/test"
 )
 
 var bindingTests = []struct {
@@ -561,5 +562,69 @@ func BenchmarkBlockEval(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		prg.Eval(input)
+	}
+}
+
+func TestValidateBindNestingLimit(t *testing.T) {
+	env, err := cel.NewEnv(
+		Bindings(),
+		cel.ASTValidators(cel.ValidateBindNestingLimit(2)),
+	)
+	if err != nil {
+		t.Fatalf("cel.NewEnv() failed: %v", err)
+	}
+	tests := []struct {
+		expr string
+		iss  string
+	}{
+		{
+			expr: `cel.bind(a, 1, a + 1)`,
+		},
+		{
+			expr: `cel.bind(a, 1, cel.bind(b, 2, a + b))`,
+		},
+		{
+			// two cel.binds, but in separate branches
+			expr: `cel.bind(a, 1, a) + cel.bind(b, 2, b)`,
+		},
+		{
+			// empty iteration range comprehension (e.g. cel.bind) does not count against comprehension limit,
+			// but counts against cel.bind nesting limit.
+			expr: `[1, 2, 3].exists(i, cel.bind(a, i, cel.bind(b, a, a + b) > 0))`,
+		},
+		{
+			// three cel.binds, three levels deep
+			expr: `cel.bind(a, 1, cel.bind(b, 2, cel.bind(c, 3, a + b + c)))`,
+			iss: `
+			ERROR: <input>:1:39: cel.bind exceeds nesting limit
+             | cel.bind(a, 1, cel.bind(b, 2, cel.bind(c, 3, a + b + c)))
+             | ......................................^`,
+		},
+		{
+			// three cel.binds, three levels deep with non-comprehension ancestor (+)
+			expr: `cel.bind(a, 1, cel.bind(b, 2, 1 + cel.bind(c, 3, a + b + c)))`,
+			iss: `
+			ERROR: <input>:1:43: cel.bind exceeds nesting limit
+             | cel.bind(a, 1, cel.bind(b, 2, 1 + cel.bind(c, 3, a + b + c)))
+             | ..........................................^`,
+		},
+	}
+	for _, tst := range tests {
+		tc := tst
+		t.Run(tc.expr, func(t *testing.T) {
+			_, iss := env.Compile(tc.expr)
+			if tc.iss != "" {
+				if iss.Err() == nil {
+					t.Fatalf("env.Compile(%v) returned ast, expected error: %v", tc.expr, tc.iss)
+				}
+				if !test.Compare(iss.Err().Error(), tc.iss) {
+					t.Fatalf("env.Compile(%v) returned %v, expected error: %v", tc.expr, iss.Err(), tc.iss)
+				}
+				return
+			}
+			if iss.Err() != nil {
+				t.Fatalf("env.Compile(%v) failed: %v", tc.expr, iss.Err())
+			}
+		})
 	}
 }
