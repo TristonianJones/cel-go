@@ -81,12 +81,20 @@ type ASTValidatorFactory func(*env.Validator) (ASTValidator, error)
 
 // ASTValidators configures a set of ASTValidator instances into the target environment.
 //
-// Validators are applied in the order in which the are specified and are treated as singletons.
-// The same ASTValidator with a given name will not be applied more than once.
+// Validators are applied in the order in which they are specified.
+// If an ASTValidator with the same name is already configured, it will be replaced.
 func ASTValidators(validators ...ASTValidator) EnvOption {
 	return func(e *Env) (*Env, error) {
 		for _, v := range validators {
-			if !e.HasValidator(v.Name()) {
+			found := false
+			for i, existing := range e.validators {
+				if existing.Name() == v.Name() {
+					e.validators[i] = v
+					found = true
+					break
+				}
+			}
+			if !found {
 				e.validators = append(e.validators, v)
 			}
 		}
