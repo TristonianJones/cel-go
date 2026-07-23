@@ -295,6 +295,9 @@ func newProgram(e *Env, a *ast.AST, opts []ProgramOption) (Program, error) {
 	if len(p.regexOptimizations) > 0 {
 		plannerOptions = append(plannerOptions, interpreter.CompileRegexConstants(p.regexOptimizations...))
 	}
+	if limit := p.limits[limitRegexProgramSize]; limit > 0 {
+		plannerOptions = append(plannerOptions, interpreter.RegexProgramSizeLimit(limit))
+	}
 
 	// Enable exhaustive eval, state tracking and cost tracking last since they require a factory.
 	if p.evalOpts&(OptExhaustiveEval|OptTrackState|OptTrackCost) != 0 {

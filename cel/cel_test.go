@@ -2504,6 +2504,96 @@ func TestRegexOptimizer(t *testing.T) {
 	}
 }
 
+func TestRegexProgramSizeLimit(t *testing.T) {
+	env, err := NewEnv(
+		Variable("pattern", StringType),
+		RegexProgramSizeLimit(5),
+	)
+	if err != nil {
+		t.Fatalf("NewEnv failed: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		expr       string
+		progOpts   []ProgramOption
+		vars       any
+		want       ref.Val
+		compileErr string
+		progErr    string
+		evalErr    string
+	}{
+		{
+			name:       "constant_regex_exceeds_limit_ast_validation",
+			expr:       `"123 abc 456".matches('(a|b)*[0-9]+')`,
+			compileErr: "regex program size 8 exceeds limit of 5",
+		},
+		{
+			name:    "dynamic_regex_exceeds_limit_runtime",
+			expr:    `"123 abc 456".matches(pattern)`,
+			vars:    map[string]any{"pattern": "(a|b)*[0-9]+"},
+			evalErr: "regex program size 8 exceeds limit of 5",
+		},
+		{
+			name: "dynamic_regex_within_limit",
+			expr: `"123 abc 456".matches(pattern)`,
+			vars: map[string]any{"pattern": "[0-9]+"},
+			want: types.True,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(tt *testing.T) {
+			ast, iss := env.Compile(tc.expr)
+			if tc.compileErr != "" {
+				if iss.Err() == nil {
+					tt.Fatalf("env.Compile(%s) succeeded, wanted error %s", tc.expr, tc.compileErr)
+				}
+				if !strings.Contains(iss.Err().Error(), tc.compileErr) {
+					tt.Errorf("got compile error %v, wanted error containing %s", iss.Err(), tc.compileErr)
+				}
+				return
+			}
+			if iss.Err() != nil {
+				tt.Fatalf("env.Compile(%s) failed: %v", tc.expr, iss.Err())
+			}
+			prg, err := env.Program(ast, tc.progOpts...)
+			if tc.progErr != "" {
+				if err == nil {
+					tt.Fatalf("env.Program(%s) succeeded, wanted error %s", tc.expr, tc.progErr)
+				}
+				if !strings.Contains(err.Error(), tc.progErr) {
+					tt.Errorf("got program error %v, wanted error containing %s", err, tc.progErr)
+				}
+				return
+			}
+			if err != nil {
+				tt.Fatalf("env.Program(%s) failed: %v", tc.expr, err)
+			}
+			vars := tc.vars
+			if vars == nil {
+				vars = NoVars()
+			}
+			res, _, err := prg.Eval(vars)
+			if tc.evalErr != "" {
+				if err == nil {
+					tt.Fatalf("prg.Eval(%s) succeeded, wanted error %s", tc.expr, tc.evalErr)
+				}
+				if !strings.Contains(err.Error(), tc.evalErr) {
+					tt.Errorf("got eval error %v, wanted error containing %s", err, tc.evalErr)
+				}
+				return
+			}
+			if err != nil {
+				tt.Fatalf("prg.Eval(%s) failed: %v", tc.expr, err)
+			}
+			if res != tc.want {
+				tt.Errorf("got %v, wanted %v", res, tc.want)
+			}
+		})
+	}
+}
+
 func TestDefaultUTCTimeZoneDisabled(t *testing.T) {
 	testEnvs := []struct {
 		name string

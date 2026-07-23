@@ -415,3 +415,31 @@ func TestRegexCosts(t *testing.T) {
 		})
 	}
 }
+
+func TestRegexProgramSizeLimit(t *testing.T) {
+	env, err := cel.NewEnv(
+		cel.OptionalTypes(),
+		Regex(),
+		cel.RegexProgramSizeLimit(5),
+		cel.Variable("pat", cel.StringType),
+	)
+	if err != nil {
+		t.Fatalf("cel.NewEnv failed: %v", err)
+	}
+
+	ast, iss := env.Compile(`regex.extract('hello', pat)`)
+	if iss.Err() != nil {
+		t.Fatalf("env.Compile failed: %v", iss.Err())
+	}
+	prg, err := env.Program(ast)
+	if err != nil {
+		t.Fatalf("env.Program failed: %v", err)
+	}
+	_, _, err = prg.Eval(map[string]any{"pat": "(a|b)*[0-9]+"})
+	if err == nil {
+		t.Fatalf("expected runtime error for regex program size exceeding limit")
+	}
+	if !strings.Contains(err.Error(), "regex program size 8 exceeds limit of 5") {
+		t.Fatalf("got error %v, expected error containing 'regex program size 8 exceeds limit of 5'", err)
+	}
+}
