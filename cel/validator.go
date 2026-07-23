@@ -48,54 +48,25 @@ const (
 var (
 	astValidatorFactories = map[string]ASTValidatorFactory{
 		nestingLimitValidatorName: func(val *env.Validator) (ASTValidator, error) {
-			if limit, found := val.ConfigValue("limit"); found {
-				// In case of protos, config value is of type by google.protobuf.Value, which numeric values are always a double.
-				if val, isDouble := limit.(float64); isDouble {
-					if val != float64(int64(val)) {
-						return nil, fmt.Errorf("invalid validator: %s, limit value is not a whole number: %v", nestingLimitValidatorName, limit)
-					}
-					return ValidateComprehensionNestingLimit(int(val)), nil
-				}
-
-				if val, isInt := limit.(int); isInt {
-					return ValidateComprehensionNestingLimit(val), nil
-				}
-				return nil, fmt.Errorf("invalid validator: %s unsupported limit type: %v", nestingLimitValidatorName, limit)
+			limit, err := validatorIntConfig(val, "limit")
+			if err != nil {
+				return nil, err
 			}
-			return nil, fmt.Errorf("invalid validator: %s missing limit", nestingLimitValidatorName)
+			return ValidateComprehensionNestingLimit(limit), nil
 		},
 		bindNestingLimitValidatorName: func(val *env.Validator) (ASTValidator, error) {
-			if limit, found := val.ConfigValue("limit"); found {
-				// In case of protos, config value is of type by google.protobuf.Value, which numeric values are always a double.
-				if val, isDouble := limit.(float64); isDouble {
-					if val != float64(int64(val)) {
-						return nil, fmt.Errorf("invalid validator: %s, limit value is not a whole number: %v", bindNestingLimitValidatorName, limit)
-					}
-					return ValidateBindNestingLimit(int(val)), nil
-				}
-
-				if val, isInt := limit.(int); isInt {
-					return ValidateBindNestingLimit(val), nil
-				}
-				return nil, fmt.Errorf("invalid validator: %s unsupported limit type: %v", bindNestingLimitValidatorName, limit)
+			limit, err := validatorIntConfig(val, "limit")
+			if err != nil {
+				return nil, err
 			}
-			return nil, fmt.Errorf("invalid validator: %s missing limit", bindNestingLimitValidatorName)
+			return ValidateBindNestingLimit(limit), nil
 		},
 		regexProgramSizeLimitValidatorName: func(val *env.Validator) (ASTValidator, error) {
-			if limit, found := val.ConfigValue("limit"); found {
-				if val, isDouble := limit.(float64); isDouble {
-					if val != float64(int64(val)) {
-						return nil, fmt.Errorf("invalid validator: %s, limit value is not a whole number: %v", regexProgramSizeLimitValidatorName, limit)
-					}
-					return ValidateRegexProgramSizeLimit(int(val)), nil
-				}
-
-				if val, isInt := limit.(int); isInt {
-					return ValidateRegexProgramSizeLimit(val), nil
-				}
-				return nil, fmt.Errorf("invalid validator: %s unsupported limit type: %v", regexProgramSizeLimitValidatorName, limit)
+			limit, err := validatorIntConfig(val, "limit")
+			if err != nil {
+				return nil, err
 			}
-			return nil, fmt.Errorf("invalid validator: %s missing limit", regexProgramSizeLimitValidatorName)
+			return ValidateRegexProgramSizeLimit(limit), nil
 		},
 		durationValidatorName: func(*env.Validator) (ASTValidator, error) {
 			return ValidateDurationLiterals(), nil
@@ -625,4 +596,22 @@ func isCelBind(e ast.NavigableExpr) bool {
 
 func isRegexFunctionName(fn string) bool {
 	return fn == overloads.Matches || fn == "matches" || fn == "regex.extract" || fn == "regex.extractAll" || fn == "regex.replace"
+}
+
+func validatorIntConfig(val *env.Validator, configKey string) (int, error) {
+	if limit, found := val.ConfigValue(configKey); found {
+		// In case of protos, config value is of type google.protobuf.Value, which numeric values are always a double.
+		if v, isDouble := limit.(float64); isDouble {
+			if v != float64(int64(v)) {
+				return 0, fmt.Errorf("invalid validator: %s, %s value is not a whole number: %v", val.Name, configKey, limit)
+			}
+			return int(v), nil
+		}
+
+		if v, isInt := limit.(int); isInt {
+			return v, nil
+		}
+		return 0, fmt.Errorf("invalid validator: %s unsupported %s type: %v", val.Name, configKey, limit)
+	}
+	return 0, fmt.Errorf("invalid validator: %s missing %s", val.Name, configKey)
 }
