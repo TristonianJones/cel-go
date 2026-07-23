@@ -152,6 +152,47 @@ var comparableTypes = []*cel.Type{
 //	  Player { name: "baz", score: 1000 },
 //	].sortBy(e, e.score).map(e, e.name)
 //	== ["bar", "foo", "baz"]
+//
+// # HasAny
+//
+// Introduced in version: 4
+//
+// Returns whether the list contains any element present in the second list argument.
+//
+//	<list(T)>.hasAny(<list(T)>) -> bool
+//
+// Examples:
+//
+//	[1, 2, 3].hasAny([2, 4]) // return true
+//	[1, 2, 3].hasAny([4, 5]) // return false
+//
+// # HasAll
+//
+// Introduced in version: 4
+//
+// Returns whether the list contains all elements present in the second list argument.
+//
+//	<list(T)>.hasAll(<list(T)>) -> bool
+//
+// Examples:
+//
+//	[1, 2, 3, 4].hasAll([2, 3]) // return true
+//	[1, 2, 3].hasAll([2, 4]) // return false
+//
+// # HasOnly
+//
+// Introduced in version: 4
+//
+// Returns whether the first list is a sublist of the second list argument (i.e. every element in the first list is present in the second list argument).
+// If the first list is empty, returns true.
+//
+//	<list(T)>.hasOnly(<list(T)>) -> bool
+//
+// Examples:
+//
+//	[1, 2].hasOnly([1, 2, 3]) // return true
+//	[1, 4].hasOnly([1, 2, 3]) // return false
+//	[].hasOnly([1, 2]) // return true
 func Lists(options ...ListsOption) cel.EnvOption {
 	l := &listsLib{version: math.MaxUint32, maxRangeSize: defaultMaxRangeSize}
 	for _, o := range options {
@@ -405,6 +446,35 @@ func (lib listsLib) CompileOptions() []cel.EnvOption {
 		}
 		opts = append(opts, cel.CostEstimatorOptions(estimators...))
 	}
+	if lib.version >= 4 {
+		opts = append(opts,
+			cel.Function("hasAny",
+				cel.MemberOverload("list_hasAny_list",
+					[]*cel.Type{listType, listType}, cel.BoolType,
+					cel.BinaryBinding(setsIntersects),
+				),
+			),
+			cel.Function("hasAll",
+				cel.MemberOverload("list_hasAll_list",
+					[]*cel.Type{listType, listType}, cel.BoolType,
+					cel.BinaryBinding(setsContains),
+				),
+			),
+			cel.Function("hasOnly",
+				cel.MemberOverload("list_hasOnly_list",
+					[]*cel.Type{listType, listType}, cel.BoolType,
+					cel.BinaryBinding(func(arg1, arg2 ref.Val) ref.Val {
+						return setsContains(arg2, arg1)
+					}),
+				),
+			),
+			cel.CostEstimatorOptions(
+				checker.OverloadCostEstimate("list_hasAny_list", estimateSetsCost(1)),
+				checker.OverloadCostEstimate("list_hasAll_list", estimateSetsCost(1)),
+				checker.OverloadCostEstimate("list_hasOnly_list", estimateSetsCost(1)),
+			),
+		)
+	}
 
 	return opts
 }
@@ -443,6 +513,13 @@ func (lib *listsLib) ProgramOptions() []cel.ProgramOption {
 			)
 		}
 		opts = append(opts, cel.CostTrackerOptions(trackers...))
+	}
+	if lib.version >= 4 {
+		opts = append(opts, cel.CostTrackerOptions(
+			interpreter.OverloadCostTracker("list_hasAny_list", trackSetsCost(1)),
+			interpreter.OverloadCostTracker("list_hasAll_list", trackSetsCost(1)),
+			interpreter.OverloadCostTracker("list_hasOnly_list", trackSetsCost(1)),
+		))
 	}
 	return opts
 }

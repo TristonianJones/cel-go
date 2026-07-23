@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/google/cel-go/checker"
 	"github.com/google/cel-go/common"
 	"github.com/google/cel-go/common/ast"
 	"github.com/google/cel-go/common/decls"
@@ -277,10 +278,13 @@ func (*stdLibrary) ProgramOptions() []ProgramOption {
 //
 // # HasValue
 //
-// Determine whether the optional contains a value.
+// Determine whether the optional contains a value, or whether it contains a value equal to the argument (1-argument overload introduced in version: 3).
+// Note that optional.none().hasValue(...) always yields false because optional.none() contains no value.
 //
 //	optional.of(b'hello').hasValue() // true
+//	optional.of(b'hello').hasValue(b'hello') // true
 //	optional.ofNonZeroValue({}).hasValue() // false
+//	optional.none().hasValue(optional.none()) // false
 //
 // # Value
 //
@@ -584,14 +588,53 @@ func (lib *optionalLib) CompileOptions() []EnvOption {
 				UnaryBinding(optUnwrap))))
 	}
 
+	if lib.version >= 3 {
+		opts = append(opts,
+			Function(hasValueFunc,
+				FunctionDocs(`determine whether the optional contains a specific value (always yields false for optional.none())`),
+				MemberOverload("optional_hasValue_value", []*Type{optionalTypeV, paramTypeV}, BoolType,
+					BinaryBinding(func(arg1, arg2 ref.Val) ref.Val {
+						opt := arg1.(*types.Optional)
+						if !opt.HasValue() {
+							return types.False
+						}
+						return opt.GetValue().Equal(arg2)
+					}),
+				),
+			),
+			CostEstimatorOptions(
+				checker.OverloadCostEstimate("optional_hasValue_value", estimateOptionalHasValueCost),
+			),
+		)
+	}
+
 	return opts
 }
 
 // ProgramOptions implements the Library interface method.
 func (lib *optionalLib) ProgramOptions() []ProgramOption {
-	return []ProgramOption{
+	opts := []ProgramOption{
 		CustomDecoratorV2(decorateOptionalOr),
 	}
+	if lib.version >= 3 {
+		opts = append(opts, CostTrackerOptions(
+			interpreter.OverloadCostTracker("optional_hasValue_value", trackOptionalHasValueCost),
+		))
+	}
+	return opts
+}
+
+func estimateOptionalHasValueCost(estimator checker.CostEstimator, target *checker.AstNode, args []checker.AstNode) *checker.CallEstimate {
+	return &checker.CallEstimate{CostEstimate: checker.FixedCostEstimate(2)}
+}
+
+func trackOptionalHasValueCost(args []ref.Val, _ ref.Val) *uint64 {
+	opt := args[0].(*types.Optional)
+	cost := uint64(1)
+	if opt.HasValue() {
+		cost += 1
+	}
+	return &cost
 }
 
 // Version returns the current version of the library.

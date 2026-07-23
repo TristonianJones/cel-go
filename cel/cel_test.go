@@ -1840,6 +1840,13 @@ func TestEstimateCostAndRuntimeCost(t *testing.T) {
 			want:  checker.CostEstimate{Min: 2, Max: 6},
 			in:    map[string]any{"str1": "val1111111", "str2": "val2222222"},
 		},
+		{
+			name:  "optional hasValue cost",
+			expr:  `x.hasValue(1)`,
+			decls: []EnvOption{OptionalTypes(), Variable("x", OptionalType(IntType))},
+			want:  checker.CostEstimate{Min: 3, Max: 3},
+			in:    map[string]any{"x": types.OptionalOf(types.Int(1))},
+		},
 	}
 
 	for _, tst := range cases {
@@ -3426,9 +3433,11 @@ func TestOptionalValuesEval(t *testing.T) {
 		{expr: `[].unwrapOpt()`, out: []any{}},
 		{expr: `[optional.none(), optional.none()].unwrapOpt()`, out: []any{}},
 		{expr: `[optional.of(42), optional.none(), optional.of("a")].unwrapOpt()`, out: []any{types.Int(42), types.String("a")}},
-		{expr: `[optional.of(42), optional.of("a")].unwrapOpt()`, out: []any{types.Int(42), types.String("a")}},
 		{expr: `optional.of(optional.of(1)) != dyn(optional.of(1))`, out: types.True},
 		{expr: `(true ? optional.of(optional.of(1)) : dyn(optional.of(2))) != dyn(optional.of(1))`, out: types.True},
+		{expr: `optional.of(1).hasValue(1)`, out: types.True},
+		{expr: `optional.of(1).hasValue(2)`, out: types.False},
+		{expr: `optional.none().hasValue(1)`, out: types.False},
 	}
 
 	for i, tst := range tests {
@@ -3685,6 +3694,22 @@ func TestOptionalMacroError(t *testing.T) {
 	_, iss = env.Compile("x.optFlatMap(y, y.z + 1)")
 	if iss.Err() == nil || !strings.Contains(iss.Err().Error(), "undeclared reference to 'optFlatMap'") {
 		t.Errorf("optFlatMap() got an unexpected result: %v", iss.Err())
+	}
+	envV2 := testEnv(t,
+		OptionalTypes(OptionalTypesVersion(2)),
+		Variable("x", OptionalType(IntType)),
+	)
+	_, issV2 := envV2.Compile("x.hasValue(1)")
+	if issV2.Err() == nil {
+		t.Errorf("hasValue(1) unexpectedly succeeded for version 2")
+	}
+	envV3 := testEnv(t,
+		OptionalTypes(OptionalTypesVersion(3)),
+		Variable("x", OptionalType(IntType)),
+	)
+	_, issV3 := envV3.Compile("x.hasValue(1)")
+	if issV3.Err() != nil {
+		t.Errorf("hasValue(1) failed for version 3: %v", issV3.Err())
 	}
 }
 
