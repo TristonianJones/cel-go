@@ -205,11 +205,9 @@ func TestValidateRegexLiterals(t *testing.T) {
 }
 
 func TestValidateRegexProgramSizeLimit(t *testing.T) {
-	env, err := NewEnv(
+	opts := []EnvOption{
 		Variable("x", types.StringType),
-		ASTValidators(ValidateRegexProgramSizeLimit(5)))
-	if err != nil {
-		t.Fatalf("NewEnv(ValidateRegexProgramSizeLimit(5)) failed: %v", err)
+		ASTValidators(ValidateRegexProgramSizeLimit(5)),
 	}
 
 	tests := []struct {
@@ -233,22 +231,24 @@ func TestValidateRegexProgramSizeLimit(t *testing.T) {
 	for _, tst := range tests {
 		tc := tst
 		t.Run(tc.expr, func(t *testing.T) {
-			_, iss := env.Compile(tc.expr)
+			_, err := Compile(tc.expr, opts...)
 			if tc.iss != "" {
-				if iss.Err() == nil {
-					t.Fatalf("e.Compile(%v) returned ast, expected error: %v", tc.expr, tc.iss)
+				if err == nil {
+					t.Fatalf("Compile(%v) returned ast, expected error: %v", tc.expr, tc.iss)
 				}
-				if !test.Compare(iss.Err().Error(), tc.iss) {
-					t.Fatalf("e.Compile(%v) returned %v, expected error: %v", tc.expr, iss.Err(), tc.iss)
+				if !test.Compare(err.Error(), tc.iss) {
+					t.Fatalf("Compile(%v) returned %v, expected error: %v", tc.expr, err, tc.iss)
 				}
 				return
 			}
-			if iss.Err() != nil {
-				t.Fatalf("e.Compile(%v) failed: %v", tc.expr, iss.Err())
+			if err != nil {
+				t.Fatalf("Compile(%v) failed: %v", tc.expr, err)
 			}
 		})
 	}
+}
 
+func TestValidateRegexProgramSizeLimitToConfig(t *testing.T) {
 	val := ValidateRegexProgramSizeLimit(5)
 	cfg := val.(ConfigurableASTValidator).ToConfig()
 	if cfg.Name != regexProgramSizeLimitValidatorName {
@@ -257,8 +257,11 @@ func TestValidateRegexProgramSizeLimit(t *testing.T) {
 	if limit, ok := cfg.ConfigValue("limit"); !ok || limit != 5 {
 		t.Errorf("ToConfig().ConfigValue('limit') = %v, wanted 5", limit)
 	}
+}
 
-	// Test building validator from config
+func TestValidateRegexProgramSizeLimitFactory(t *testing.T) {
+	val := ValidateRegexProgramSizeLimit(5)
+	cfg := val.(ConfigurableASTValidator).ToConfig()
 	fac, ok := astValidatorFactories[regexProgramSizeLimitValidatorName]
 	if !ok {
 		t.Fatalf("missing factory for %s", regexProgramSizeLimitValidatorName)

@@ -417,29 +417,75 @@ func TestRegexCosts(t *testing.T) {
 }
 
 func TestRegexProgramSizeLimit(t *testing.T) {
-	env, err := cel.NewEnv(
-		cel.OptionalTypes(),
-		Regex(),
-		cel.RegexProgramSizeLimit(5),
-		cel.Variable("pat", cel.StringType),
-	)
-	if err != nil {
-		t.Fatalf("cel.NewEnv failed: %v", err)
+	overloads := []struct {
+		name string
+		expr string
+	}{
+		{
+			name: "matches",
+			expr: `'a1'.matches(pat)`,
+		},
+		{
+			name: "regex.extract",
+			expr: `regex.extract('a1', pat)`,
+		},
+		{
+			name: "regex.extractAll",
+			expr: `regex.extractAll('a1', pat)`,
+		},
+		{
+			name: "regex.replace 3-arg",
+			expr: `regex.replace('a1', pat, 'x')`,
+		},
+		{
+			name: "regex.replace 4-arg",
+			expr: `regex.replace('a1', pat, 'x', 1)`,
+		},
 	}
 
-	ast, iss := env.Compile(`regex.extract('hello', pat)`)
-	if iss.Err() != nil {
-		t.Fatalf("env.Compile failed: %v", iss.Err())
-	}
-	prg, err := env.Program(ast)
-	if err != nil {
-		t.Fatalf("env.Program failed: %v", err)
-	}
-	_, _, err = prg.Eval(map[string]any{"pat": "(a|b)*[0-9]+"})
-	if err == nil {
-		t.Fatalf("expected runtime error for regex program size exceeding limit")
-	}
-	if !strings.Contains(err.Error(), "regex program size 8 exceeds limit of 5") {
-		t.Fatalf("got error %v, expected error containing 'regex program size 8 exceeds limit of 5'", err)
-	}
+	t.Run("ExceedsLimit", func(t *testing.T) {
+		for _, tc := range overloads {
+			t.Run(tc.name, func(t *testing.T) {
+				prg, err := cel.Compile(tc.expr,
+					cel.OptionalTypes(),
+					Regex(),
+					cel.RegexProgramSizeLimit(5),
+					cel.Variable("pat", cel.StringType),
+				)
+				if err != nil {
+					t.Fatalf("cel.Compile(%s) failed: %v", tc.expr, err)
+				}
+				_, _, err = prg.Eval(map[string]any{"pat": "(a|b)*[0-9]+"})
+				if err == nil {
+					t.Fatalf("expected runtime error for regex program size exceeding limit")
+				}
+				if !strings.Contains(err.Error(), "regex program size 8 exceeds limit of 5") {
+					t.Fatalf("got error %v, expected error containing 'regex program size 8 exceeds limit of 5'", err)
+				}
+			})
+		}
+	})
+
+	t.Run("WithinLimit", func(t *testing.T) {
+		for _, tc := range overloads {
+			t.Run(tc.name, func(t *testing.T) {
+				prg, err := cel.Compile(tc.expr,
+					cel.OptionalTypes(),
+					Regex(),
+					cel.RegexProgramSizeLimit(10),
+					cel.Variable("pat", cel.StringType),
+				)
+				if err != nil {
+					t.Fatalf("cel.Compile(%s) failed: %v", tc.expr, err)
+				}
+				val, _, err := prg.Eval(map[string]any{"pat": "(a|b)*[0-9]+"})
+				if err != nil {
+					t.Fatalf("prg.Eval(%s) unexpected error: %v", tc.expr, err)
+				}
+				if val == nil {
+					t.Fatalf("prg.Eval(%s) returned nil result", tc.expr)
+				}
+			})
+		}
+	})
 }
