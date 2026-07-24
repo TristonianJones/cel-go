@@ -112,6 +112,8 @@ const (
 	limitParseErrorRecovery
 	// The maximum nesting depth permitted for ASTs loaded outside the parser.
 	limitMaxASTDepth
+	// The maximum number of expression nodes permitted in parsing (including macro expansion).
+	limitExpressionNodeCount
 )
 
 // defaultMaxASTDepth mirrors the parser's default maxRecursionDepth (250) and
@@ -124,6 +126,7 @@ var limitIDsToNames = map[limitID]string{
 	limitParseErrorRecovery:  "cel.limit.parse_error_recovery",
 	limitParseRecursionDepth: "cel.limit.parse_recursion_depth",
 	limitMaxASTDepth:         "cel.limit.max_ast_depth",
+	limitExpressionNodeCount: "cel.limit.expression_node_count",
 }
 
 func limitNameByID(id limitID) (string, bool) {
@@ -998,6 +1001,20 @@ func ParserErrorRecoveryLimit(limit int) EnvOption {
 // Defaults are defined in the parser package. A negative value means unbounded.
 func ParserExpressionSizeLimit(limit int) EnvOption {
 	return setLimit(limitCodePointSize, limit)
+}
+
+// ExpressionNodeLimit adjusts the maximum number of expression nodes permitted during parsing
+// and checking, including nodes created by macro expansion. Defaults are defined in the parser
+// package (100,000). A negative value means unbounded.
+func ExpressionNodeLimit(limit int) EnvOption {
+	return setLimit(limitExpressionNodeCount, limit)
+}
+
+// ParserExpressionNodeLimit adjusts the maximum number of expression nodes the parser will allow,
+// including nodes created by macro expansion. Defaults are defined in the parser package.
+// A negative value means unbounded.
+func ParserExpressionNodeLimit(limit int) EnvOption {
+	return ExpressionNodeLimit(limit)
 }
 
 // ExpressionNestingDepthLimit records the maximum nesting depth permitted for ASTs in the

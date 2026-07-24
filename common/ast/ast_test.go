@@ -393,6 +393,16 @@ func TestMaxID(t *testing.T) {
 	}
 }
 
+func TestNodeCount(t *testing.T) {
+	if ast.NodeCount(nil) != 0 {
+		t.Errorf("NodeCount(nil) got %d, wanted 0", ast.NodeCount(nil))
+	}
+	checked := mustTypeCheck(t, `1 + 2`)
+	if count := ast.NodeCount(checked); count != 3 {
+		t.Errorf("NodeCount(1 + 2) got %d, wanted 3", count)
+	}
+}
+
 func TestHeights(t *testing.T) {
 	tests := []struct {
 		expr   string

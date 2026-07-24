@@ -406,6 +406,13 @@ func (e *Env) Check(ast *Ast) (*Ast, *Issues) {
 		errs.ReportErrorString(common.NoLocation, ast.loadErr.Error())
 		return nil, NewIssuesWithSourceInfo(errs, ast.NativeRep().SourceInfo())
 	}
+	if nodeLimit := e.configuredExpressionNodeLimit(); nodeLimit > 0 && ast != nil && ast.NativeRep() != nil {
+		if count := celast.NodeCount(ast.NativeRep()); count > nodeLimit {
+			errs := common.NewErrors(ast.Source())
+			errs.ReportErrorString(common.NoLocation, fmt.Sprintf("expression node count exceeds limit: count %d, limit %d", count, nodeLimit))
+			return nil, NewIssuesWithSourceInfo(errs, ast.NativeRep().SourceInfo())
+		}
+	}
 	// Construct the internal checker env, erroring if there is an issue adding the declarations.
 	chk, err := e.initChecker()
 	if err != nil {
@@ -451,6 +458,15 @@ func (e *Env) Check(ast *Ast) (*Ast, *Issues) {
 // A zero value means "use the parser default".
 func (e *Env) configuredExpressionSizeLimit() int {
 	if l := e.limits[limitCodePointSize]; l != 0 {
+		return l
+	}
+	return 100_000
+}
+
+// configuredExpressionNodeLimit returns the effective expression node limit.
+// A zero value means "use default".
+func (e *Env) configuredExpressionNodeLimit() int {
+	if l := e.limits[limitExpressionNodeCount]; l != 0 {
 		return l
 	}
 	return 100_000
@@ -875,6 +891,9 @@ func (e *Env) configure(opts []EnvOption) (*Env, error) {
 	}
 	if l := e.limits[limitParseRecursionDepth]; l != 0 {
 		prsrOpts = append(prsrOpts, parser.MaxRecursionDepth(l))
+	}
+	if l := e.limits[limitExpressionNodeCount]; l != 0 {
+		prsrOpts = append(prsrOpts, parser.MaxExpressionNodeCount(l))
 	}
 	e.prsr, err = parser.NewParser(prsrOpts...)
 	if err != nil {

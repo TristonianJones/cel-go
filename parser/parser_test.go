@@ -2317,6 +2317,21 @@ func TestExpressionSizeCodePointLimit(t *testing.T) {
 	}
 }
 
+func TestMaxExpressionNodeCount(t *testing.T) {
+	p, err := NewParser(Macros(AllMacros...), MaxExpressionNodeCount(10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := common.NewTextSource("a.exists(x, x.exists(y, y == 1))")
+	_, errs := p.Parse(src)
+	if len(errs.GetErrors()) == 0 {
+		t.Fatalf("expected errors, got none: %s", errs.ToDisplayString())
+	}
+	if !strings.Contains(errs.GetErrors()[0].Message, "expression count exceeds limit of 10 while expanding macro 'exists'") {
+		t.Fatalf("got %q, want substring matching limit error: %s", errs.GetErrors()[0].Message, errs.GetErrors()[0].ToDisplayString(src))
+	}
+}
+
 func TestParserOptionErrors(t *testing.T) {
 	if _, err := NewParser(Macros(AllMacros...), MaxRecursionDepth(-2)); err == nil {
 		t.Fatalf("got %q, want %q", err, "max recursion depth must be greater than or equal to -1: -2")
@@ -2332,6 +2347,9 @@ func TestParserOptionErrors(t *testing.T) {
 	}
 	if _, err := NewParser(ExpressionSizeCodePointLimit(-2)); err == nil {
 		t.Fatalf("got %q, want %q", err, "expression size code point limit must be greater than or equal to -1: -2")
+	}
+	if _, err := NewParser(MaxExpressionNodeCount(-2)); err == nil {
+		t.Fatalf("got %q, want %q", err, "max expression node count must be greater than or equal to -1: -2")
 	}
 }
 
