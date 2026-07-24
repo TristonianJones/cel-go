@@ -3700,7 +3700,7 @@ func TestParserExpressionSizeLimit(t *testing.T) {
 	}
 }
 
-func TestParserExpressionNodeLimit(t *testing.T) {
+func TestExpressionNodeLimit(t *testing.T) {
 	tests := []struct {
 		name         string
 		expr         string
@@ -3736,27 +3736,28 @@ func TestParserExpressionNodeLimit(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, tst := range tests {
+		tc := tst
+		t.Run(tc.name, func(t *testing.T) {
 			opts := []EnvOption{
 				OptionalTypes(),
 				Variable("x", OptionalType(IntType)),
 			}
-			if tt.limit != 0 {
-				opts = append(opts, ExpressionNodeLimit(tt.limit), ParserExpressionNodeLimit(tt.limit))
+			if tc.limit != 0 {
+				opts = append(opts, ExpressionNodeLimit(tc.limit))
 			}
 			env := testEnv(t, opts...)
-			_, iss := env.Parse(tt.expr)
-			if tt.expectErr {
+			_, iss := env.Parse(tc.expr)
+			if tc.expectErr {
 				if iss.Err() == nil {
-					t.Fatalf("Parse(%q) succeeded, expected error containing %q", tt.expr, tt.errSubstring)
+					t.Fatalf("Parse(%q) succeeded, expected error containing %q", tc.expr, tc.errSubstring)
 				}
-				if !strings.Contains(iss.Err().Error(), tt.errSubstring) {
-					t.Errorf("Parse(%q) got error %v, expected substring %q", tt.expr, iss.Err(), tt.errSubstring)
+				if !strings.Contains(iss.Err().Error(), tc.errSubstring) {
+					t.Errorf("Parse(%q) got error %v, expected substring %q", tc.expr, iss.Err(), tc.errSubstring)
 				}
 			} else {
 				if iss.Err() != nil {
-					t.Errorf("Parse(%q) unexpectedly failed: %v", tt.expr, iss.Err())
+					t.Errorf("Parse(%q) unexpectedly failed: %v", tc.expr, iss.Err())
 				}
 			}
 		})

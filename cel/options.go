@@ -1010,13 +1010,6 @@ func ExpressionNodeLimit(limit int) EnvOption {
 	return setLimit(limitExpressionNodeCount, limit)
 }
 
-// ParserExpressionNodeLimit adjusts the maximum number of expression nodes the parser will allow,
-// including nodes created by macro expansion. Defaults are defined in the parser package.
-// A negative value means unbounded.
-func ParserExpressionNodeLimit(limit int) EnvOption {
-	return ExpressionNodeLimit(limit)
-}
-
 // ExpressionNestingDepthLimit records the maximum nesting depth permitted for ASTs in the
 // environment configuration so that the value round-trips through env.Config export/import.
 //
