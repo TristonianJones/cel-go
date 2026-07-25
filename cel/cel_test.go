@@ -3107,6 +3107,18 @@ func TestOptionalValuesEval(t *testing.T) {
 			out: types.OptionalOf(types.Int(43)),
 		},
 		{
+			expr: `{0: 10}[?0].optMap(v, v + 1)`,
+			out:  types.OptionalOf(types.Int(11)),
+		},
+		{
+			expr: `{0: 10}[?0].optMap(a, a + 1).optMap(b, b * 2)`,
+			out:  types.OptionalOf(types.Int(22)),
+		},
+		{
+			expr: `{0: 10}[?1].optMap(a, a + 1).optMap(b, b * 2)`,
+			out:  types.OptionalNone,
+		},
+		{
 			expr: `optional.ofNonZeroValue(z).or(optional.of(10)).value() == 42`,
 			in: map[string]any{
 				"z": 42,
