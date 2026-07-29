@@ -181,14 +181,10 @@ type nativeTypeOptions struct {
 // ParseStructTags configures if native types field names should be overridable by CEL struct tags.
 // This is equivalent to ParseStructTag("cel")
 func ParseStructTags(enabled bool) NativeTypesOption {
-	return func(ntp *nativeTypeOptions) error {
-		if enabled {
-			ntp.fieldNameHandler = fieldNameByTag("cel")
-		} else {
-			ntp.fieldNameHandler = nil
-		}
-		return nil
+	if enabled {
+		return ParseStructTag("cel")
 	}
+	return ParseStructField(nil)
 }
 
 // ParseStructTag configures the struct tag to parse. The 0th item in the tag is used as the name of the CEL field.
@@ -196,10 +192,7 @@ func ParseStructTags(enabled bool) NativeTypesOption {
 // If the tag to parse is "cel" and the struct field has tag cel:"foo", the CEL struct field will be "foo".
 // If the tag to parse is "json" and the struct field has tag json:"foo,omitempty", the CEL struct field will be "foo".
 func ParseStructTag(tag string) NativeTypesOption {
-	return func(ntp *nativeTypeOptions) error {
-		ntp.fieldNameHandler = fieldNameByTag(tag)
-		return nil
-	}
+	return ParseStructField(fieldNameByTag(tag))
 }
 
 // ParseStructField configures how to parse Go struct fields. It can be used to customize struct field parsing.
@@ -270,18 +263,7 @@ func (tp *nativeTypeProvider) FindStructType(typeName string) (*types.Type, bool
 	if _, found := tp.nativeTypes[typeName]; found {
 		return types.NewTypeTypeWithParam(types.NewObjectType(typeName)), true
 	}
-	if celType, found := tp.baseProvider.FindStructType(typeName); found {
-		return celType, true
-	}
 	return tp.baseProvider.FindStructType(typeName)
-}
-
-func toFieldName(fieldNameHandler NativeTypesFieldNameHandler, f reflect.StructField) string {
-	if fieldNameHandler == nil {
-		return f.Name
-	}
-
-	return fieldNameHandler(f)
 }
 
 // FindStructFieldNames looks up the type definition first from the native types, then from
@@ -289,19 +271,7 @@ func toFieldName(fieldNameHandler NativeTypesFieldNameHandler, f reflect.StructF
 // will be returned.
 func (tp *nativeTypeProvider) FindStructFieldNames(typeName string) ([]string, bool) {
 	if t, found := tp.nativeTypes[typeName]; found {
-		fieldCount := t.refType.NumField()
-		fields := make([]string, 0, fieldCount)
-		for i := 0; i < fieldCount; i++ {
-			fieldName := toFieldName(tp.options.fieldNameHandler, t.refType.Field(i))
-			if isSkippedFieldName(fieldName) {
-				continue
-			}
-			fields = append(fields, fieldName)
-		}
-		return fields, true
-	}
-	if celTypeFields, found := tp.baseProvider.FindStructFieldNames(typeName); found {
-		return celTypeFields, true
+		return t.FieldNames(), true
 	}
 	return tp.baseProvider.FindStructFieldNames(typeName)
 }
@@ -309,55 +279,18 @@ func (tp *nativeTypeProvider) FindStructFieldNames(typeName string) ([]string, b
 // FindStructFieldType looks up a native type's field definition, and if the type name is not a native
 // type then proxies to the composed types.Provider
 func (tp *nativeTypeProvider) FindStructFieldType(typeName, fieldName string) (*types.FieldType, bool) {
-	t, found := tp.nativeTypes[typeName]
-	if !found {
-		return tp.baseProvider.FindStructFieldType(typeName, fieldName)
+	if t, found := tp.nativeTypes[typeName]; found {
+		return t.FindFieldType(fieldName)
 	}
-	refField, isDefined := t.hasField(fieldName)
-	if !found || !isDefined {
-		return nil, false
-	}
-	celType, ok := convertToCelType(refField.Type)
-	if !ok {
-		return nil, false
-	}
-	return &types.FieldType{
-		Type: celType,
-		IsSet: func(obj any) bool {
-			refVal := reflect.Indirect(reflect.ValueOf(obj))
-			refField := refVal.FieldByName(refField.Name)
-			return !refField.IsZero()
-		},
-		GetFrom: func(obj any) (any, error) {
-			refVal := reflect.Indirect(reflect.ValueOf(obj))
-			refField := refVal.FieldByName(refField.Name)
-			return getFieldValue(refField), nil
-		},
-	}, true
+	return tp.baseProvider.FindStructFieldType(typeName, fieldName)
 }
 
 // NewValue implements the ref.TypeProvider interface method.
 func (tp *nativeTypeProvider) NewValue(typeName string, fields map[string]ref.Val) ref.Val {
-	t, found := tp.nativeTypes[typeName]
-	if !found {
-		return tp.baseProvider.NewValue(typeName, fields)
+	if t, found := tp.nativeTypes[typeName]; found {
+		return t.NewValue(tp, fields)
 	}
-	refPtr := reflect.New(t.refType)
-	refVal := refPtr.Elem()
-	for fieldName, val := range fields {
-		refFieldDef, isDefined := t.hasField(fieldName)
-		if !isDefined {
-			return types.NewErr("no such field: %s", fieldName)
-		}
-		fieldVal, err := val.ConvertToNative(refFieldDef.Type)
-		if err != nil {
-			return types.NewErrFromString(err.Error())
-		}
-		refField := refVal.FieldByIndex(refFieldDef.Index)
-		refFieldVal := reflect.ValueOf(fieldVal)
-		refField.Set(refFieldVal)
-	}
-	return tp.NativeToValue(refPtr.Interface())
+	return tp.baseProvider.NewValue(typeName, fields)
 }
 
 // NewValue adapts native values to CEL values and will proxy to the composed type adapter
@@ -382,7 +315,7 @@ func (tp *nativeTypeProvider) NativeToValue(val any) ref.Val {
 		case []byte:
 			return tp.baseAdapter.NativeToValue(val)
 		default:
-			if refVal.Type().Elem() == reflect.TypeOf(byte(0)) {
+			if refVal.Type().Elem() == reflect.TypeFor[byte]() {
 				return tp.baseAdapter.NativeToValue(val)
 			}
 			return types.NewDynamicList(tp, val)
@@ -401,8 +334,8 @@ func (tp *nativeTypeProvider) NativeToValue(val any) ref.Val {
 			// a composed base adapter never sees unregistered structs it wants
 			// to convert itself.
 			typeName := fmt.Sprintf("%s.%s", simplePkgAlias(refVal.Type().PkgPath()), refVal.Type().Name())
-			if _, found := tp.nativeTypes[typeName]; found {
-				return tp.newNativeObject(val, rawVal)
+			if ntype, found := tp.nativeTypes[typeName]; found {
+				return tp.newNativeObject(val, ntype, rawVal)
 			}
 			return tp.baseAdapter.NativeToValue(val)
 		}
@@ -472,11 +405,7 @@ func convertToCelType(refType reflect.Type) (*cel.Type, bool) {
 	return nil, false
 }
 
-func (tp *nativeTypeProvider) newNativeObject(val any, refValue reflect.Value) ref.Val {
-	valType, err := newNativeType(tp.options.fieldNameHandler, refValue.Type())
-	if err != nil {
-		return types.NewErrFromString(err.Error())
-	}
+func (tp *nativeTypeProvider) newNativeObject(val any, valType *nativeType, refValue reflect.Value) ref.Val {
 	return &nativeObj{
 		Adapter:  tp,
 		val:      val,
@@ -517,16 +446,10 @@ func (o *nativeObj) ConvertToNative(typeDesc reflect.Type) (any, error) {
 		return structpb.NewStructValue(jsonStruct.(*structpb.Struct)), nil
 	case jsonStructType:
 		refVal := reflect.Indirect(o.refValue)
-		refType := refVal.Type()
 		fields := make(map[string]*structpb.Value, refVal.NumField())
-		for i := 0; i < refVal.NumField(); i++ {
-			fieldType := refType.Field(i)
-			fieldValue := refVal.Field(i)
+		for fieldName, fieldType := range o.valType.fieldsByName {
+			fieldValue := refVal.FieldByIndex(fieldType.Index)
 			if !fieldValue.IsValid() || fieldValue.IsZero() {
-				continue
-			}
-			fieldName := toFieldName(o.valType.fieldNameHandler, fieldType)
-			if isSkippedFieldName(fieldName) {
 				continue
 			}
 			fieldCELVal := o.NativeToValue(fieldValue.Interface())
@@ -671,6 +594,13 @@ var (
 	errDuplicatedFieldName = errors.New("field name already exists in struct")
 )
 
+func toFieldName(fieldNameHandler NativeTypesFieldNameHandler, f reflect.StructField) string {
+	if fieldNameHandler == nil {
+		return f.Name
+	}
+	return fieldNameHandler(f)
+}
+
 func newNativeType(fieldNameHandler NativeTypesFieldNameHandler, rawType reflect.Type) (*nativeType, error) {
 	refType := rawType
 	if refType.Kind() == reflect.Pointer {
@@ -680,35 +610,35 @@ func newNativeType(fieldNameHandler NativeTypesFieldNameHandler, rawType reflect
 		return nil, fmt.Errorf("unsupported reflect.Type %v, must be reflect.Struct", rawType)
 	}
 
-	// Since naming collisions can only happen with struct tag parsing, we only check for them if it is enabled.
-	if fieldNameHandler != nil {
-		fieldNames := make(map[string]struct{})
-
-		for idx := 0; idx < refType.NumField(); idx++ {
-			field := refType.Field(idx)
-			fieldName := toFieldName(fieldNameHandler, field)
-			if isSkippedFieldName(fieldName) {
-				continue
-			}
-			if _, found := fieldNames[fieldName]; found {
-				return nil, fmt.Errorf("invalid field name `%s` in struct `%s`: %w", fieldName, refType.Name(), errDuplicatedFieldName)
-			} else {
-				fieldNames[fieldName] = struct{}{}
-			}
+	// Collect the set of visible / exported fields, ensuring that unsupported types and sentinel
+	// 'skip' tags such as `-` are filtered out.
+	fieldsByName := make(map[string]reflect.StructField)
+	for idx := 0; idx < refType.NumField(); idx++ {
+		field := refType.Field(idx)
+		if !field.IsExported() || !isSupportedType(field.Type) {
+			continue
 		}
+		fieldName := toFieldName(fieldNameHandler, field)
+		if isSkippedFieldName(fieldName) {
+			continue
+		}
+		if _, found := fieldsByName[fieldName]; found {
+			return nil, fmt.Errorf("invalid field name `%s` in struct `%s`: %w", fieldName, refType.Name(), errDuplicatedFieldName)
+		}
+		fieldsByName[fieldName] = field
 	}
 
 	return &nativeType{
-		typeName:         fmt.Sprintf("%s.%s", simplePkgAlias(refType.PkgPath()), refType.Name()),
-		refType:          refType,
-		fieldNameHandler: fieldNameHandler,
+		typeName:     fmt.Sprintf("%s.%s", simplePkgAlias(refType.PkgPath()), refType.Name()),
+		refType:      refType,
+		fieldsByName: fieldsByName,
 	}, nil
 }
 
 type nativeType struct {
-	typeName         string
-	refType          reflect.Type
-	fieldNameHandler NativeTypesFieldNameHandler
+	typeName     string
+	refType      reflect.Type
+	fieldsByName map[string]reflect.StructField
 }
 
 // ConvertToNative implements ref.Val.ConvertToNative.
@@ -756,34 +686,67 @@ func (t *nativeType) Value() any {
 	return t.typeName
 }
 
-// fieldByName returns the corresponding reflect.StructField for the give name either by matching
-// field tag or field name.
-func (t *nativeType) fieldByName(fieldName string) (reflect.StructField, bool) {
-	if isSkippedFieldName(fieldName) {
-		return reflect.StructField{}, false
-	}
-
-	if t.fieldNameHandler == nil {
-		return t.refType.FieldByName(fieldName)
-	}
-
-	for i := 0; i < t.refType.NumField(); i++ {
-		f := t.refType.Field(i)
-		if toFieldName(t.fieldNameHandler, f) == fieldName {
-			return f, true
-		}
-	}
-
-	return reflect.StructField{}, false
-}
-
 // hasField returns whether a field name has a corresponding Golang reflect.StructField
 func (t *nativeType) hasField(fieldName string) (reflect.StructField, bool) {
-	f, found := t.fieldByName(fieldName)
-	if !found || !f.IsExported() || !isSupportedType(f.Type) {
+	f, found := t.fieldsByName[fieldName]
+	if !found {
 		return reflect.StructField{}, false
 	}
 	return f, true
+}
+
+// FieldNames provides the list of field names for this type.
+func (t *nativeType) FieldNames() []string {
+	fields := make([]string, 0, len(t.fieldsByName))
+	for fieldName := range t.fieldsByName {
+		fields = append(fields, fieldName)
+	}
+	return fields
+}
+
+// FindFieldType looks up a field by name and provides the type and accessor functions
+// required for type identification at check-time and accessors for use at runtime.
+func (t *nativeType) FindFieldType(fieldName string) (*types.FieldType, bool) {
+	refField, found := t.hasField(fieldName)
+	if !found {
+		return nil, false
+	}
+	celType, ok := convertToCelType(refField.Type)
+	if !ok {
+		return nil, false
+	}
+	return &types.FieldType{
+		Type: celType,
+		IsSet: func(obj any) bool {
+			refVal := reflect.Indirect(reflect.ValueOf(obj))
+			refField := refVal.FieldByIndex(refField.Index)
+			return !refField.IsZero()
+		},
+		GetFrom: func(obj any) (any, error) {
+			refVal := reflect.Indirect(reflect.ValueOf(obj))
+			refField := refVal.FieldByIndex(refField.Index)
+			return getFieldValue(refField), nil
+		},
+	}, true
+}
+
+// NewValue constructs a new native Go struct instance populated with the given field values.
+func (t *nativeType) NewValue(adapter types.Adapter, fields map[string]ref.Val) ref.Val {
+	refPtr := reflect.New(t.refType)
+	refVal := refPtr.Elem()
+	for fieldName, val := range fields {
+		refFieldDef, isDefined := t.hasField(fieldName)
+		if !isDefined {
+			return types.NewErr("no such field: %s", fieldName)
+		}
+		fieldVal, err := val.ConvertToNative(refFieldDef.Type)
+		if err != nil {
+			return types.NewErrFromString(err.Error())
+		}
+		refField := refVal.FieldByIndex(refFieldDef.Index)
+		refField.Set(reflect.ValueOf(fieldVal))
+	}
+	return adapter.NativeToValue(refPtr.Interface())
 }
 
 func adaptFieldValue(adapter types.Adapter, refField reflect.Value) ref.Val {

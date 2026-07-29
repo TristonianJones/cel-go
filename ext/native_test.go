@@ -874,7 +874,7 @@ func TestNativeTypeConvertToType(t *testing.T) {
 		tc := tst
 		t.Run(fmt.Sprintf("[%d]", i), func(t *testing.T) {
 			handler := fieldNameByTag(tc.tag)
-			nt, err := newNativeType(handler, reflect.TypeOf(&TestAllTypes{}))
+			nt, err := newNativeType(handler, reflect.TypeFor[*TestAllTypes]())
 			if err != nil {
 				t.Fatalf("newNativeType() failed: %v", err)
 			}
@@ -889,7 +889,7 @@ func TestNativeTypeConvertToType(t *testing.T) {
 }
 
 func TestNativeTypeConvertToNative(t *testing.T) {
-	nt, err := newNativeType(fieldNameByTag("cel"), reflect.TypeOf(&TestAllTypes{}))
+	nt, err := newNativeType(fieldNameByTag("cel"), reflect.TypeFor[*TestAllTypes]())
 	if err != nil {
 		t.Fatalf("newNativeType() failed: %v", err)
 	}
@@ -900,7 +900,7 @@ func TestNativeTypeConvertToNative(t *testing.T) {
 }
 
 func TestNativeTypeHasTrait(t *testing.T) {
-	nt, err := newNativeType(fieldNameByTag("cel"), reflect.TypeOf(&TestAllTypes{}))
+	nt, err := newNativeType(fieldNameByTag("cel"), reflect.TypeFor[*TestAllTypes]())
 	if err != nil {
 		t.Fatalf("newNativeType() failed: %v", err)
 	}
@@ -910,7 +910,7 @@ func TestNativeTypeHasTrait(t *testing.T) {
 }
 
 func TestNativeTypeValue(t *testing.T) {
-	nt, err := newNativeType(fieldNameByTag("cel"), reflect.TypeOf(&TestAllTypes{}))
+	nt, err := newNativeType(fieldNameByTag("cel"), reflect.TypeFor[*TestAllTypes]())
 	if err != nil {
 		t.Fatalf("newNativeType() failed: %v", err)
 	}
@@ -920,7 +920,7 @@ func TestNativeTypeValue(t *testing.T) {
 }
 
 func TestNativeStructWithMultipleSameFieldNames(t *testing.T) {
-	_, err := newNativeType(fieldNameByTag("cel"), reflect.TypeOf(TestStructWithMultipleSameNames{}))
+	_, err := newNativeType(fieldNameByTag("cel"), reflect.TypeFor[TestStructWithMultipleSameNames]())
 	if err == nil {
 		t.Fatal("newNativeType() did not fail as expected")
 	}
@@ -1168,7 +1168,7 @@ func TestTypeResolutionRace(t *testing.T) {
 }
 
 // testEnv initializes the test environment common to all tests.
-func testNativeEnv(t *testing.T, opts ...any) *cel.Env {
+func testNativeEnv(t testing.TB, opts ...any) *cel.Env {
 	t.Helper()
 	envOpts := []cel.EnvOption{
 		cel.Container("ext"),
@@ -1217,8 +1217,8 @@ type Custom struct {
 }
 
 type TestStructWithMultipleSameNames struct {
-	Name        string
-	custom_name string `cel:"Name"`
+	Name       string
+	CustomName string `cel:"Name"`
 }
 
 type TestNestedType struct {
@@ -1334,4 +1334,172 @@ func TestNativeToValueDelegatesUnregisteredStructs(t *testing.T) {
 	if tn := gotReg.Type().TypeName(); !strings.Contains(tn, "registeredNativeStruct") {
 		t.Errorf("NativeToValue(registeredNativeStruct).Type() = %q, want a native object type", tn)
 	}
+}
+
+func BenchmarkNativeTypesEval(b *testing.B) {
+	benchmarks := []struct {
+		name    string
+		expr    string
+		in      any
+		envOpts []any
+	}{
+		{
+			name: "FieldAccess",
+			expr: "t.Int32Val + t.Int64Val",
+			in: map[string]any{
+				"t": &TestAllTypes{Int32Val: 10, Int64Val: 20},
+			},
+		},
+		{
+			name: "NestedFieldAccess",
+			expr: "t.NestedVal.NestedCustomName == 'name'",
+			in: map[string]any{
+				"t": &TestAllTypes{
+					NestedVal: &TestNestedType{NestedCustomName: "name"},
+				},
+			},
+		},
+		{
+			name: "StructCreation",
+			expr: `ext.TestAllTypes{
+				BoolVal: true,
+				Int32Val: 10,
+				Int64Val: 20,
+				StringVal: 'hello world',
+			}`,
+		},
+		{
+			name: "FieldPresence",
+			expr: "has(t.BoolVal) && has(t.NestedVal)",
+			in: map[string]any{
+				"t": &TestAllTypes{
+					BoolVal:   true,
+					NestedVal: &TestNestedType{},
+				},
+			},
+		},
+		{
+			name:    "StructTagFieldAccess",
+			expr:    "t.custom_name == 'name'",
+			envOpts: []any{ParseStructTags(true)},
+			in: map[string]any{
+				"t": &TestAllTypes{CustomName: "name"},
+			},
+		},
+		{
+			name: "ListExists",
+			expr: "tests.exists(t, t.Int32Val > 15)",
+			in: map[string]any{
+				"tests": []*TestAllTypes{
+					{Int32Val: 10},
+					{Int32Val: 20},
+				},
+			},
+		},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			envOpts := append([]any{
+				cel.Variable("t", cel.ObjectType("ext.TestAllTypes")),
+			}, bm.envOpts...)
+			env := testNativeEnv(b, envOpts...)
+			ast, iss := env.Compile(bm.expr)
+			if iss.Err() != nil {
+				b.Fatalf("env.Compile(%q) failed: %v", bm.expr, iss.Err())
+			}
+			prg, err := env.Program(ast, cel.EvalOptions(cel.OptOptimize))
+			if err != nil {
+				b.Fatalf("env.Program() failed: %v", err)
+			}
+			input := bm.in
+			if input == nil {
+				input = cel.NoVars()
+			}
+			b.ResetTimer()
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				prg.Eval(input)
+			}
+		})
+	}
+}
+
+func BenchmarkNativeToValue(b *testing.B) {
+	env := testNativeEnv(b)
+	adapter := env.CELTypeAdapter()
+
+	nested := &TestNestedType{
+		NestedListVal:    []string{"a", "b", "c"},
+		NestedMapVal:     map[int64]bool{1: true},
+		NestedCustomName: "test",
+	}
+	allTypes := &TestAllTypes{
+		BoolVal:   true,
+		Int32Val:  10,
+		Int64Val:  20,
+		StringVal: "hello world",
+		NestedVal: nested,
+		ListVal:   []*TestNestedType{nested},
+	}
+	allTypesSlice := []*TestAllTypes{allTypes, allTypes}
+
+	benchmarks := []struct {
+		name string
+		val  any
+	}{
+		{name: "TestNestedType", val: nested},
+		{name: "TestAllTypes", val: allTypes},
+		{name: "SliceTestAllTypes", val: allTypesSlice},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			b.ResetTimer()
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				adapter.NativeToValue(bm.val)
+			}
+		})
+	}
+}
+
+func BenchmarkConvertToNative(b *testing.B) {
+	env := testNativeEnv(b)
+	adapter := env.CELTypeAdapter()
+
+	allTypes := &TestAllTypes{
+		BoolVal:   true,
+		Int32Val:  10,
+		Int64Val:  20,
+		StringVal: "hello world",
+	}
+	celVal := adapter.NativeToValue(allTypes)
+	targetType := reflect.TypeOf(&TestAllTypes{})
+
+	allTypesSlice := []*TestAllTypes{allTypes, allTypes}
+	celSliceVal := adapter.NativeToValue(allTypesSlice)
+	sliceTargetType := reflect.TypeOf([]*TestAllTypes{})
+
+	b.Run("TestAllTypes", func(b *testing.B) {
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_, err := celVal.ConvertToNative(targetType)
+			if err != nil {
+				b.Fatalf("ConvertToNative failed: %v", err)
+			}
+		}
+	})
+
+	b.Run("SliceTestAllTypes", func(b *testing.B) {
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_, err := celSliceVal.ConvertToNative(sliceTargetType)
+			if err != nil {
+				b.Fatalf("ConvertToNative failed: %v", err)
+			}
+		}
+	})
 }
