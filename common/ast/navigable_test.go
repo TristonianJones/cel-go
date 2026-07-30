@@ -669,9 +669,13 @@ func mustTypeCheck(t testing.TB, expr string, opts ...any) *ast.AST {
 
 func newTestRegistry(t testing.TB, opts ...types.RegistryOption) *types.Registry {
 	t.Helper()
-	reg, err := types.NewProtoRegistry(opts...)
+	var o []any
+	for _, opt := range opts {
+		o = append(o, opt)
+	}
+	reg, err := types.NewRegistry(o...)
 	if err != nil {
-		t.Fatalf("types.NewProtoRegistry() failed: %v", err)
+		t.Fatalf("types.NewRegistry() failed: %v", err)
 	}
 	return reg
 }

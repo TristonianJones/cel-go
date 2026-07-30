@@ -16,6 +16,7 @@ package types
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
 	"time"
 
@@ -54,11 +55,11 @@ type Provider interface {
 	// Returns false if not found.
 	FindStructType(structType string) (*Type, bool)
 
-	// FindStructFieldNames returns thet field names associated with the type, if the type
+	// FindStructFieldNames returns the field names associated with the type, if the type
 	// is found.
 	FindStructFieldNames(structType string) ([]string, bool)
 
-	// FieldStructFieldType returns the field type for a checked type value. Returns
+	// FindStructFieldType returns the field type for a checked type value. Returns
 	// false if the field could not be found.
 	FindStructFieldType(structType, fieldName string) (*FieldType, bool)
 
@@ -88,15 +89,27 @@ type FieldType struct {
 
 // Registry provides type information for a set of registered types.
 type Registry struct {
-	revTypeMap map[string]*Type
-	pbdb       *pb.Db
+	revTypeMap   map[string]*Type
+	structTypes  map[string]StructTypeDescriptor
+	reflectTypes map[reflect.Type]StructTypeDescriptor
+	pbdb         *pb.Db
+	provider     Provider
+	adapter      Adapter
 }
 
-// NewRegistry accepts a list of proto message instances and returns a type
-// provider which can create new instances of the provided message or any
-// message that proto depends upon in its FileDescriptor.
-func NewRegistry(types ...proto.Message) (*Registry, error) {
-	return NewProtoRegistry(ProtoTypeDefs(types...))
+// NewRegistry accepts a list of proto message instances, ref.Type instances, or RegistryOption
+// functions and returns a type provider.
+func NewRegistry(types ...any) (*Registry, error) {
+	r, err := NewProtoRegistry()
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range types {
+		if err := registerTypeItem(r, t); err != nil {
+			return nil, err
+		}
+	}
+	return r, nil
 }
 
 // RegistryOption configures the behavior of the registry.
@@ -123,12 +136,20 @@ func ProtoTypeDefs(types ...proto.Message) RegistryOption {
 	}
 }
 
+// Types creates a RegistryOption which registers individual custom type references or descriptors with the registry.
+func Types(types ...ref.Type) RegistryOption {
+	return func(r *Registry) (*Registry, error) {
+		err := r.RegisterType(types...)
+		if err != nil {
+			return nil, err
+		}
+		return r, nil
+	}
+}
+
 // NewProtoRegistry creates a proto-based registry with a set of configurable options.
 func NewProtoRegistry(opts ...RegistryOption) (*Registry, error) {
-	r := &Registry{
-		revTypeMap: make(map[string]*Type),
-		pbdb:       pb.NewDb(),
-	}
+	r := NewEmptyRegistry()
 	err := r.RegisterType(
 		BoolType,
 		BytesType,
@@ -164,20 +185,49 @@ func NewProtoRegistry(opts ...RegistryOption) (*Registry, error) {
 // NewEmptyRegistry returns a registry which is completely unconfigured.
 func NewEmptyRegistry() *Registry {
 	return &Registry{
-		revTypeMap: make(map[string]*Type),
-		pbdb:       pb.NewDb(),
+		revTypeMap:   make(map[string]*Type),
+		structTypes:  make(map[string]StructTypeDescriptor),
+		reflectTypes: make(map[reflect.Type]StructTypeDescriptor),
+		pbdb:         pb.NewDb(),
 	}
+}
+
+// ComposeTypes accepts a provider, adapter, and a list of types (ref.Type, proto.Message, protoreflect.FileDescriptor, or RegistryOption)
+// and either:
+//   - Determines the provider and adapter are the same instance and a *Registry and registers the listed types via RegisterType or
+//     one of the other registration methods as appropriate.
+//   - Determines the provider and adapter are not the same, or not a *Registry and creates a new composed *Registry which references
+//     the new type information first and then proxies to the underlying provider and adapter methods as appropriate.
+func ComposeTypes(provider Provider, adapter Adapter, types ...any) (Provider, Adapter, error) {
+	reg, isReg := provider.(*Registry)
+	aReg, isAdapterReg := adapter.(*Registry)
+	if isReg && isAdapterReg && reg == aReg {
+		for _, t := range types {
+			if err := registerTypeItem(reg, t); err != nil {
+				return nil, nil, err
+			}
+		}
+		return reg, reg, nil
+	}
+
+	composedReg, err := NewRegistry(types...)
+	if err != nil {
+		return nil, nil, err
+	}
+	composedReg.provider = provider
+	composedReg.adapter = adapter
+	return composedReg, composedReg, nil
 }
 
 // Copy copies the current state of the registry into its own memory space.
 func (p *Registry) Copy() *Registry {
-	copy := &Registry{
-		revTypeMap: make(map[string]*Type),
-		pbdb:       p.pbdb.Copy(),
-	}
-	for k, v := range p.revTypeMap {
-		copy.revTypeMap[k] = v
-	}
+	copy := NewEmptyRegistry()
+	copy.pbdb = p.pbdb.Copy()
+	copy.provider = p.provider
+	copy.adapter = p.adapter
+	maps.Copy(copy.revTypeMap, p.revTypeMap)
+	maps.Copy(copy.structTypes, p.structTypes)
+	maps.Copy(copy.reflectTypes, p.reflectTypes)
 	return copy
 }
 
@@ -207,6 +257,9 @@ func (p *Registry) WithJSONFieldNames(enabled bool) error {
 func (p *Registry) EnumValue(enumName string) ref.Val {
 	enumVal, found := p.pbdb.DescribeEnum(enumName)
 	if !found {
+		if p.provider != nil {
+			return p.provider.EnumValue(enumName)
+		}
 		return NewErr("unknown enum name '%s'", enumName)
 	}
 	return Int(enumVal.Value())
@@ -217,70 +270,98 @@ func (p *Registry) EnumValue(enumName string) ref.Val {
 //
 // Deprecated: use FindStructFieldType
 func (p *Registry) FindFieldType(structType, fieldName string) (*ref.FieldType, bool) {
-	msgType, found := p.pbdb.DescribeType(structType)
-	if !found {
-		return nil, false
+	structType = sanitizeStructTypeName(structType)
+	if st, found := p.structTypes[structType]; found {
+		if ft, found := st.FindFieldType(fieldName); found {
+			exprType, err := TypeToExprType(ft.Type)
+			if err != nil {
+				return nil, false
+			}
+			return makeRefFieldType(exprType, ft.IsSet, ft.GetFrom, ft.IsJSONField), true
+		}
 	}
-	field, found := msgType.FieldByName(fieldName)
-	if !found {
-		return nil, false
+	if msgType, found := p.pbdb.DescribeType(structType); found {
+		if field, found := msgType.FieldByName(fieldName); found {
+			return makeRefFieldType(field.CheckedType(), field.IsSet, field.GetFrom, p.pbdb.JSONFieldNames() && fieldName == field.JSONName()), true
+		}
 	}
-	return &ref.FieldType{
-		Type:        field.CheckedType(),
-		IsSet:       field.IsSet,
-		GetFrom:     field.GetFrom,
-		IsJSONField: p.pbdb.JSONFieldNames() && fieldName == field.JSONName(),
-	}, true
+	if p.provider != nil {
+		if ft, ok := p.provider.FindStructFieldType(structType, fieldName); ok && ft != nil {
+			exprType, err := TypeToExprType(ft.Type)
+			if err != nil {
+				return nil, false
+			}
+			return makeRefFieldType(exprType, ft.IsSet, ft.GetFrom, ft.IsJSONField), true
+		}
+	}
+	return nil, false
 }
 
 // FindStructFieldNames returns the set of field names for the given struct type,
 // if the type exists in the registry.
 func (p *Registry) FindStructFieldNames(structType string) ([]string, bool) {
-	msgType, found := p.pbdb.DescribeType(structType)
-	if !found {
-		return []string{}, false
+	structType = sanitizeStructTypeName(structType)
+	if st, found := p.structTypes[structType]; found {
+		return st.FieldNames(), true
 	}
-	fieldMap := msgType.FieldMap()
-	fields := make([]string, len(fieldMap))
-	idx := 0
-	for f := range fieldMap {
-		fields[idx] = f
-		idx++
+	if msgType, found := p.pbdb.DescribeType(structType); found {
+		fieldMap := msgType.FieldMap()
+		fields := make([]string, len(fieldMap))
+		idx := 0
+		for f := range fieldMap {
+			fields[idx] = f
+			idx++
+		}
+		return fields, true
 	}
-	return fields, true
+	if p.provider != nil {
+		return p.provider.FindStructFieldNames(structType)
+	}
+	return []string{}, false
 }
 
 // FindStructFieldType returns the field type for a checked type value. Returns
 // false if the field could not be found.
 func (p *Registry) FindStructFieldType(structType, fieldName string) (*FieldType, bool) {
-	msgType, found := p.pbdb.DescribeType(structType)
-	if !found {
-		return nil, false
+	structType = sanitizeStructTypeName(structType)
+	if st, found := p.structTypes[structType]; found {
+		if ft, found := st.FindFieldType(fieldName); found {
+			return ft, true
+		}
 	}
-	field, found := msgType.FieldByName(fieldName)
-	if !found {
-		return nil, false
+	if msgType, found := p.pbdb.DescribeType(structType); found {
+		if field, found := msgType.FieldByName(fieldName); found {
+			return &FieldType{
+				Type:        fieldDescToCELType(field),
+				IsSet:       field.IsSet,
+				GetFrom:     field.GetFrom,
+				IsJSONField: p.pbdb.JSONFieldNames() && fieldName == field.JSONName(),
+			}, true
+		}
 	}
-	return &FieldType{
-		Type:        fieldDescToCELType(field),
-		IsSet:       field.IsSet,
-		GetFrom:     field.GetFrom,
-		IsJSONField: p.pbdb.JSONFieldNames() && fieldName == field.JSONName(),
-	}, true
+	if p.provider != nil {
+		return p.provider.FindStructFieldType(structType, fieldName)
+	}
+	return nil, false
 }
 
 // FindStructFieldDescription returns documentation for a field if available.
 // Returns false if the field could not be found.
 func (p *Registry) FindStructFieldDescription(structType, fieldName string) (string, bool) {
-	msgType, found := p.pbdb.DescribeType(structType)
-	if !found {
-		return "", false
+	structType = sanitizeStructTypeName(structType)
+	if msgType, found := p.pbdb.DescribeType(structType); found {
+		if field, found := msgType.FieldByName(fieldName); found {
+			return field.Documentation(), true
+		}
 	}
-	field, found := msgType.FieldByName(fieldName)
-	if !found {
-		return "", false
+	if p.provider != nil {
+		if pd, ok := p.provider.(interface {
+			FindStructFieldDescription(string, string) (string, bool)
+		}); ok {
+			return pd.FindStructFieldDescription(structType, fieldName)
+		}
 	}
-	return field.Documentation(), true
+	return "", false
 }
 
 // FindIdent takes a qualified identifier name and returns a ref.Val if one exists.
@@ -291,6 +372,9 @@ func (p *Registry) FindIdent(identName string) (ref.Val, bool) {
 	if enumVal, found := p.pbdb.DescribeEnum(identName); found {
 		return Int(enumVal.Value()), true
 	}
+	if p.provider != nil {
+		return p.provider.FindIdent(identName)
+	}
 	return nil, false
 }
 
@@ -298,17 +382,19 @@ func (p *Registry) FindIdent(identName string) (ref.Val, bool) {
 //
 // Deprecated: use FindStructType
 func (p *Registry) FindType(structType string) (*exprpb.Type, bool) {
-	if _, found := p.pbdb.DescribeType(structType); !found {
-		return nil, false
+	structType = sanitizeStructTypeName(structType)
+	if p.hasStructType(structType) {
+		return makeExprMessageType(structType), true
 	}
-	if structType != "" && structType[0] == '.' {
-		structType = structType[1:]
+	if p.provider != nil {
+		if tp, ok := p.provider.(ref.TypeProvider); ok {
+			return tp.FindType(structType)
+		}
+		if _, ok := p.provider.FindStructType(structType); ok {
+			return makeExprMessageType(structType), true
+		}
 	}
-	return &exprpb.Type{
-		TypeKind: &exprpb.Type_Type{
-			Type: &exprpb.Type{
-				TypeKind: &exprpb.Type_MessageType{
-					MessageType: structType}}}}, true
+	return nil, false
 }
 
 // FindStructType returns the Type give a qualified type name.
@@ -319,13 +405,14 @@ func (p *Registry) FindType(structType string) (*exprpb.Type, bool) {
 //
 // Returns false if not found.
 func (p *Registry) FindStructType(structType string) (*Type, bool) {
-	if _, found := p.pbdb.DescribeType(structType); !found {
-		return nil, false
+	structType = sanitizeStructTypeName(structType)
+	if p.hasStructType(structType) {
+		return NewTypeTypeWithParam(NewObjectType(structType)), true
 	}
-	if structType != "" && structType[0] == '.' {
-		structType = structType[1:]
+	if p.provider != nil {
+		return p.provider.FindStructType(structType)
 	}
-	return NewTypeTypeWithParam(NewObjectType(structType)), true
+	return nil, false
 }
 
 // NewValue creates a new type value from a qualified name and map of field
@@ -335,8 +422,15 @@ func (p *Registry) FindStructType(structType string) (*Type, bool) {
 // to convert the Val to the field's native type. If an error occurs during
 // conversion, the NewValue will be a types.Err.
 func (p *Registry) NewValue(structType string, fields map[string]ref.Val) ref.Val {
+	structType = sanitizeStructTypeName(structType)
+	if st, found := p.structTypes[structType]; found {
+		return st.NewValue(p, fields)
+	}
 	td, found := p.pbdb.DescribeType(structType)
 	if !found {
+		if p.provider != nil {
+			return p.provider.NewValue(structType, fields)
+		}
 		return NewErr("unknown type '%s'", structType)
 	}
 	msg := td.New()
@@ -382,6 +476,21 @@ func (p *Registry) RegisterMessage(message proto.Message) error {
 // to CEL, even when they're not based on protobuf types.
 func (p *Registry) RegisterType(types ...ref.Type) error {
 	for _, t := range types {
+		if st, ok := t.(StructTypeDescriptor); ok {
+			typeName := t.TypeName()
+			if celType, isCelType := t.(*Type); isCelType && celType.Kind() == TypeKind && len(celType.parameters) > 0 {
+				typeName = celType.parameters[0].TypeName()
+			}
+			p.structTypes[typeName] = st
+			if rt := st.ReflectType(); rt != nil {
+				p.reflectTypes[rt] = st
+				if rt.Kind() == reflect.Ptr {
+					p.reflectTypes[rt.Elem()] = st
+				} else {
+					p.reflectTypes[reflect.PointerTo(rt)] = st
+				}
+			}
+		}
 		celType := maybeForeignType(t)
 		existing, found := p.revTypeMap[t.TypeName()]
 		if !found {
@@ -400,6 +509,25 @@ func (p *Registry) RegisterType(types ...ref.Type) error {
 	return nil
 }
 
+func (p *Registry) findStructDescriptorByReflectType(rt reflect.Type) (StructTypeDescriptor, bool) {
+	if rt == nil {
+		return nil, false
+	}
+	if st, found := p.reflectTypes[rt]; found {
+		return st, true
+	}
+	if rt.Kind() == reflect.Ptr {
+		if st, found := p.reflectTypes[rt.Elem()]; found {
+			return st, true
+		}
+	} else {
+		if st, found := p.reflectTypes[reflect.PointerTo(rt)]; found {
+			return st, true
+		}
+	}
+	return nil, false
+}
+
 // NativeToValue converts various "native" types to ref.Val with this specific implementation
 // providing support for custom proto-based types.
 //
@@ -413,6 +541,9 @@ func (p *Registry) NativeToValue(value any) ref.Val {
 		typeName := string(v.ProtoReflect().Descriptor().FullName())
 		td, found := p.pbdb.DescribeType(typeName)
 		if !found {
+			if p.adapter != nil {
+				return p.adapter.NativeToValue(value)
+			}
 			return NewErr("unknown type: '%s'", typeName)
 		}
 		unwrapped, isUnwrapped, err := td.MaybeUnwrap(v)
@@ -435,6 +566,19 @@ func (p *Registry) NativeToValue(value any) ref.Val {
 		return p.NativeToValue(v.Interface())
 	case protoreflect.Value:
 		return p.NativeToValue(v.Interface())
+	default:
+		if len(p.reflectTypes) > 0 && value != nil {
+			if st, found := p.findStructDescriptorByReflectType(reflect.TypeOf(value)); found {
+				val := reflect.ValueOf(value)
+				if val.Kind() == reflect.Ptr && val.IsNil() {
+					return NullValue
+				}
+				return st.Adapt(p, value)
+			}
+		}
+	}
+	if p.adapter != nil {
+		return p.adapter.NativeToValue(value)
 	}
 	return UnsupportedRefValConversionErr(value)
 }
@@ -452,6 +596,58 @@ func (p *Registry) registerAllTypes(fd *pb.FileDescription) error {
 		}
 	}
 	return nil
+}
+
+func (p *Registry) hasStructType(structType string) bool {
+	if _, found := p.structTypes[structType]; found {
+		return true
+	}
+	_, found := p.pbdb.DescribeType(structType)
+	return found
+}
+
+func sanitizeStructTypeName(structType string) string {
+	if len(structType) > 0 && structType[0] == '.' {
+		return structType[1:]
+	}
+	return structType
+}
+
+func registerTypeItem(r *Registry, t any) error {
+	switch v := t.(type) {
+	case proto.Message:
+		return r.RegisterMessage(v)
+	case protoreflect.FileDescriptor:
+		return r.RegisterDescriptor(v)
+	case ref.Type:
+		return r.RegisterType(v)
+	case RegistryOption:
+		_, err := v(r)
+		return err
+	default:
+		return fmt.Errorf("unsupported type: %T", t)
+	}
+}
+
+func makeExprMessageType(structType string) *exprpb.Type {
+	return &exprpb.Type{
+		TypeKind: &exprpb.Type_Type{
+			Type: &exprpb.Type{
+				TypeKind: &exprpb.Type_MessageType{
+					MessageType: structType,
+				},
+			},
+		},
+	}
+}
+
+func makeRefFieldType(t *exprpb.Type, isSet ref.FieldTester, getFrom ref.FieldGetter, isJSONField bool) *ref.FieldType {
+	return &ref.FieldType{
+		Type:        t,
+		IsSet:       isSet,
+		GetFrom:     getFrom,
+		IsJSONField: isJSONField,
+	}
 }
 
 func fieldDescToCELType(field *pb.FieldDescription) *Type {
@@ -522,6 +718,8 @@ func nativeToValue(a Adapter, value any) (ref.Val, bool) {
 		if v != nil {
 			return *v, true
 		}
+	case ref.Val:
+		return v, true
 	case bool:
 		return Bool(v), true
 	case int:
@@ -620,8 +818,6 @@ func nativeToValue(a Adapter, value any) (ref.Val, bool) {
 		return NewJSONList(a, v), true
 	case *structpb.Struct:
 		return NewJSONStruct(a, v), true
-	case ref.Val:
-		return v, true
 	case protoreflect.EnumNumber:
 		return Int(v), true
 	case proto.Message:
@@ -649,7 +845,7 @@ func nativeToValue(a Adapter, value any) (ref.Val, bool) {
 		refValue := reflect.ValueOf(v)
 		if refValue.Kind() == reflect.Ptr {
 			if refValue.IsNil() {
-				return UnsupportedRefValConversionErr(v), true
+				return nil, false
 			}
 			refValue = refValue.Elem()
 		}

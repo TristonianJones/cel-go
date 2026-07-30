@@ -748,9 +748,9 @@ func TestVariableAsCELVariable(t *testing.T) {
 		},
 	}
 
-	tp, err := types.NewProtoRegistry()
+	tp, err := types.NewRegistry()
 	if err != nil {
-		t.Fatalf("types.NewProtoRegistry() failed: %v", err)
+		t.Fatalf("types.NewRegistry() failed: %v", err)
 	}
 	tp.RegisterType(types.NewOpaqueType("set", types.NewTypeParamType("T")))
 	for _, tst := range tests {
@@ -936,9 +936,9 @@ func TestFunctionAsCELFunction(t *testing.T) {
 					types.NewTypeParamType("T"))),
 		},
 	}
-	tp, err := types.NewProtoRegistry()
+	tp, err := types.NewRegistry()
 	if err != nil {
-		t.Fatalf("types.NewProtoRegistry() failed: %v", err)
+		t.Fatalf("types.NewRegistry() failed: %v", err)
 	}
 	tp.RegisterType(types.NewOpaqueType("set", types.NewTypeParamType("T")))
 	for _, tst := range tests {
@@ -1047,9 +1047,9 @@ func TestTypeDescAsCELTypeErrors(t *testing.T) {
 			want: errors.New("undefined type"),
 		},
 	}
-	tp, err := types.NewProtoRegistry()
+	tp, err := types.NewRegistry()
 	if err != nil {
-		t.Fatalf("types.NewProtoRegistry() failed: %v", err)
+		t.Fatalf("types.NewRegistry() failed: %v", err)
 	}
 	tp.RegisterType(types.NewOpaqueType("set", types.NewTypeParamType("T")))
 	for _, tst := range tests {

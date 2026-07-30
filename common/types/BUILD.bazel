@@ -28,6 +28,7 @@ go_library(
         "provider.go",
         "regex.go",
         "string.go",
+        "struct.go",
         "timestamp.go",
         "types.go",
         "uint.go",

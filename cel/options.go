@@ -920,7 +920,11 @@ func ContextProtoVars(ctx proto.Message, opts ...types.RegistryOption) (Activati
 	}
 	regOpts := []types.RegistryOption{types.ProtoTypeDefs(ctx)}
 	regOpts = append(regOpts, opts...)
-	reg, err := types.NewProtoRegistry(regOpts...)
+	var ro []any
+	for _, opt := range regOpts {
+		ro = append(ro, opt)
+	}
+	reg, err := types.NewRegistry(ro...)
 	if err != nil {
 		return nil, err
 	}

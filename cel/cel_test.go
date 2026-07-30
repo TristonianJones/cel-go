@@ -4132,9 +4132,9 @@ func TestJSONFieldNamesInvalidProvider(t *testing.T) {
 	type wrapperRegistry struct {
 		*types.Registry
 	}
-	reg, err := types.NewProtoRegistry(types.JSONFieldNames(true))
+	reg, err := types.NewRegistry(types.JSONFieldNames(true))
 	if err != nil {
-		t.Fatalf("types.NewProtoRegistry() failed: %v", err)
+		t.Fatalf("types.NewRegistry() failed: %v", err)
 	}
 	wrapped := wrapperRegistry{Registry: reg}
 	_, err = NewEnv(CustomTypeProvider(wrapped), CustomTypeAdapter(reg), JSONFieldNames(true))

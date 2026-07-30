@@ -198,9 +198,9 @@ func TestEnvPartialVarsError(t *testing.T) {
 }
 
 func TestTypeProviderInterop(t *testing.T) {
-	reg, err := types.NewProtoRegistry(types.ProtoTypeDefs(&proto3pb.TestAllTypes{}))
+	reg, err := types.NewRegistry(&proto3pb.TestAllTypes{})
 	if err != nil {
-		t.Fatalf("types.NewProtoRegistry() failed: %v", err)
+		t.Fatalf("types.NewRegistry() failed: %v", err)
 	}
 	tests := []struct {
 		name     string
