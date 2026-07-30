@@ -965,6 +965,15 @@ func TestNativeStructEmbedded(t *testing.T) {
 			},
 			out: true,
 		},
+		{
+			expr: `test.Name == "name"`,
+			in: map[string]any{
+				"test": &TestEmbeddedTypes{
+					Custom: Custom{Name: "name"},
+				},
+			},
+			out: true,
+		},
 	}
 
 	envOpts := []cel.EnvOption{
@@ -1268,6 +1277,7 @@ type TestMapVal struct {
 }
 
 type TestEmbeddedTypes struct {
+	Custom
 	TestNestedType `json:"embedded,omitempty"`
 	Skipped        string `json:"-"`
 }

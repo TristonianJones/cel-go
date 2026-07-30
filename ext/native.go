@@ -581,8 +581,11 @@ func newNativeTypes(fieldNameHandler NativeTypesFieldNameHandler, rawType reflec
 		}
 		result = append(result, nt)
 
-		for idx := 0; idx < t.NumField(); idx++ {
-			iterateStructMembers(t.Field(idx).Type)
+		for _, field := range reflect.VisibleFields(t) {
+			if !field.IsExported() || !isSupportedType(field.Type) {
+				continue
+			}
+			iterateStructMembers(field.Type)
 		}
 	}
 	iterateStructMembers(rawType)
@@ -613,8 +616,7 @@ func newNativeType(fieldNameHandler NativeTypesFieldNameHandler, rawType reflect
 	// Collect the set of visible / exported fields, ensuring that unsupported types and sentinel
 	// 'skip' tags such as `-` are filtered out.
 	fieldsByName := make(map[string]reflect.StructField)
-	for idx := 0; idx < refType.NumField(); idx++ {
-		field := refType.Field(idx)
+	for _, field := range reflect.VisibleFields(refType) {
 		if !field.IsExported() || !isSupportedType(field.Type) {
 			continue
 		}
