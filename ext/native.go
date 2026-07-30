@@ -536,7 +536,7 @@ func (o *nativeObj) getReflectedField(field ref.Val) (reflect.Value, ref.Val) {
 		return reflect.Value{}, types.NewErr("no such field: %s", fieldName)
 	}
 	refVal := reflect.Indirect(o.refValue)
-	return refVal.FieldByIndex(refField.Index), nil
+	return safeGetFieldByIndex(refVal, refField.Index), nil
 }
 
 // Type implements the ref.Val interface method.
@@ -721,13 +721,15 @@ func (t *nativeType) FindFieldType(fieldName string) (*types.FieldType, bool) {
 		Type: celType,
 		IsSet: func(obj any) bool {
 			refVal := reflect.Indirect(reflect.ValueOf(obj))
-			refField := refVal.FieldByIndex(refField.Index)
-			return !refField.IsZero()
+			// Check if field path exists and is set
+			refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+			return refFieldVal.IsValid() && !refFieldVal.IsZero()
 		},
 		GetFrom: func(obj any) (any, error) {
 			refVal := reflect.Indirect(reflect.ValueOf(obj))
-			refField := refVal.FieldByIndex(refField.Index)
-			return getFieldValue(refField), nil
+			// Check if field path exists and is set
+			refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+			return getFieldValue(refFieldVal), nil
 		},
 	}, true
 }
@@ -745,7 +747,10 @@ func (t *nativeType) NewValue(adapter types.Adapter, fields map[string]ref.Val) 
 		if err != nil {
 			return types.NewErrFromString(err.Error())
 		}
-		refField := refVal.FieldByIndex(refFieldDef.Index)
+		refField := safeSetFieldByIndex(refVal, refFieldDef.Index)
+		if !refField.IsValid() {
+			return types.NewErr("cannot set field: %s", fieldName)
+		}
 		refField.Set(reflect.ValueOf(fieldVal))
 	}
 	return adapter.NativeToValue(refPtr.Interface())
@@ -755,7 +760,49 @@ func adaptFieldValue(adapter types.Adapter, refField reflect.Value) ref.Val {
 	return adapter.NativeToValue(getFieldValue(refField))
 }
 
+// safeSetFieldByIndex traverses refField.Index to set a field value.
+// If an intermediate pointer along the path is nil, it allocates a new
+// instance of the struct that the pointer references.
+func safeSetFieldByIndex(v reflect.Value, index []int) reflect.Value {
+	for _, i := range index {
+		if v.Kind() == reflect.Pointer {
+			if v.IsNil() {
+				v.Set(reflect.New(v.Type().Elem()))
+			}
+			v = v.Elem()
+		}
+		if v.Kind() != reflect.Struct || i >= v.NumField() {
+			return reflect.Value{}
+		}
+		v = v.Field(i)
+	}
+	return v
+}
+
+// safeGetFieldByIndex traverses refField.Index. If an intermediate pointer along
+// the path is nil, it substitutes a pointer to an empty struct instance of that type.
+func safeGetFieldByIndex(v reflect.Value, index []int) reflect.Value {
+	for _, i := range index {
+		if v.Kind() == reflect.Pointer {
+			if v.IsNil() {
+				// Intermediate pointer to struct is nil: instantiate an empty struct
+				v = reflect.New(v.Type().Elem()).Elem()
+			} else {
+				v = v.Elem()
+			}
+		}
+		if v.Kind() != reflect.Struct || i >= v.NumField() {
+			return reflect.Value{}
+		}
+		v = v.Field(i)
+	}
+	return v
+}
+
 func getFieldValue(refField reflect.Value) any {
+	if !refField.IsValid() {
+		return nil
+	}
 	if refField.IsZero() {
 		switch refField.Kind() {
 		case reflect.Struct:

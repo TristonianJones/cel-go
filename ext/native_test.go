@@ -1024,6 +1024,79 @@ func TestNativeStructEmbedded(t *testing.T) {
 	}
 }
 
+func TestNativeStructEmbeddedPointer(t *testing.T) {
+	nativeTests := []struct {
+		expr string
+		in   map[string]any
+		out  any
+	}{
+		{
+			expr: `!has(test.custom_name) && test.custom_name == ""`,
+			in: map[string]any{
+				"test": &TestEmbeddedPointerTypes{
+					TestNestedType: nil,
+				},
+			},
+			out: true,
+		},
+		{
+			expr: `has(test.custom_name) && test.custom_name == "name"`,
+			in: map[string]any{
+				"test": &TestEmbeddedPointerTypes{
+					TestNestedType: &TestNestedType{NestedCustomName: "name"},
+				},
+			},
+			out: true,
+		},
+		{
+			expr: `ext.TestEmbeddedPointerTypes{custom_name: "name"}.custom_name == "name"`,
+			in:   nil,
+			out:  true,
+		},
+	}
+
+	envOpts := []cel.EnvOption{
+		NativeTypes(
+			reflect.TypeFor[*TestEmbeddedPointerTypes](),
+			reflect.TypeFor[*TestNestedType](),
+			ParseStructTag("json"),
+		),
+		cel.Variable("test", cel.ObjectType("ext.TestEmbeddedPointerTypes")),
+	}
+
+	env, err := cel.NewEnv(envOpts...)
+	if err != nil {
+		t.Fatalf("cel.NewEnv(NativeTypes()) failed: %v", err)
+	}
+
+	for i, tst := range nativeTests {
+		tc := tst
+		t.Run(fmt.Sprintf("[%d]", i), func(t *testing.T) {
+			pAst, iss := env.Parse(tc.expr)
+			if iss.Err() != nil {
+				t.Fatalf("env.Parse(%v) failed: %v", tc.expr, iss.Err())
+			}
+			cAst, iss := env.Check(pAst)
+			if iss.Err() != nil {
+				t.Fatalf("env.Check(%v) failed: %v", tc.expr, iss.Err())
+			}
+			for _, ast := range []*cel.Ast{pAst, cAst} {
+				prg, err := env.Program(ast)
+				if err != nil {
+					t.Fatal(err)
+				}
+				out, _, err := prg.Eval(tc.in)
+				if err != nil {
+					t.Fatalf("prg.Eval() failed: %v", err)
+				}
+				if !reflect.DeepEqual(out.Value(), tc.out) {
+					t.Errorf("got %v, wanted %v for expr: %s", out.Value(), tc.out, tc.expr)
+				}
+			}
+		})
+	}
+}
+
 func TestNativeStructHiddenField(t *testing.T) {
 	envOpts := []cel.EnvOption{
 		NativeTypes(
@@ -1280,6 +1353,10 @@ type TestEmbeddedTypes struct {
 	Custom
 	TestNestedType `json:"embedded,omitempty"`
 	Skipped        string `json:"-"`
+}
+
+type TestEmbeddedPointerTypes struct {
+	*TestNestedType `json:"embedded,omitempty"`
 }
 
 type TestRefValFieldType struct {
