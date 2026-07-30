@@ -720,12 +720,14 @@ func (t *nativeType) FindFieldType(fieldName string) (*types.FieldType, bool) {
 	return &types.FieldType{
 		Type: celType,
 		IsSet: func(obj any) bool {
+			// TODO: determine what to do if refVal is Invalid()
 			refVal := reflect.Indirect(reflect.ValueOf(obj))
 			// Check if field path exists and is set
 			refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
 			return refFieldVal.IsValid() && !refFieldVal.IsZero()
 		},
 		GetFrom: func(obj any) (any, error) {
+			// TODO: determine what to do if refVal is Invalid()
 			refVal := reflect.Indirect(reflect.ValueOf(obj))
 			// Check if field path exists and is set
 			refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
