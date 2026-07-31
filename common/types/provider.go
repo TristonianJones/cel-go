@@ -476,11 +476,24 @@ func (p *Registry) RegisterMessage(message proto.Message) error {
 // to CEL, even when they're not based on protobuf types.
 func (p *Registry) RegisterType(types ...ref.Type) error {
 	for _, t := range types {
-		if st, ok := t.(StructTypeDescriptor); ok {
-			typeName := t.TypeName()
-			if celType, isCelType := t.(*Type); isCelType && celType.Kind() == TypeKind && len(celType.parameters) > 0 {
-				typeName = celType.parameters[0].TypeName()
+		existing, found := p.revTypeMap[t.TypeName()]
+		celType := maybeForeignType(t)
+		if found {
+			if !existing.IsEquivalentType(celType) {
+				return fmt.Errorf("type registration conflict. found: %v, input: %v", existing, celType)
 			}
+			if existing.traitMask != celType.traitMask {
+				return fmt.Errorf(
+					"type registered with conflicting traits: %v with traits %v, input: %v",
+					existing.TypeName(), existing.traitMask, celType.traitMask)
+			}
+			continue
+		}
+
+		typeName := t.TypeName()
+		p.revTypeMap[typeName] = celType
+		if st, ok := t.(StructTypeDescriptor); ok {
+			// Conflicts are gated above so if we see a struct here, it's safe to register.
 			p.structTypes[typeName] = st
 			if rt := st.ReflectType(); rt != nil {
 				p.reflectTypes[rt] = st
@@ -490,20 +503,6 @@ func (p *Registry) RegisterType(types ...ref.Type) error {
 					p.reflectTypes[reflect.PointerTo(rt)] = st
 				}
 			}
-		}
-		celType := maybeForeignType(t)
-		existing, found := p.revTypeMap[t.TypeName()]
-		if !found {
-			p.revTypeMap[t.TypeName()] = celType
-			continue
-		}
-		if !existing.IsEquivalentType(celType) {
-			return fmt.Errorf("type registration conflict. found: %v, input: %v", existing, celType)
-		}
-		if existing.traitMask != celType.traitMask {
-			return fmt.Errorf(
-				"type registered with conflicting traits: %v with traits %v, input: %v",
-				existing.TypeName(), existing.traitMask, celType.traitMask)
 		}
 	}
 	return nil

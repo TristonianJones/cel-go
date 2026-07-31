@@ -1082,6 +1082,9 @@ func TestRegistryStructTypeDescriptor_FindStructType(t *testing.T) {
 			if st.TypeName() != tc.wantType {
 				t.Errorf("FindStructType(%q).TypeName() = %s, want %s", tc.name, st.TypeName(), tc.wantType)
 			}
+			if st.Parameters()[0].TypeName() != "custom.MyStruct" {
+				t.Errorf("FindStructType(%q) TypeName() = %s, want 'custom.MyStruct'", tc.name, st.Parameters()[0].TypeName())
+			}
 		})
 	}
 }
