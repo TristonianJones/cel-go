@@ -16,6 +16,7 @@ package types
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
@@ -938,9 +939,10 @@ func TestNativeToValue_Any(t *testing.T) {
 	}
 
 	tests := []struct {
-		name string
-		in   any
-		want ref.Val
+		name    string
+		in      any
+		want    ref.Val
+		wantErr bool
 	}{
 		{
 			name: "NullValue",
@@ -986,9 +988,10 @@ func TestNativeToValue_Json(t *testing.T) {
 	parsedExpr := &exprpb.ParsedExpr{}
 
 	tests := []struct {
-		name string
-		in   any
-		want ref.Val
+		name    string
+		in      any
+		want    ref.Val
+		wantErr bool
 	}{
 		// Json primitive conversion test.
 		{name: "bool value", in: structpb.NewBoolValue(false), want: False},
@@ -1040,10 +1043,31 @@ func TestNativeToValue_Json(t *testing.T) {
 			in:   parsedExpr,
 			want: reg.NativeToValue(parsedExpr),
 		},
+
+		// Go json.Number conversion.
+		{name: "json.Number int", in: json.Number("42"), want: Int(42)},
+		{name: "json.Number float", in: json.Number("42.5"), want: Double(42.5)},
+		{name: "json.Number invalid", in: json.Number("invalid-num"), wantErr: true},
+
+		// Go json.RawMessage conversion.
+		{name: "json.RawMessage map", in: json.RawMessage(`{"key":"value"}`), want: NewStringInterfaceMap(reg, map[string]any{"key": "value"})},
+		{name: "json.RawMessage string", in: json.RawMessage(`"hello"`), want: String("hello")},
+		{name: "json.RawMessage int", in: json.RawMessage(`123`), want: Double(123)},
+		{name: "json.RawMessage array", in: json.RawMessage(`["world", 42]`), want: NewDynamicList(reg, []any{"world", float64(42)})},
+		{name: "[]json.RawMessage slice", in: []json.RawMessage{json.RawMessage(`"hello"`), json.RawMessage(`123`)}, want: NewDynamicList(reg, []json.RawMessage{json.RawMessage(`"hello"`), json.RawMessage(`123`)})},
+		{name: "json.RawMessage invalid", in: json.RawMessage(`invalid-json`), wantErr: true},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.wantErr {
+				reg := newTestRegistry(t, ProtoTypeDefs(&exprpb.ParsedExpr{}))
+				val := reg.NativeToValue(tc.in)
+				if !IsError(val) {
+					t.Errorf("NativeToValue(%v) = %v, want error", tc.in, val)
+				}
+				return
+			}
 			expectNativeToValue(t, tc.in, tc.want)
 		})
 	}

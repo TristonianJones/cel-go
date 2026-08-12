@@ -15,6 +15,7 @@
 package types
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 	"reflect"
@@ -662,6 +663,18 @@ func (p *Registry) NativeToValue(value any) ref.Val {
 	case *uint64:
 		if v != nil {
 			return Uint(*v)
+		}
+	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			return Int(i)
+		}
+		if f, err := v.Float64(); err == nil {
+			return Double(f)
+		}
+	case json.RawMessage:
+		var rawVal any
+		if err := json.Unmarshal(v, &rawVal); err == nil {
+			return p.NativeToValue(rawVal)
 		}
 	case []byte:
 		return Bytes(v)
