@@ -273,8 +273,6 @@ func TestRegistryConcurrentCopy(t *testing.T) {
 	wg.Wait()
 }
 
-
-
 func TestRegistryRegisterType(t *testing.T) {
 	tests := []struct {
 		name    string
