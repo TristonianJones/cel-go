@@ -15,6 +15,7 @@
 package types
 
 import (
+	"encoding/json"
 	"errors"
 	"math"
 	"reflect"
@@ -549,5 +550,150 @@ func TestIsStrictRFC3339MatchesPattern(t *testing.T) {
 		if got, want := isStrictRFC3339(s), strictRFC3339Pattern.MatchString(s); got != want {
 			t.Errorf("isStrictRFC3339(%q) = %v, strictRFC3339Pattern.MatchString = %v", s, got, want)
 		}
+	}
+}
+
+func TestParseTimestamp(t *testing.T) {
+	now := time.Now().UTC()
+	epoch := int64(1700000000)
+	epochTime := time.Unix(epoch, 0).UTC()
+	epochFloatTime := time.Unix(epoch, 500000000).UTC()
+	var nilPbTs *tpb.Timestamp
+
+	tests := []struct {
+		name    string
+		val     any
+		want    time.Time
+		wantErr bool
+	}{
+		{
+			name:    "nil",
+			val:     nil,
+			wantErr: true,
+		},
+		{
+			name:    "empty string",
+			val:     "",
+			wantErr: true,
+		},
+		{
+			name: "time.Time",
+			val:  now,
+			want: now,
+		},
+		{
+			name: "Timestamp struct",
+			val:  Timestamp{Time: now},
+			want: now,
+		},
+		{
+			name: "*tpb.Timestamp",
+			val:  tpb.New(now),
+			want: now,
+		},
+		{
+			name: "nil *tpb.Timestamp",
+			val:  nilPbTs,
+			want: time.Time{},
+		},
+		{
+			name: "int",
+			val:  int(epoch),
+			want: epochTime,
+		},
+		{
+			name: "int32",
+			val:  int32(epoch),
+			want: epochTime,
+		},
+		{
+			name: "int64",
+			val:  int64(epoch),
+			want: epochTime,
+		},
+		{
+			name: "float64",
+			val:  float64(1700000000.5),
+			want: epochFloatTime,
+		},
+		{
+			name: "float32",
+			val:  float32(1700000000.5),
+			want: epochTime,
+		},
+		{
+			name: "json.Number int",
+			val:  json.Number("1700000000"),
+			want: epochTime,
+		},
+		{
+			name: "json.Number float",
+			val:  json.Number("1700000000.5"),
+			want: epochFloatTime,
+		},
+		{
+			name:    "json.Number invalid",
+			val:     json.Number("invalid"),
+			wantErr: true,
+		},
+		{
+			name: "string RFC3339",
+			val:  "2026-08-10T12:00:00Z",
+			want: time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC),
+		},
+		{
+			name: "string RFC3339Nano",
+			val:  "2026-08-10T12:00:00.500Z",
+			want: time.Date(2026, 8, 10, 12, 0, 0, 500000000, time.UTC),
+		},
+		{
+			name:    "string RFC3339 invalid",
+			val:     "2026-99-99T99:99:99Z",
+			wantErr: true,
+		},
+		{
+			name: "string epoch int",
+			val:  "1700000000",
+			want: epochTime,
+		},
+		{
+			name: "string epoch float",
+			val:  "1700000000.5",
+			want: epochFloatTime,
+		},
+		{
+			name:    "string invalid",
+			val:     "not-a-timestamp",
+			wantErr: true,
+		},
+		{
+			name:    "unsupported map type",
+			val:     map[string]any{},
+			wantErr: true,
+		},
+		{
+			name:    "overflow",
+			val:     int64(999999999999999),
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ts, err := ParseTimestamp(tc.val)
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("ParseTimestamp(%v) succeeded, wanted error", tc.val)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("ParseTimestamp(%v) unexpected error: %v", tc.val, err)
+				return
+			}
+			if !ts.Equal(tc.want) {
+				t.Errorf("ParseTimestamp(%v) = %v, wanted %v", tc.val, ts, tc.want)
+			}
+		})
 	}
 }

@@ -15,6 +15,8 @@
 package types
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -256,6 +258,87 @@ func (t Timestamp) Value() any {
 
 func (t Timestamp) format(sb *strings.Builder) {
 	fmt.Fprintf(sb, `timestamp("%s")`, t.Time.UTC().Format(time.RFC3339Nano))
+}
+
+// ParseTimestamp attempts to parse a timestamp from various supported types and representations:
+// - time.Time, Timestamp, *timestamppb.Timestamp
+// - RFC 3339 and RFC 3339Nano formatted strings (e.g. "2023-01-01T00:00:00Z")
+// - Unix epoch integers (int, int32, int64)
+// - Unix epoch floating-point seconds (float32, float64)
+// - json.Number
+// - String representations of integers or floating-point epoch seconds
+//
+// If the parsed timestamp falls outside the supported range [minUnixTime, maxUnixTime], an error is returned.
+func ParseTimestamp(val any) (time.Time, error) {
+	if val == nil {
+		return time.Time{}, errors.New("invalid timestamp: nil value")
+	}
+	switch v := val.(type) {
+	case time.Time:
+		return validateTimestampRange(v.UTC())
+	case Timestamp:
+		return validateTimestampRange(v.Time.UTC())
+	case *tpb.Timestamp:
+		if v == nil {
+			return time.Time{}, nil
+		}
+		return validateTimestampRange(v.AsTime().UTC())
+	case int:
+		return validateTimestampRange(time.Unix(int64(v), 0).UTC())
+	case int32:
+		return validateTimestampRange(time.Unix(int64(v), 0).UTC())
+	case int64:
+		return validateTimestampRange(time.Unix(v, 0).UTC())
+	case float32:
+		return validateTimestampRange(unixTimeFromFloat(float64(v)))
+	case float64:
+		return validateTimestampRange(unixTimeFromFloat(v))
+	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			return validateTimestampRange(time.Unix(i, 0).UTC())
+		}
+		if f, err := v.Float64(); err == nil {
+			return validateTimestampRange(unixTimeFromFloat(f))
+		}
+		return ParseTimestamp(v.String())
+	case string:
+		s := strings.TrimSpace(v)
+		if s == "" {
+			return time.Time{}, errors.New("invalid RFC 3339 timestamp: ''")
+		}
+		if isStrictRFC3339(s) {
+			t, err := time.Parse(time.RFC3339, s)
+			if err != nil {
+				return time.Time{}, fmt.Errorf("invalid RFC 3339 timestamp %q", s)
+			}
+			return validateTimestampRange(t.UTC())
+		}
+		if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return validateTimestampRange(time.Unix(i, 0).UTC())
+		}
+		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			return validateTimestampRange(unixTimeFromFloat(f))
+		}
+		return time.Time{}, fmt.Errorf("unsupported timestamp format: %q", s)
+	default:
+		return time.Time{}, fmt.Errorf("unsupported timestamp type: %T", val)
+	}
+}
+
+func unixTimeFromFloat(f float64) time.Time {
+	sec := int64(f)
+	nsec := int64((f - float64(sec)) * 1e9)
+	return time.Unix(sec, nsec).UTC()
+}
+
+func validateTimestampRange(t time.Time) (time.Time, error) {
+	if t.IsZero() {
+		return t, nil
+	}
+	if t.Unix() < minUnixTime || t.Unix() > maxUnixTime {
+		return time.Time{}, fmt.Errorf("timestamp overflow: %v", t)
+	}
+	return t, nil
 }
 
 var (
