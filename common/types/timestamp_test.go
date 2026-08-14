@@ -617,9 +617,39 @@ func TestParseTimestamp(t *testing.T) {
 			want: epochFloatTime,
 		},
 		{
+			name: "float64 negative",
+			val:  float64(-1700000000.5),
+			want: time.Unix(-1700000000, -500000000).UTC(),
+		},
+		{
+			name:    "float64 MaxFloat64 overflow",
+			val:     math.MaxFloat64,
+			wantErr: true,
+		},
+		{
+			name:    "float64 NaN overflow",
+			val:     math.NaN(),
+			wantErr: true,
+		},
+		{
+			name:    "float64 Inf overflow",
+			val:     math.Inf(1),
+			wantErr: true,
+		},
+		{
+			name:    "float64 -Inf overflow",
+			val:     math.Inf(-1),
+			wantErr: true,
+		},
+		{
 			name: "float32",
 			val:  float32(1700000000.5),
 			want: epochTime,
+		},
+		{
+			name: "float32 negative",
+			val:  float32(-1700000000.5),
+			want: time.Unix(-1700000000, 0).UTC(),
 		},
 		{
 			name: "json.Number int",

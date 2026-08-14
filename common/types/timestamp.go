@@ -290,15 +290,15 @@ func ParseTimestamp(val any) (time.Time, error) {
 	case int64:
 		return validateTimestampRange(time.Unix(v, 0).UTC())
 	case float32:
-		return validateTimestampRange(unixTimeFromFloat(float64(v)))
+		return unixTimeFromFloat(float64(v))
 	case float64:
-		return validateTimestampRange(unixTimeFromFloat(v))
+		return unixTimeFromFloat(v)
 	case json.Number:
 		if i, err := v.Int64(); err == nil {
 			return validateTimestampRange(time.Unix(i, 0).UTC())
 		}
 		if f, err := v.Float64(); err == nil {
-			return validateTimestampRange(unixTimeFromFloat(f))
+			return unixTimeFromFloat(f)
 		}
 		return ParseTimestamp(v.String())
 	case string:
@@ -317,7 +317,7 @@ func ParseTimestamp(val any) (time.Time, error) {
 			return validateTimestampRange(time.Unix(i, 0).UTC())
 		}
 		if f, err := strconv.ParseFloat(s, 64); err == nil {
-			return validateTimestampRange(unixTimeFromFloat(f))
+			return unixTimeFromFloat(f)
 		}
 		return time.Time{}, fmt.Errorf("unsupported timestamp format: %q", s)
 	default:
@@ -325,10 +325,13 @@ func ParseTimestamp(val any) (time.Time, error) {
 	}
 }
 
-func unixTimeFromFloat(f float64) time.Time {
-	sec := int64(f)
+func unixTimeFromFloat(f float64) (time.Time, error) {
+	sec, err := doubleToInt64Checked(f)
+	if err != nil {
+		return time.Time{}, err
+	}
 	nsec := int64((f - float64(sec)) * 1e9)
-	return time.Unix(sec, nsec).UTC()
+	return validateTimestampRange(time.Unix(sec, nsec).UTC())
 }
 
 func validateTimestampRange(t time.Time) (time.Time, error) {
