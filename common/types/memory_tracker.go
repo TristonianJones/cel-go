@@ -57,12 +57,9 @@ func MemoryTrackerSizeCalculator(calc *SizeCalculator) MemoryTrackerOption {
 //
 // Memory is measured in aggregate element counts as computed by a SizeCalculator, with all
 // arithmetic saturating at math.MaxUint32. The tracker is independent of any interpreter
-// implementation; evaluators feed it observations at points where values materialize:
-//
-//   - inputs to a call (e.g. the target and arguments of a.join(', '))
-//   - the output of a call (e.g. the result of a + a)
-//   - resolved attribute values (e.g. the value of a.b.c)
-//   - sampled values built up within comprehensions or bind initializers
+// implementation; evaluators feed it observations at the points where values materialize
+// during evaluation, such as resolved attributes, call results, constructed aggregates, and
+// values built up within comprehensions or bind initializers.
 //
 // The peak is the largest single observation, where one Track call observes a set of
 // coexistent values as a single watermark.
@@ -121,18 +118,19 @@ func (t *MemoryTracker) Track(vals ...any) uint32 {
 	return total
 }
 
-// Sample observes a value subject to the tracker's sample interval, returning the value's
-// aggregate size when computed, or zero when the observation is skipped.
+// Sample observes a set of coexistent values subject to the tracker's sample interval,
+// returning their combined aggregate size when computed, or zero when the observation
+// is skipped.
 //
 // Sample is intended for high-frequency observation points, such as accumulator values built
 // up by comprehension loops or bind initializers, where sizing every iteration would be
 // prohibitively expensive.
-func (t *MemoryTracker) Sample(val any) uint32 {
+func (t *MemoryTracker) Sample(vals ...any) uint32 {
 	t.sampleCount++
 	if t.sampleInterval > 1 && t.sampleCount%t.sampleInterval != 0 {
 		return 0
 	}
-	return t.Track(val)
+	return t.Track(vals...)
 }
 
 // Peak returns the largest single watermark observed, saturating at math.MaxUint32.
