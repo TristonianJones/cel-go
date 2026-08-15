@@ -28,8 +28,9 @@ import (
 )
 
 const (
-	defaultSizeCalculatorMaxDepth     = 5
-	defaultSizeCalculatorMaxTraversal = 10000
+	defaultSizeCalculatorMaxDepth         = 5
+	defaultSizeCalculatorMaxTraversal     = 10000
+	defaultSizeCalculatorStringUnitLength = 10
 )
 
 // SizeCalculatorOption configures a SizeCalculator instance.
@@ -49,19 +50,33 @@ func SizeCalculatorMaxTraversal(traversal int) SizeCalculatorOption {
 	}
 }
 
+// SizeCalculatorStringUnitLength sets the number of string characters or bytes which count as a
+// single element (default 10). Values less than 1 are treated as 1, meaning each character or
+// byte counts as a whole element.
+func SizeCalculatorStringUnitLength(length int) SizeCalculatorOption {
+	return func(s *SizeCalculator) {
+		if length < 1 {
+			length = 1
+		}
+		s.stringUnitLength = length
+	}
+}
+
 // SizeCalculator calculates the recursive element size of values.
 type SizeCalculator struct {
-	version      int
-	maxDepth     int
-	maxTraversal int
+	version          int
+	maxDepth         int
+	maxTraversal     int
+	stringUnitLength int
 }
 
 // NewSizeCalculator returns a new SizeCalculator configured with optional SizeCalculatorOption settings.
 func NewSizeCalculator(opts ...SizeCalculatorOption) *SizeCalculator {
 	s := &SizeCalculator{
-		version:      0,
-		maxDepth:     defaultSizeCalculatorMaxDepth,
-		maxTraversal: defaultSizeCalculatorMaxTraversal,
+		version:          0,
+		maxDepth:         defaultSizeCalculatorMaxDepth,
+		maxTraversal:     defaultSizeCalculatorMaxTraversal,
+		stringUnitLength: defaultSizeCalculatorStringUnitLength,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -78,6 +93,7 @@ type sizeContext struct {
 	calc           *SizeCalculator
 	depth          int
 	traversalCount *int
+	limitExceeded  *bool
 }
 
 func (c sizeContext) childContext() sizeContext {
@@ -88,21 +104,55 @@ func (c sizeContext) childContext() sizeContext {
 func (c sizeContext) visitNode() bool {
 	*c.traversalCount++
 	if *c.traversalCount > c.calc.maxTraversal || c.depth > c.calc.maxDepth {
+		*c.limitExceeded = true
 		return false
 	}
 	return true
 }
 
+// AggregateSizeEstimate captures the outcome of an aggregate size computation.
+//
+// The Size saturates at math.MaxUint32 when the accumulated element count overflows uint32.
+// LimitExceeded reports the computation was aborted because the value was too expensive to
+// traverse (too deep, or too many nodes visited); in that case Size is also math.MaxUint32,
+// but the value's true size may be smaller — the two conditions are distinguishable by the flag.
+type AggregateSizeEstimate struct {
+	Size          uint32
+	LimitExceeded bool
+}
+
 // AggregateSize returns the size of the input value, if known.
 // Otherwise, a unit size of 1 is returned.
+//
+// When the calculator's depth or traversal limits are exceeded, the size saturates to
+// math.MaxUint32. Use EstimateAggregateSize to distinguish limit-exceeded results from
+// genuine uint32 saturation.
 func (s *SizeCalculator) AggregateSize(val any) uint32 {
+	return s.EstimateAggregateSize(val).Size
+}
+
+// EstimateAggregateSize returns the aggregate size of the input value along with an indication
+// of whether the computation was aborted due to the calculator's depth or traversal limits.
+func (s *SizeCalculator) EstimateAggregateSize(val any) AggregateSizeEstimate {
 	traversals := 0
+	exceeded := false
 	ctx := sizeContext{
 		calc:           s,
 		depth:          1,
 		traversalCount: &traversals,
+		limitExceeded:  &exceeded,
 	}
-	return ctx.AggregateSize(val)
+	size := ctx.AggregateSize(val)
+	return AggregateSizeEstimate{Size: size, LimitExceeded: exceeded}
+}
+
+// stringSize converts a character or byte length to an element count where stringUnitLength
+// characters count as a single element, rounding up with a minimum size of 1.
+func (s *SizeCalculator) stringSize(length int) uint32 {
+	if length <= 0 {
+		return 1
+	}
+	return safeUint32FromInt((length + s.stringUnitLength - 1) / s.stringUnitLength)
 }
 
 // AggregateSize implements the ref.Val interface and allows for the generation of nested
@@ -112,6 +162,10 @@ func (c sizeContext) AggregateSize(val any) uint32 {
 		return math.MaxUint32
 	}
 	switch v := val.(type) {
+	case String:
+		return c.calc.stringSize(utf8.RuneCountInString(string(v)))
+	case Bytes:
+		return c.calc.stringSize(len(v))
 	case AggregateSizeVisitor:
 		return v.AggregateSize(c.childContext())
 	case traits.Foldable:
@@ -161,9 +215,9 @@ func (c sizeContext) AggregateSize(val any) uint32 {
 	case reflect.Value:
 		return getReflectValueAggregateSize(c, v)
 	case string:
-		return safeUint32FromInt(utf8.RuneCountInString(v))
+		return c.calc.stringSize(utf8.RuneCountInString(v))
 	case []byte:
-		return safeUint32FromInt(len(v))
+		return c.calc.stringSize(len(v))
 	case int, int8, int16, int32, int64,
 		uint, uint8, uint16, uint32, uint64,
 		float32, float64, bool, time.Time, time.Duration, nil:
@@ -245,11 +299,11 @@ func getReflectValueAggregateSize(c sizeContext, fieldVal reflect.Value) uint32 
 	childCtx := c.childContext()
 	switch fieldVal.Kind() {
 	case reflect.String:
-		return safeUint32FromInt(utf8.RuneCountInString(fieldVal.String()))
+		return c.calc.stringSize(utf8.RuneCountInString(fieldVal.String()))
 	case reflect.Slice, reflect.Array:
 		elemType := fieldVal.Type().Elem()
 		if elemType.Kind() == reflect.Uint8 {
-			return safeUint32FromInt(fieldVal.Len())
+			return c.calc.stringSize(fieldVal.Len())
 		}
 		total := safeAddUint32(1, safeUint32FromInt(fieldVal.Len()))
 		switch elemType.Kind() {

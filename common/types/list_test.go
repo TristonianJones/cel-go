@@ -969,7 +969,7 @@ func TestListCalculateSize(t *testing.T) {
 		{
 			name: "string_list",
 			val:  NewStringList(adapter, []string{"hello", "world"}),
-			want: 11,
+			want: 3, // 1 (container) + 1 ("hello" unit) + 1 ("world" unit) = 3
 		},
 		{
 			name: "dynamic_list",
