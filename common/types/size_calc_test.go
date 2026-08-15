@@ -46,7 +46,7 @@ func TestCalculateSize(t *testing.T) {
 		{
 			name: "sizer_string",
 			val:  String("hello"),
-			want: 1, // 5 bytes round up to a single 10-byte element unit
+			want: 1, // 5 chars round up to a single 10-char element unit
 		},
 		{
 			name: "sizer_bytes",
