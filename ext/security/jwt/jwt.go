@@ -35,10 +35,15 @@ const (
 	maxTokenSize = 10 * 1024 * 1024 // 10MB maximum allowed token size
 )
 
+func defaultNowFunc() time.Time {
+	return time.Now().UTC()
+}
+
 // Library returns a cel.EnvOption to configure extended functions for JWT data handling and claims inspection.
 func Library(options ...Option) cel.EnvOption {
 	l := &jwtLib{
 		version: ^uint32(0),
+		now:     defaultNowFunc,
 	}
 	for _, o := range options {
 		l = o(l)
@@ -103,7 +108,9 @@ func (l *jwtLib) CompileOptions() []cel.EnvOption {
 	if err != nil {
 		panic(fmt.Errorf("failed to create token type: %w", err))
 	}
-	var adapt func() types.Adapter
+	var adapt func() types.Adapter = func() types.Adapter {
+		return types.DefaultTypeAdapter
+	}
 	return []cel.EnvOption{
 		cel.OptionalTypes(),
 		cel.Types(tokenType),
@@ -222,17 +229,11 @@ func (l *jwtLib) ProgramOptions() []cel.ProgramOption {
 }
 
 func (l *jwtLib) isTokenTimeValid(tok *Token) bool {
-	if !l.validateTimes {
-		return true
-	}
-	nowFunc := l.now
-	if nowFunc == nil {
-		nowFunc = time.Now
-	}
-	return tok.IsValidAt(nowFunc(), l.clockLeeway)
+	return !l.validateTimes || tok.IsValidAt(l.now(), l.clockLeeway)
 }
 
 // Token represents a parsed JWT token using Go native struct types.
+// A Token instance and its associated Payload map MUST be treated as immutable once parsed or created.
 type Token struct {
 	// Standard claims
 	Issuer          string    `json:"iss" cel:"issuer"`
@@ -249,6 +250,7 @@ type Token struct {
 	KeyID     string `json:"kid" cel:"keyId"`
 
 	// Raw JSON payload associated with the token including custom claims.
+	// Must be treated as read-only once initialized.
 	Payload map[string]any `json:"-" cel:"-"`
 }
 
@@ -258,24 +260,24 @@ func (t *Token) IsValidAt(refTime time.Time, leeway time.Duration) bool {
 	lateNow := now.Add(leeway)
 	earlyNow := now.Add(-leeway)
 
-	// No issued-at time or the time issued is in the future.
-	if t.IssuedAt.IsZero() || t.IssuedAt.After(lateNow) {
+	// Issued-at time is present and in the future.
+	if !t.IssuedAt.IsZero() && t.IssuedAt.Compare(lateNow) > 0 {
 		return false
 	}
-	// No not-before time or the not-before time is in the future.
-	if t.NotBefore.IsZero() || t.NotBefore.After(lateNow) {
+	// Not-before time is present and in the future.
+	if !t.NotBefore.IsZero() && t.NotBefore.Compare(lateNow) > 0 {
 		return false
 	}
-	// No expires-at time or the expiry happened in the past.
-	if t.ExpiresAt.IsZero() || !t.ExpiresAt.After(earlyNow) {
+	// Expires-at time is present and expiry happened in the past.
+	if !t.ExpiresAt.IsZero() && t.ExpiresAt.Compare(earlyNow) <= 0 {
 		return false
 	}
 	// Inverted validity window: nbf <= exp
-	if t.NotBefore.After(t.ExpiresAt) {
+	if !t.NotBefore.IsZero() && !t.ExpiresAt.IsZero() && t.NotBefore.Compare(t.ExpiresAt) > 0 {
 		return false
 	}
 	// Inverted validity window: iat <= exp
-	if t.IssuedAt.After(t.ExpiresAt) {
+	if !t.IssuedAt.IsZero() && !t.ExpiresAt.IsZero() && t.IssuedAt.Compare(t.ExpiresAt) > 0 {
 		return false
 	}
 
@@ -300,9 +302,6 @@ func (t *Token) Claim(adapter types.Adapter, claimName string) ref.Val {
 	if !ok || val == nil {
 		return types.OptionalNone
 	}
-	if adapter == nil {
-		adapter = types.DefaultTypeAdapter
-	}
 	refVal := adapter.NativeToValue(val)
 	if types.IsError(refVal) {
 		return refVal
@@ -310,38 +309,12 @@ func (t *Token) Claim(adapter types.Adapter, claimName string) ref.Val {
 	return types.OptionalOf(refVal)
 }
 
-// ParseToken parses a JWT token string into a structured Token.
-func ParseToken(tokenStr string) (*Token, error) {
-	tokenStr = trimBearerPrefix(tokenStr)
-	if len(tokenStr) > maxTokenSize {
-		return nil, fmt.Errorf("token size exceeds maximum allowed limit of %d bytes", maxTokenSize)
-	}
-
-	parts := strings.Split(tokenStr, ".")
-	if len(parts) < 2 || len(parts) > 3 {
-		return nil, fmt.Errorf("invalid token format: expected 2 or 3 parts, got %d", len(parts))
-	}
-
-	headerBytes, err := decodeBase64Segment(parts[0])
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode header: %w", err)
-	}
-
-	var header map[string]any
-	if err := json.Unmarshal(headerBytes, &header); err != nil {
-		return nil, fmt.Errorf("failed to parse header JSON: %w", err)
-	}
-
-	payloadBytes, err := decodeBase64Segment(parts[1])
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode payload: %w", err)
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
-		return nil, fmt.Errorf("failed to parse payload JSON: %w", err)
-	}
-
+// NewToken generates a `jwt.Token` instance from the JSON-decoded header and payload of a JWT.
+//
+// Signature validation of the token must be performed before passing the token to CEL.
+// It is recommended that `IsValidAt` and `PresentedBy` are checked after creation of the token
+// to ensure the token matches core content assumptions.
+func NewToken(header, payload map[string]any) (*Token, error) {
 	alg, ok := header["alg"].(string)
 	if !ok || alg == "" {
 		return nil, fmt.Errorf("missing required header: 'alg'")
@@ -408,6 +381,41 @@ func ParseToken(tokenStr string) (*Token, error) {
 		ID:              optString(payload, "jti"),
 		Payload:         payload,
 	}, nil
+}
+
+// ParseToken parses a JWT token string into a structured Token.
+// Verification of the token must be performed before passing the token to CEL.
+func ParseToken(tokenStr string) (*Token, error) {
+	tokenStr = trimBearerPrefix(tokenStr)
+	if len(tokenStr) > maxTokenSize {
+		return nil, fmt.Errorf("token size exceeds maximum allowed limit of %d bytes", maxTokenSize)
+	}
+
+	parts := strings.SplitN(tokenStr, ".", 4)
+	if len(parts) < 2 || len(parts) > 3 {
+		return nil, fmt.Errorf("invalid token format: expected 2 or 3 parts, got %d", len(parts))
+	}
+
+	headerBytes, err := decodeBase64Segment(parts[0])
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode header: %w", err)
+	}
+
+	var header map[string]any
+	if err := json.Unmarshal(headerBytes, &header); err != nil {
+		return nil, fmt.Errorf("failed to parse header JSON: %w", err)
+	}
+
+	payloadBytes, err := decodeBase64Segment(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode payload: %w", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+		return nil, fmt.Errorf("failed to parse payload JSON: %w", err)
+	}
+	return NewToken(header, payload)
 }
 
 func optString(m map[string]any, key string) string {

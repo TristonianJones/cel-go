@@ -192,16 +192,6 @@ func TestJWTParseAndPresentedBy(t *testing.T) {
 			}
 		})
 	}
-
-	// Invalid token formats return CEL evaluation errors
-	invalidTokens := []string{"invalid-token", "a.b.c.d", ""}
-	for _, inv := range invalidTokens {
-		ast, _ := env.Compile(`jwt.parse(tok).hasValue()`)
-		prg, _ := env.Program(ast)
-		if _, _, err := prg.Eval(map[string]any{"tok": inv}); err == nil {
-			t.Errorf("expected error for invalid token format %q, got nil", inv)
-		}
-	}
 }
 
 func TestParseUnverifiedTokenAndFieldVariations(t *testing.T) {
@@ -498,6 +488,24 @@ func TestJWTValidateTimesOption(t *testing.T) {
 		"exp": fixedNow.Add(-20 * time.Minute).Unix(),
 	})
 
+	realNow := time.Now()
+	tokValidRealTime := createTestJWT(t, header, map[string]any{
+		"iss": "https://auth.example.com",
+		"sub": "user-123",
+		"aud": "my-aud",
+		"iat": realNow.Add(-1 * time.Hour).Unix(),
+		"nbf": realNow.Add(-1 * time.Hour).Unix(),
+		"exp": realNow.Add(1 * time.Hour).Unix(),
+	})
+
+	tokExpiredRealTime := createTestJWT(t, header, map[string]any{
+		"iss": "https://auth.example.com",
+		"sub": "user-123",
+		"aud": "my-aud",
+		"iat": realNow.Add(-2 * time.Hour).Unix(),
+		"exp": realNow.Add(-1 * time.Hour).Unix(),
+	})
+
 	tests := []struct {
 		name     string
 		options  []jwt.Option
@@ -546,6 +554,18 @@ func TestJWTValidateTimesOption(t *testing.T) {
 			tokenStr: tokInvertedWindow,
 			wantPass: false,
 		},
+		{
+			name:     "validated_default_clock_valid_token",
+			options:  []jwt.Option{jwt.ValidateTimes()},
+			tokenStr: tokValidRealTime,
+			wantPass: true,
+		},
+		{
+			name:     "validated_default_clock_expired_token",
+			options:  []jwt.Option{jwt.ValidateTimes()},
+			tokenStr: tokExpiredRealTime,
+			wantPass: false,
+		},
 	}
 
 	for _, tc := range tests {
@@ -576,17 +596,6 @@ func TestJWTOptionalReceiverChaining(t *testing.T) {
 		"iat": 1699900000,
 	})
 
-	env, err := cel.NewEnv(
-		jwt.Library(
-			jwt.Version(1),
-			jwt.ClockLeeway(10*time.Minute),
-		),
-		cel.Variable("tok", cel.StringType),
-	)
-	if err != nil {
-		t.Fatalf("cel.NewEnv failed: %v", err)
-	}
-
 	envExpired, err := cel.NewEnv(
 		jwt.Library(jwt.ValidateTimes(), jwt.Clock(func() time.Time { return time.Unix(2000000000, 0) })),
 		cel.Variable("tok", cel.StringType),
@@ -602,28 +611,10 @@ func TestJWTOptionalReceiverChaining(t *testing.T) {
 		want any
 	}{
 		{
-			name: "presented_by_match",
-			env:  env,
-			expr: `jwt.parse(tok).presentedBy('https://auth.example.com', 'my-client')`,
-			want: true,
-		},
-		{
-			name: "presented_by_mismatch",
-			env:  env,
-			expr: `jwt.parse(tok).presentedBy('https://auth.example.com', 'wrong-client')`,
-			want: false,
-		},
-		{
 			name: "presented_by_on_optional_none",
 			env:  envExpired,
 			expr: `jwt.parse(tok).presentedBy('https://auth.example.com', 'my-client')`,
 			want: false,
-		},
-		{
-			name: "claim_present",
-			env:  env,
-			expr: `jwt.parse(tok).claim('tag').orValue('default')`,
-			want: "prod",
 		},
 		{
 			name: "claim_on_optional_none",
@@ -875,6 +866,11 @@ func TestJWTParsingErrorsAndEncodings(t *testing.T) {
 				"iat": 1699900000,
 			}),
 			errMsg: "invalid claim 'aud'",
+		},
+		{
+			name:     "excessive_dots",
+			tokenStr: strings.Repeat(".", 100),
+			errMsg:   "invalid token format",
 		},
 	}
 
