@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -495,6 +496,13 @@ func TestSizeCalculatorStringUnitLength(t *testing.T) {
 			val:  String("hello world, hello world, hello world"),
 			want: 1,
 		},
+		{
+			// Sizes are measured in bytes, not characters: four 3-byte CJK characters
+			// occupy 12 bytes and count as two 10-byte units.
+			name: "multibyte_counted_in_bytes",
+			val:  String("日本語字"),
+			want: 2,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -546,6 +554,80 @@ func TestEstimateAggregateSize(t *testing.T) {
 		est := calc.EstimateAggregateSize(val)
 		if est.Size != math.MaxUint32 || est.LimitExceeded {
 			t.Errorf("EstimateAggregateSize() got %+v, want {Size: MaxUint32, LimitExceeded: false}", est)
+		}
+	})
+}
+
+func TestAggregateSizeConcurrentAccess(t *testing.T) {
+	// Immutable lists and maps may be shared across concurrent evaluations; the aggregate
+	// size memoization must be race-free (validated under `go test -race`).
+	adapter := DefaultTypeAdapter
+	sharedList := NewRefValList(adapter, []ref.Val{Int(1), Int(2), Int(3)})
+	sharedMap := NewRefValMap(adapter, map[ref.Val]ref.Val{String("k"): String("v")})
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			calc := NewSizeCalculator()
+			if got := calc.AggregateSize(sharedList); got != 4 {
+				t.Errorf("AggregateSize(list) got %d, want 4", got)
+			}
+			if got := calc.AggregateSize(sharedMap); got != 3 {
+				t.Errorf("AggregateSize(map) got %d, want 3", got)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestAggregateSizeAbortedComputationNotMemoized(t *testing.T) {
+	// A sizing aborted at the calculator's limits depends on where in the traversal the
+	// value was encountered and must not be memoized: a later sizing within limits must
+	// return the true size with no limit-exceeded signal.
+	adapter := DefaultTypeAdapter
+
+	t.Run("list", func(t *testing.T) {
+		shared := NewRefValList(adapter, []ref.Val{Int(1), Int(2), Int(3), Int(4), Int(5)})
+		strict := NewSizeCalculator(SizeCalculatorMaxTraversal(2))
+		if est := strict.EstimateAggregateSize(shared); !est.LimitExceeded {
+			t.Fatalf("strict EstimateAggregateSize() got %+v, want LimitExceeded", est)
+		}
+		generous := NewSizeCalculator()
+		est := generous.EstimateAggregateSize(shared)
+		if est.Size != 6 || est.LimitExceeded {
+			t.Errorf("generous EstimateAggregateSize() got %+v, want {Size: 6, LimitExceeded: false}", est)
+		}
+	})
+
+	t.Run("map", func(t *testing.T) {
+		shared := NewRefValMap(adapter, map[ref.Val]ref.Val{
+			String("k1"): String("v1"),
+			String("k2"): String("v2"),
+		})
+		strict := NewSizeCalculator(SizeCalculatorMaxTraversal(2))
+		if est := strict.EstimateAggregateSize(shared); !est.LimitExceeded {
+			t.Fatalf("strict EstimateAggregateSize() got %+v, want LimitExceeded", est)
+		}
+		generous := NewSizeCalculator()
+		est := generous.EstimateAggregateSize(shared)
+		if est.Size != 5 || est.LimitExceeded {
+			t.Errorf("generous EstimateAggregateSize() got %+v, want {Size: 5, LimitExceeded: false}", est)
+		}
+	})
+
+	t.Run("completed_computation_is_memoized", func(t *testing.T) {
+		shared := NewRefValList(adapter, []ref.Val{Int(1), Int(2)})
+		calc := NewSizeCalculator()
+		if got := calc.AggregateSize(shared); got != 3 {
+			t.Fatalf("AggregateSize() got %d, want 3", got)
+		}
+		// A subsequent sizing under a stricter budget serves the memoized total rather
+		// than recomputing (and aborting).
+		strict := NewSizeCalculator(SizeCalculatorMaxTraversal(2))
+		est := strict.EstimateAggregateSize(shared)
+		if est.Size != 3 || est.LimitExceeded {
+			t.Errorf("strict EstimateAggregateSize() after memoization got %+v, want {Size: 3, LimitExceeded: false}", est)
 		}
 	})
 }

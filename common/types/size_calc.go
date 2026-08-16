@@ -18,7 +18,6 @@ import (
 	"math"
 	"reflect"
 	"time"
-	"unicode/utf8"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -50,9 +49,13 @@ func SizeCalculatorMaxTraversal(traversal int) SizeCalculatorOption {
 	}
 }
 
-// SizeCalculatorStringUnitLength sets the number of string characters or bytes which count as a
-// single element (default 10). Values less than 1 are treated as 1, meaning each character or
-// byte counts as a whole element.
+// SizeCalculatorStringUnitLength sets the number of string or bytes value bytes which count as
+// a single element (default 10). Values less than 1 are treated as 1, meaning each byte counts
+// as a whole element.
+//
+// String sizes are measured in bytes rather than characters so that sizing large values is
+// O(1) rather than a full UTF-8 scan per observation; byte length is never smaller than the
+// character count, so byte-based sizing is conservative for limit enforcement.
 func SizeCalculatorStringUnitLength(length int) SizeCalculatorOption {
 	return func(s *SizeCalculator) {
 		if length < 1 {
@@ -63,6 +66,15 @@ func SizeCalculatorStringUnitLength(length int) SizeCalculatorOption {
 }
 
 // SizeCalculator calculates the recursive element size of values.
+//
+// Aggregate values may memoize their computed size on first calculation as an optimization
+// for repeated sizing of shared structures. The memoized size reflects the configuration of
+// the calculator which first sized the value; hosts requiring differently configured
+// calculators, e.g. distinct string unit lengths, should not share value instances across
+// them. Memoized totals are also a snapshot of the value's contents at first sizing: hosts
+// which mutate data underlying a sized aggregate, e.g. a proto message held as a list
+// element, will observe the total computed before the mutation. Sizes computed from
+// calculations aborted at the depth or traversal limits are never memoized.
 type SizeCalculator struct {
 	version          int
 	maxDepth         int
@@ -110,6 +122,27 @@ func (c sizeContext) visitNode() bool {
 	return true
 }
 
+// aggregateSizeStatus exposes whether the in-flight size computation has exceeded the
+// calculator's depth or traversal limits.
+type aggregateSizeStatus interface {
+	aggregateSizeLimitExceeded() bool
+}
+
+// aggregateSizeLimitExceeded implements the aggregateSizeStatus interface method.
+func (c sizeContext) aggregateSizeLimitExceeded() bool {
+	return *c.limitExceeded
+}
+
+// cacheableAggregateSize reports whether a size computed with the given sizer is safe to
+// memoize on the value. Only totals from computations which verifiably stayed within the
+// calculator's depth and traversal limits are stable properties of the value; totals from
+// aborted computations depend on where in the traversal the value was encountered and would
+// poison the memoized size.
+func cacheableAggregateSize(sizer AggregateSizer) bool {
+	status, ok := sizer.(aggregateSizeStatus)
+	return ok && !status.aggregateSizeLimitExceeded()
+}
+
 // AggregateSizeEstimate captures the outcome of an aggregate size computation.
 //
 // The Size saturates at math.MaxUint32 when the accumulated element count overflows uint32.
@@ -146,8 +179,8 @@ func (s *SizeCalculator) EstimateAggregateSize(val any) AggregateSizeEstimate {
 	return AggregateSizeEstimate{Size: size, LimitExceeded: exceeded}
 }
 
-// stringSize converts a character or byte length to an element count where stringUnitLength
-// characters count as a single element, rounding up with a minimum size of 1.
+// stringSize converts a byte length to an element count where stringUnitLength bytes count
+// as a single element, rounding up with a minimum size of 1.
 func (s *SizeCalculator) stringSize(length int) uint32 {
 	if length <= 0 {
 		return 1
@@ -163,7 +196,7 @@ func (c sizeContext) AggregateSize(val any) uint32 {
 	}
 	switch v := val.(type) {
 	case String:
-		return c.calc.stringSize(utf8.RuneCountInString(string(v)))
+		return c.calc.stringSize(len(v))
 	case Bytes:
 		return c.calc.stringSize(len(v))
 	case AggregateSizeVisitor:
@@ -215,7 +248,7 @@ func (c sizeContext) AggregateSize(val any) uint32 {
 	case reflect.Value:
 		return getReflectValueAggregateSize(c, v)
 	case string:
-		return c.calc.stringSize(utf8.RuneCountInString(v))
+		return c.calc.stringSize(len(v))
 	case []byte:
 		return c.calc.stringSize(len(v))
 	case int, int8, int16, int32, int64,
@@ -299,7 +332,7 @@ func getReflectValueAggregateSize(c sizeContext, fieldVal reflect.Value) uint32 
 	childCtx := c.childContext()
 	switch fieldVal.Kind() {
 	case reflect.String:
-		return c.calc.stringSize(utf8.RuneCountInString(fieldVal.String()))
+		return c.calc.stringSize(fieldVal.Len())
 	case reflect.Slice, reflect.Array:
 		elemType := fieldVal.Type().Elem()
 		if elemType.Kind() == reflect.Uint8 {
