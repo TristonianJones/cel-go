@@ -371,7 +371,7 @@ func (o *nativeObj) AggregateSize(sizer AggregateSizer) uint32 {
 	}
 	total := uint32(1)
 	for _, fieldType := range o.valType.fieldsByName {
-		fieldValue := refVal.FieldByIndex(fieldType.Index)
+		fieldValue := safeGetFieldByIndex(refVal, fieldType.Index)
 		if !fieldValue.IsValid() || fieldValue.IsZero() {
 			continue
 		}

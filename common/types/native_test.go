@@ -1308,6 +1308,7 @@ func TestNativeObjectCalculateSize(t *testing.T) {
 		ext.NativeTypes(
 			reflect.TypeOf(TestAllTypes{}),
 			reflect.TypeOf(TestNestedType{}),
+			reflect.TypeOf(TestEmbeddedPointerTypes{}),
 		),
 	)
 	if err != nil {
@@ -1324,6 +1325,11 @@ func TestNativeObjectCalculateSize(t *testing.T) {
 			name: "empty_struct",
 			val:  &TestNestedType{},
 			want: 1, // 1 (container)
+		},
+		{
+			name: "nil_embedded_pointer",
+			val:  &TestEmbeddedPointerTypes{},
+			want: 1, // 1 (container); promoted fields through the nil embedded pointer count as unset
 		},
 		{
 			name: "struct_with_scalar_and_list",
