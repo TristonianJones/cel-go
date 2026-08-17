@@ -12,6 +12,7 @@ go_library(
         "async.go",
         "attribute_patterns.go",
         "attributes.go",
+        "cost_stdlib.go",
         "decorators.go",
         "dispatcher.go",
         "evalstate.go",

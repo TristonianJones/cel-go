@@ -535,7 +535,14 @@ func (lib *stringLib) CompileOptions() []cel.EnvOption {
 				cel.UnaryBinding(func(str ref.Val) ref.Val {
 					s := str.(types.String)
 					return stringOrError(quote(string(s)))
-				}))))
+				}))),
+			// Cost estimation for format and quote lives with their declarations rather than in
+			// the checker's standard overload table, since both are extension functions.
+			cel.CostEstimatorOptions(
+				checker.OverloadCostEstimate("string_format", estimateStringFormatCost),
+				checker.OverloadCostEstimate("strings_quote", estimateStringQuoteCost),
+			),
+		)
 	}
 	if lib.version >= 2 {
 		opts = append(opts,
@@ -621,8 +628,19 @@ func (lib *stringLib) CompileOptions() []cel.EnvOption {
 
 // ProgramOptions implements the Library interface method.
 func (lib *stringLib) ProgramOptions() []cel.ProgramOption {
+	if lib.version < 1 {
+		return []cel.ProgramOption{}
+	}
+	// Cost tracking for format and quote lives with their declarations rather than in the
+	// interpreter's standard overload table, since both are extension functions.
+	opts := []cel.ProgramOption{
+		cel.CostTrackerOptions(
+			interpreter.OverloadCostTracker("string_format", trackStringScanCost),
+			interpreter.OverloadCostTracker("strings_quote", trackStringScanCost),
+		),
+	}
 	if lib.version >= 5 {
-		return []cel.ProgramOption{
+		return append(opts,
 			cel.CostTrackerOptions(
 				interpreter.OverloadCostTracker("string_char_at_int", trackStringCharAtCost),
 				interpreter.OverloadCostTracker("string_index_of_string", trackStringSearchCost),
@@ -642,9 +660,9 @@ func (lib *stringLib) ProgramOptions() []cel.ProgramOption {
 				interpreter.OverloadCostTracker("list_join", trackStringJoinCost),
 				interpreter.OverloadCostTracker("list_join_string", trackStringJoinCost),
 			),
-		}
+		)
 	}
-	return []cel.ProgramOption{}
+	return opts
 }
 
 func charAt(str string, ind int64) (string, error) {
@@ -899,6 +917,27 @@ var (
 // the input string(s), ensuring that the CEL cost system accurately reflects the
 // computational work performed by string operations.
 
+// estimateStringFormatCost estimates the cost of a format call as a traversal of the format
+// string.
+func estimateStringFormatCost(estimator checker.CostEstimator, target *checker.AstNode, args []checker.AstNode) *checker.CallEstimate {
+	if target == nil {
+		return nil
+	}
+	// ResultSize not calculated because we can't bound the max size.
+	return callEstimate(estimateSize(estimator, *target).MultiplyByCostFactor(stringCostFactor), nil)
+}
+
+// estimateStringQuoteCost estimates the cost of a quote call as a traversal of the input string.
+func estimateStringQuoteCost(estimator checker.CostEstimator, target *checker.AstNode, args []checker.AstNode) *checker.CallEstimate {
+	if len(args) != 1 {
+		return nil
+	}
+	sz := estimateSize(estimator, args[0])
+	// ResultSize max is when each char is escaped. 2 quote chars always added.
+	resultSize := rangedSizeEstimate(cost.SafeAdd(sz.Min, 2), cost.SafeAdd(cost.SafeMultiply(sz.Max, 2), 2))
+	return callEstimate(sz.MultiplyByCostFactor(stringCostFactor), &resultSize)
+}
+
 // estimateStringFixedTransformCost estimates cost for O(n) string operations such as
 // lowerAscii, upperAsciil, reverse and quote.
 func estimateStringFixedTransformCost(estimator checker.CostEstimator, target *checker.AstNode, args []checker.AstNode) *checker.CallEstimate {
@@ -1028,6 +1067,16 @@ func estimateStringJoinCost(estimator checker.CostEstimator, target *checker.Ast
 //
 // These functions compute the actual cost of string operations after evaluation,
 // using the real sizes of the inputs and outputs.
+
+// trackStringScanCost tracks the runtime cost of an O(n) scan of the first argument, which is the
+// target for member functions.
+//
+// Note, unlike the other trackers in this file, no base call cost is added: format and quote were
+// tracked as a bare traversal before their cost functions moved into this library.
+func trackStringScanCost(args []ref.Val, _ ref.Val) *uint64 {
+	total := cost.SafeMultiplyByFactor(actualSize(args[0]), stringCostFactor)
+	return &total
+}
 
 // trackStringCharAtCost tracks runtime cost for O(n) string operations.
 func trackStringCharAtCost(args []ref.Val, result ref.Val) *uint64 {

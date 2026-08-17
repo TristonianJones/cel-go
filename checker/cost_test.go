@@ -306,6 +306,24 @@ func TestCost(t *testing.T) {
 			wanted: CostEstimate{Min: 2, Max: 2502},
 		},
 		{
+			// A registered estimator takes precedence over the standard overload table, which
+			// would otherwise estimate this call as a 500x500 substring search.
+			name: "contains with overload estimate",
+			expr: `input.contains(arg1)`,
+			vars: []*decls.VariableDecl{
+				decls.NewVariable("input", types.StringType),
+				decls.NewVariable("arg1", types.StringType),
+			},
+			hints: map[string]uint64{"input": 500, "arg1": 500},
+			options: []CostOption{
+				OverloadCostEstimate(overloads.ContainsString,
+					func(estimator CostEstimator, target *AstNode, args []AstNode) *CallEstimate {
+						return &CallEstimate{CostEstimate: FixedCostEstimate(7)}
+					}),
+			},
+			wanted: CostEstimate{Min: 9, Max: 9},
+		},
+		{
 			name: "matches",
 			expr: `input.matches('\\d+a\\d+b')`,
 			vars: []*decls.VariableDecl{

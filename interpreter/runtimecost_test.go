@@ -602,6 +602,24 @@ func TestRuntimeCost(t *testing.T) {
 			in:   map[string]any{"input": string(randSeq(500)), "arg1": string(randSeq(500))},
 		},
 		{
+			// A registered tracker takes precedence over the standard overload table, which would
+			// otherwise track this call as a 500x500 substring search.
+			name: "contains with overload tracker",
+			expr: `input.contains(arg1)`,
+			vars: []*decls.VariableDecl{
+				decls.NewVariable("input", types.StringType),
+				decls.NewVariable("arg1", types.StringType),
+			},
+			options: []CostTrackerOption{
+				OverloadCostTracker(overloads.ContainsString, func(args []ref.Val, result ref.Val) *uint64 {
+					callCost := uint64(7)
+					return &callCost
+				}),
+			},
+			want: 9,
+			in:   map[string]any{"input": string(randSeq(500)), "arg1": string(randSeq(500))},
+		},
+		{
 			name: "matches",
 			expr: `input.matches('\\d+a\\d+b')`,
 			vars: []*decls.VariableDecl{

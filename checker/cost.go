@@ -699,146 +699,30 @@ func (c *coster) costBind(e ast.Expr) CostEstimate {
 }
 
 func (c *coster) functionCost(e ast.Expr, function, overloadID string, target *AstNode, args []AstNode, argCosts []CostEstimate) CallEstimate {
-	argCostSum := func() CostEstimate {
-		var sum CostEstimate
-		for _, a := range argCosts {
-			sum = sum.Add(a)
-		}
-		return sum
+	ctx := &estimateContext{
+		coster:     c,
+		expr:       e,
+		function:   function,
+		overloadID: overloadID,
+		target:     target,
+		args:       args,
+		argCosts:   argCosts,
 	}
 	if len(c.overloadEstimators) != 0 {
 		if estimator, found := c.overloadEstimators[overloadID]; found {
 			if est := estimator(c.estimator, target, args); est != nil {
 				callEst := *est
-				return CallEstimate{CostEstimate: callEst.Add(argCostSum()), ResultSize: est.ResultSize}
+				return CallEstimate{CostEstimate: callEst.Add(ctx.argCostSum()), ResultSize: est.ResultSize}
 			}
 		}
 	}
 	if est := c.estimator.EstimateCallCost(function, overloadID, target, args); est != nil {
 		callEst := *est
-		return CallEstimate{CostEstimate: callEst.Add(argCostSum()), ResultSize: est.ResultSize}
+		return CallEstimate{CostEstimate: callEst.Add(ctx.argCostSum()), ResultSize: est.ResultSize}
 	}
-	switch overloadID {
-	// O(n) functions
-	case overloads.ExtFormatString:
-		if target != nil {
-			// ResultSize not calculated because we can't bound the max size.
-			return CallEstimate{
-				CostEstimate: c.sizeOrUnknown(*target).MultiplyByCostFactor(common.StringTraversalCostFactor).Add(argCostSum())}
-		}
-	case overloads.StringToBytes:
-		if len(args) == 1 {
-			sz := c.sizeOrUnknown(args[0])
-			// ResultSize max is when each char converts to 4 bytes.
-			return CallEstimate{
-				CostEstimate: sz.MultiplyByCostFactor(common.StringTraversalCostFactor).Add(argCostSum()),
-				ResultSize:   &SizeEstimate{Min: sz.Min, Max: sz.Max * 4}}
-		}
-	case overloads.BytesToString:
-		if len(args) == 1 {
-			sz := c.sizeOrUnknown(args[0])
-			// ResultSize min is when 4 bytes convert to 1 char.
-			return CallEstimate{
-				CostEstimate: sz.MultiplyByCostFactor(common.StringTraversalCostFactor).Add(argCostSum()),
-				ResultSize:   &SizeEstimate{Min: sz.Min / 4, Max: sz.Max}}
-		}
-	case overloads.ExtQuoteString:
-		if len(args) == 1 {
-			sz := c.sizeOrUnknown(args[0])
-			// ResultSize max is when each char is escaped. 2 quote chars always added.
-			return CallEstimate{
-				CostEstimate: sz.MultiplyByCostFactor(common.StringTraversalCostFactor).Add(argCostSum()),
-				ResultSize:   &SizeEstimate{Min: sz.Min + 2, Max: sz.Max*2 + 2}}
-		}
-	case overloads.StartsWithString, overloads.EndsWithString:
-		if len(args) == 1 {
-			return CallEstimate{CostEstimate: c.sizeOrUnknown(args[0]).MultiplyByCostFactor(common.StringTraversalCostFactor).Add(argCostSum())}
-		}
-	case overloads.InList:
-		// If a list is composed entirely of constant values this is O(1), but we don't account for that here.
-		// We just assume all list containment checks are O(n).
-		if len(args) == 2 {
-			return CallEstimate{CostEstimate: c.sizeOrUnknown(args[1]).MultiplyByCostFactor(1).Add(argCostSum())}
-		}
-	// O(nm) functions
-	case overloads.Matches, overloads.MatchesString:
-		// https://swtch.com/~rsc/regexp/regexp1.html applies to RE2 implementation supported by CEL
-		var strNode, regexNode AstNode
-		if overloadID == overloads.MatchesString && target != nil && len(args) == 1 {
-			strNode = *target
-			regexNode = args[0]
-		} else if overloadID == overloads.Matches && target == nil && len(args) == 2 {
-			strNode = args[0]
-			regexNode = args[1]
-		}
-		if strNode != nil && regexNode != nil {
-			// Add one to string length for purposes of cost calculation to prevent product of string and regex to be 0
-			// in case where string is empty but regex is still expensive.
-			strCost := c.sizeOrUnknown(strNode).Add(SizeEstimate{Min: 1, Max: 1}).MultiplyByCostFactor(common.StringTraversalCostFactor)
-			// We don't know how many expressions are in the regex, just the string length (a huge
-			// improvement here would be to somehow get a count the number of expressions in the regex or
-			// how many states are in the regex state machine and use that to measure regex cost).
-			// For now, we're making a guess that each expression in a regex is typically at least 4 chars
-			// in length.
-			regexCost := c.sizeOrUnknown(regexNode).MultiplyByCostFactor(common.RegexStringLengthCostFactor)
-			return CallEstimate{CostEstimate: strCost.Multiply(regexCost).Add(argCostSum())}
-		}
-	case overloads.ContainsString:
-		if target != nil && len(args) == 1 {
-			strCost := c.sizeOrUnknown(*target).MultiplyByCostFactor(common.StringTraversalCostFactor)
-			substrCost := c.sizeOrUnknown(args[0]).MultiplyByCostFactor(common.StringTraversalCostFactor)
-			return CallEstimate{CostEstimate: strCost.Multiply(substrCost).Add(argCostSum())}
-		}
-	case overloads.LogicalOr, overloads.LogicalAnd:
-		lhs := argCosts[0]
-		rhs := argCosts[1]
-		// min cost is min of LHS for short circuited && or ||
-		argCost := CostEstimate{Min: lhs.Min, Max: lhs.Add(rhs).Max}
-		return CallEstimate{CostEstimate: argCost}
-	case overloads.Conditional:
-		size := c.sizeOrUnknown(args[1]).Union(c.sizeOrUnknown(args[2]))
-		resultEntrySize := c.computeEntrySize(args[1].Expr()).union(c.computeEntrySize(args[2].Expr()))
-		c.setEntrySize(e, resultEntrySize)
-		conditionalCost := argCosts[0]
-		ifTrueCost := argCosts[1]
-		ifFalseCost := argCosts[2]
-		argCost := conditionalCost.Add(ifTrueCost.Union(ifFalseCost))
-		return CallEstimate{CostEstimate: argCost, ResultSize: &size}
-	case overloads.AddString, overloads.AddBytes, overloads.AddList:
-		if len(args) == 2 {
-			lhsSize := c.sizeOrUnknown(args[0])
-			rhsSize := c.sizeOrUnknown(args[1])
-			resultSize := lhsSize.Add(rhsSize)
-			rhsEntrySize := c.computeEntrySize(args[0].Expr())
-			lhsEntrySize := c.computeEntrySize(args[1].Expr())
-			resultEntrySize := rhsEntrySize.union(lhsEntrySize)
-			if resultEntrySize != nil {
-				c.setEntrySize(e, resultEntrySize)
-			}
-			switch overloadID {
-			case overloads.AddList:
-				// list concatenation is O(1), but we handle it here to track size
-				return CallEstimate{CostEstimate: FixedCostEstimate(1).Add(argCostSum()), ResultSize: &resultSize}
-			default:
-				return CallEstimate{CostEstimate: resultSize.MultiplyByCostFactor(common.StringTraversalCostFactor).Add(argCostSum()), ResultSize: &resultSize}
-			}
-		}
-	case overloads.LessString, overloads.GreaterString, overloads.LessEqualsString, overloads.GreaterEqualsString,
-		overloads.LessBytes, overloads.GreaterBytes, overloads.LessEqualsBytes, overloads.GreaterEqualsBytes,
-		overloads.Equals, overloads.NotEquals:
-		lhsCost := c.sizeOrUnknown(args[0])
-		rhsCost := c.sizeOrUnknown(args[1])
-		min := uint64(0)
-		smallestMax := lhsCost.Max
-		if rhsCost.Max < smallestMax {
-			smallestMax = rhsCost.Max
-		}
-		if smallestMax > 0 {
-			min = 1
-		}
-		// equality of 2 scalar values results in a cost of 1
-		return CallEstimate{
-			CostEstimate: CostEstimate{Min: min, Max: smallestMax}.MultiplyByCostFactor(common.StringTraversalCostFactor).Add(argCostSum()),
+	if estimator, found := standardOverloadEstimators[overloadID]; found {
+		if est := estimator(ctx); est != nil {
+			return *est
 		}
 	}
 	// O(1) functions
@@ -846,7 +730,7 @@ func (c *coster) functionCost(e ast.Expr, function, overloadID string, target *A
 
 	// Benchmarks suggest that most of the other operations take +/- 50% of a base cost unit
 	// which on an Intel xeon 2.20GHz CPU is 50ns.
-	return CallEstimate{CostEstimate: FixedCostEstimate(1).Add(argCostSum())}
+	return CallEstimate{CostEstimate: FixedCostEstimate(1).Add(ctx.argCostSum())}
 }
 
 func (c *coster) getType(e ast.Expr) *types.Type {
