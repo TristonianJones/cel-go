@@ -59,10 +59,9 @@ func MemoryTrackerSizeCalculator(calc *SizeCalculator) MemoryTrackerOption {
 // arithmetic saturating at math.MaxUint32. The tracker is independent of any interpreter
 // implementation; evaluators feed it observations at points where values materialize:
 //
-//   - inputs to a call (e.g. the target and arguments of a.join(', '))
-//   - the output of a call (e.g. the result of a + a)
+//   - inputs and outputs of calls (e.g. the target and arguments of a.join(', '))
 //   - resolved attribute values (e.g. the value of a.b.c)
-//   - sampled values built up within comprehensions or bind initializers
+//   - values built up within literal blocks, comprehensions, and bind initializers
 //
 // The peak is the largest single observation, where one Track call observes a set of
 // coexistent values as a single watermark.
@@ -106,6 +105,9 @@ func (t *MemoryTracker) Version() int {
 //
 // Call sites with multiple live values, such as the input arguments to a function call,
 // should be tracked in a single call so the watermark reflects their combined footprint.
+//
+// Within observers, consider whether to choose the aggregated argument sizes, the result size,
+// or both when working with allocating operations.
 func (t *MemoryTracker) Track(vals ...any) uint32 {
 	total := uint32(0)
 	for _, val := range vals {
