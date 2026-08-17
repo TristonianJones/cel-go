@@ -45,12 +45,12 @@ func TestCalculateSize(t *testing.T) {
 		{
 			name: "sizer_string",
 			val:  String("hello"),
-			want: 5,
+			want: 1, // 5 bytes round up to a single 10-byte element unit
 		},
 		{
 			name: "sizer_bytes",
 			val:  Bytes("world"),
-			want: 5,
+			want: 1,
 		},
 		{
 			name: "err_val",
@@ -100,12 +100,12 @@ func TestCalculateSize(t *testing.T) {
 		{
 			name: "proto_value_string",
 			val:  protoreflect.ValueOfString("hello"),
-			want: 5,
+			want: 1,
 		},
 		{
 			name: "proto_value_bytes",
 			val:  protoreflect.ValueOfBytes([]byte("world")),
-			want: 5,
+			want: 1,
 		},
 		{
 			name: "proto_value_int",
@@ -115,12 +115,12 @@ func TestCalculateSize(t *testing.T) {
 		{
 			name: "proto_map_key",
 			val:  protoreflect.MapKey(protoreflect.ValueOfString("key")),
-			want: 3,
+			want: 1,
 		},
 		{
 			name: "proto_message",
 			val:  &proto3pb.TestAllTypes{SingleString: "hello"},
-			want: 6, // 1 (root) + 5 (string) = 6
+			want: 2, // 1 (root) + 1 (string unit) = 2
 		},
 		{
 			name: "proto_message_with_list_and_map",
@@ -153,17 +153,17 @@ func TestCalculateSize(t *testing.T) {
 		{
 			name: "reflect_value",
 			val:  reflect.ValueOf("reflected"),
-			want: 9,
+			want: 1,
 		},
 		{
 			name: "native_string",
 			val:  "hello",
-			want: 5,
+			want: 1,
 		},
 		{
 			name: "native_bytes",
 			val:  []byte("world"),
-			want: 5,
+			want: 1,
 		},
 		{
 			name: "native_int",
@@ -198,7 +198,7 @@ func TestCalculateSize(t *testing.T) {
 		{
 			name: "custom_struct",
 			val:  struct{ Name string }{"cel"},
-			want: 4, // 1 (root) + 3 ("cel") = 4
+			want: 2, // 1 (root) + 1 ("cel") = 2
 		},
 		{
 			name: "custom_lister",
@@ -208,12 +208,12 @@ func TestCalculateSize(t *testing.T) {
 		{
 			name: "custom_mapper",
 			val:  interopFoldableMap{Mapper: NewStringStringMap(DefaultTypeAdapter, map[string]string{"key": "val"})},
-			want: 7, // 1 (container) + 3 ("key") + 3 ("val") = 7
+			want: 3, // 1 (container) + 1 ("key") + 1 ("val") = 3
 		},
 		{
 			name: "custom_pure_mapper",
 			val:  customPureMapper{Mapper: NewStringStringMap(DefaultTypeAdapter, map[string]string{"key": "val"})},
-			want: 7, // 1 (container) + 3 ("key") + 3 ("val") = 7
+			want: 3, // 1 (container) + 1 ("key") + 1 ("val") = 3
 		},
 		{
 			name: "custom_sizer_struct_field",
@@ -791,4 +791,55 @@ func createNestedCustomList(adapter Adapter, depth, width int) ref.Val {
 		elems[i] = createNestedCustomList(adapter, depth-1, width)
 	}
 	return proxyLegacyList{proxy: NewRefValList(adapter, elems)}
+}
+
+func TestSizeCalculatorStringUnitLength(t *testing.T) {
+	tests := []struct {
+		name string
+		opts []SizeCalculatorOption
+		val  any
+		want uint32
+	}{
+		{name: "empty_string_unit", val: String(""), want: 1},
+		{name: "one_unit_exact", val: String("0123456789"), want: 1},
+		{name: "one_unit_plus_one", val: String("0123456789a"), want: 2},
+		{name: "three_units", val: String("0123456789012345678901"), want: 3},
+		{name: "bytes_two_units", val: Bytes("01234567890"), want: 2},
+		{name: "native_string_two_units", val: "01234567890", want: 2},
+		{name: "native_bytes_two_units", val: []byte("01234567890"), want: 2},
+		{name: "reflect_string_two_units", val: reflect.ValueOf("01234567890"), want: 2},
+		{
+			name: "unit_length_one",
+			opts: []SizeCalculatorOption{SizeCalculatorStringUnitLength(1)},
+			val:  String("hello"),
+			want: 5,
+		},
+		{
+			name: "unit_length_below_one_clamped",
+			opts: []SizeCalculatorOption{SizeCalculatorStringUnitLength(0)},
+			val:  String("hello"),
+			want: 5,
+		},
+		{
+			name: "unit_length_large",
+			opts: []SizeCalculatorOption{SizeCalculatorStringUnitLength(100)},
+			val:  String("hello world, hello world, hello world"),
+			want: 1,
+		},
+		{
+			// Sizes are measured in bytes, not characters: four 3-byte CJK characters
+			// occupy 12 bytes and count as two 10-byte units.
+			name: "multibyte_counted_in_bytes",
+			val:  String("日本語字"),
+			want: 2,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			calc := NewSizeCalculator(tc.opts...)
+			if got := calc.AggregateSize(tc.val); got != tc.want {
+				t.Errorf("AggregateSize(%v) got %d, want %d", tc.val, got, tc.want)
+			}
+		})
+	}
 }

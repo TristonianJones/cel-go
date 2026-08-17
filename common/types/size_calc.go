@@ -18,7 +18,6 @@ import (
 	"math"
 	"reflect"
 	"time"
-	"unicode/utf8"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -28,8 +27,9 @@ import (
 )
 
 const (
-	defaultSizeCalculatorMaxDepth     = 5
-	defaultSizeCalculatorMaxTraversal = 10000
+	defaultSizeCalculatorMaxDepth         = 5
+	defaultSizeCalculatorMaxTraversal     = 10000
+	defaultSizeCalculatorStringUnitLength = 10
 )
 
 // SizeCalculatorOption configures a SizeCalculator instance.
@@ -49,19 +49,37 @@ func SizeCalculatorMaxTraversal(traversal int) SizeCalculatorOption {
 	}
 }
 
+// SizeCalculatorStringUnitLength sets the number of string or bytes value bytes which count as
+// a single element (default 10). Values less than 1 are treated as 1, meaning each byte counts
+// as a whole element.
+//
+// String sizes are measured in bytes rather than characters so that sizing large values is
+// O(1) rather than a full UTF-8 scan per observation; byte length is never smaller than the
+// character count, so byte-based sizing is conservative for limit enforcement.
+func SizeCalculatorStringUnitLength(length int) SizeCalculatorOption {
+	return func(s *SizeCalculator) {
+		if length < 1 {
+			length = 1
+		}
+		s.stringUnitLength = length
+	}
+}
+
 // SizeCalculator calculates the recursive element size of values.
 type SizeCalculator struct {
-	version      int
-	maxDepth     int
-	maxTraversal int
+	version          int
+	maxDepth         int
+	maxTraversal     int
+	stringUnitLength int
 }
 
 // NewSizeCalculator returns a new SizeCalculator configured with optional SizeCalculatorOption settings.
 func NewSizeCalculator(opts ...SizeCalculatorOption) *SizeCalculator {
 	s := &SizeCalculator{
-		version:      0,
-		maxDepth:     defaultSizeCalculatorMaxDepth,
-		maxTraversal: defaultSizeCalculatorMaxTraversal,
+		version:          0,
+		maxDepth:         defaultSizeCalculatorMaxDepth,
+		maxTraversal:     defaultSizeCalculatorMaxTraversal,
+		stringUnitLength: defaultSizeCalculatorStringUnitLength,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -105,6 +123,15 @@ func (s *SizeCalculator) AggregateSize(val any) uint32 {
 	return ctx.AggregateSize(val)
 }
 
+// stringSize converts a byte length to an element count where stringUnitLength bytes count
+// as a single element, rounding up with a minimum size of 1.
+func (s *SizeCalculator) stringSize(length int) uint32 {
+	if length <= 0 {
+		return 1
+	}
+	return safeUint32FromInt((length + s.stringUnitLength - 1) / s.stringUnitLength)
+}
+
 // AggregateSize implements the ref.Val interface and allows for the generation of nested
 // child context values which are necessary for correct traversal count tracking.
 func (c sizeContext) AggregateSize(val any) uint32 {
@@ -112,6 +139,10 @@ func (c sizeContext) AggregateSize(val any) uint32 {
 		return math.MaxUint32
 	}
 	switch v := val.(type) {
+	case String:
+		return c.calc.stringSize(len(v))
+	case Bytes:
+		return c.calc.stringSize(len(v))
 	case AggregateSizeVisitor:
 		return v.AggregateSize(c.childContext())
 	case traits.Foldable:
@@ -161,9 +192,9 @@ func (c sizeContext) AggregateSize(val any) uint32 {
 	case reflect.Value:
 		return getReflectValueAggregateSize(c, v)
 	case string:
-		return safeUint32FromInt(utf8.RuneCountInString(v))
+		return c.calc.stringSize(len(v))
 	case []byte:
-		return safeUint32FromInt(len(v))
+		return c.calc.stringSize(len(v))
 	case int, int8, int16, int32, int64,
 		uint, uint8, uint16, uint32, uint64,
 		float32, float64, bool, time.Time, time.Duration, nil:
@@ -245,11 +276,11 @@ func getReflectValueAggregateSize(c sizeContext, fieldVal reflect.Value) uint32 
 	childCtx := c.childContext()
 	switch fieldVal.Kind() {
 	case reflect.String:
-		return safeUint32FromInt(utf8.RuneCountInString(fieldVal.String()))
+		return c.calc.stringSize(fieldVal.Len())
 	case reflect.Slice, reflect.Array:
 		elemType := fieldVal.Type().Elem()
 		if elemType.Kind() == reflect.Uint8 {
-			return safeUint32FromInt(fieldVal.Len())
+			return c.calc.stringSize(fieldVal.Len())
 		}
 		total := safeAddUint32(1, safeUint32FromInt(fieldVal.Len()))
 		switch elemType.Kind() {

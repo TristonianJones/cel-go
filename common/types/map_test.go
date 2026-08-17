@@ -1312,7 +1312,7 @@ func TestMapCalculateSize(t *testing.T) {
 		{
 			name: "string_string_map",
 			val:  NewStringStringMap(adapter, map[string]string{"k1": "v1", "k2": "v2"}),
-			want: 9,
+			want: 5, // 1 (container) + 4 (single-unit keys and values) = 5
 		},
 		{
 			name: "mutable_map_after_insert",

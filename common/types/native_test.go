@@ -1353,8 +1353,8 @@ func TestNativeObjectCalculateSize(t *testing.T) {
 					NestedListVal: []string{"a", "b"},
 				},
 			},
-			// 1 (root struct) + "hello"(5) + NestedVal(1 container + ["a", "b"](1+2=3) = 4) = 10
-			want: 10,
+			// 1 (root struct) + "hello"(1 unit) + NestedVal(1 container + ["a", "b"](1+2=3) = 4) = 6
+			want: 6,
 		},
 		{
 			name: "bytes_and_time",
@@ -1363,7 +1363,8 @@ func TestNativeObjectCalculateSize(t *testing.T) {
 				DurationVal:  time.Second,
 				TimestampVal: time.Unix(100, 0),
 			},
-			want: 7,
+			// 1 (root struct) + "test"(1 unit) + duration(1) + timestamp(1) = 4
+			want: 4,
 		},
 		{
 			name: "slice_of_structs",
