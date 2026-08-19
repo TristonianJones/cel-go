@@ -179,8 +179,8 @@ func (s *SizeCalculator) EstimateAggregateSize(val any) AggregateSizeEstimate {
 	return AggregateSizeEstimate{Size: size, LimitExceeded: exceeded}
 }
 
-// stringSize converts a byte length to an element count where stringUnitLength bytes count
-// as a single element, rounding up with a minimum size of 1.
+// stringSize converts a character or byte length to an element count where stringUnitLength
+// characters count as a single element, rounding up with a minimum size of 1.
 func (s *SizeCalculator) stringSize(length int) uint32 {
 	if length <= 0 {
 		return 1
