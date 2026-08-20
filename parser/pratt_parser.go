@@ -157,26 +157,25 @@ func NewPrattParser(opts ...Option) (*PrattParser, error) {
 // Parse parses the expression represented by source using the Pratt parser and returns the result.
 func (p *PrattParser) Parse(source common.Source) (*ast.AST, *common.Errors) {
 	errs := common.NewErrors(source)
-	pratt := p.newWorker(source, errs)
-	var out ast.Expr
-	if pratt.length > int32(p.expressionSizeCodePointLimit) {
-		out = pratt.reportError(token{kind: tokError, start: 0, end: 0},
-			"expression code point size exceeds limit: size: %d, limit %d",
-			pratt.length, p.expressionSizeCodePointLimit)
-	} else {
-		out = pratt.parse()
+	buf, ok := source.(runes.Buffer)
+	if !ok {
+		buf = runes.NewBuffer(source.Content())
 	}
+	if buf.Len() > p.expressionSizeCodePointLimit {
+		errs.ReportError(common.NoLocation,
+			"expression code point size exceeds limit: size: %d, limit %d",
+			buf.Len(), p.expressionSizeCodePointLimit)
+		return nil, errs
+	}
+	pratt := p.newWorker(source, buf, errs)
+	out := pratt.parse()
 	if len(errs.GetErrors()) > 0 {
 		return nil, errs
 	}
 	return ast.NewAST(out, pratt.helper.getSourceInfo()), errs
 }
 
-func (p *PrattParser) newWorker(source common.Source, errs *common.Errors) *prattParser {
-	buf, ok := source.(runes.Buffer)
-	if !ok {
-		buf = runes.NewBuffer(source.Content())
-	}
+func (p *PrattParser) newWorker(source common.Source, buf runes.Buffer, errs *common.Errors) *prattParser {
 	accu := AccumulatorName
 	if p.enableHiddenAccumulatorName {
 		accu = HiddenAccumulatorName

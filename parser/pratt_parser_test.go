@@ -1198,6 +1198,22 @@ func TestPrattParserErrorRecoveryLimits(t *testing.T) {
 		}
 	})
 }
+
+func TestPrattParserExpressionSizeCodePointLimit(t *testing.T) {
+	p, err := NewPrattParser(Macros(AllMacros...), ExpressionSizeCodePointLimit(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := common.NewTextSource("foo")
+	_, errs := p.Parse(src)
+	if got, want := len(errs.GetErrors()), 1; got != want {
+		t.Fatalf("got %d errors, want %d errors: %s", got, want, errs.ToDisplayString())
+	}
+	if got, want := errs.GetErrors()[0].Message, "expression code point size exceeds limit: size: 3, limit 2"; got != want {
+		t.Fatalf("got %q, want %q: %s", got, want, errs.GetErrors()[0].ToDisplayString(src))
+	}
+}
+
 func BenchmarkParsers(b *testing.B) {
 	exprs := []string{
 		`42`,
