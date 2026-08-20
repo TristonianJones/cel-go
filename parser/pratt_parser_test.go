@@ -795,10 +795,13 @@ var prattTestCases = []testInfo{
 			" | ^",
 	},
 	{
-		I: "msg.`ident`",
+		I: "msg.`ident` + msg.`other`",
 		E: "ERROR: <input>:1:5: unsupported syntax '`'\n" +
-			" | msg.`ident`\n" +
-			" | ....^",
+			" | msg.`ident` + msg.`other`\n" +
+			" | ....^\n" +
+			"ERROR: <input>:1:19: unsupported syntax '`'\n" +
+			" | msg.`ident` + msg.`other`\n" +
+			" | ..................^",
 		Opts: []Option{EnableIdentEscapeSyntax(false)},
 	},
 	{
