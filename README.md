@@ -1,7 +1,7 @@
 # Common Expression Language
 
-[![Go Report Card](https://goreportcard.com/badge/cel.dev/cel-go)](https://goreportcard.com/report/cel.dev/cel-go)
 [![GoDoc](https://pkg.go.dev/badge/cel.dev/cel-go.svg)][6]
+[![SLSA L3](https://slsa.dev/images/gh-badge-level3.svg)][7]
 
 > [!WARNING]
 > **On June 16, 2026, this repository will move to
@@ -291,3 +291,4 @@ Released under the [Apache License](LICENSE).
 [4]:  https://github.com/cel-expr/cel-go/issues
 [5]:  https://bazel.build
 [6]:  https://pkg.go.dev/cel.dev/cel-go
+[7]:  https://slsa.dev
