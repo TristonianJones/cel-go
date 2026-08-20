@@ -167,21 +167,12 @@ func (p *PrattParser) Parse(source common.Source) (*ast.AST, *common.Errors) {
 			buf.Len(), p.expressionSizeCodePointLimit)
 		return nil, errs
 	}
-	pratt := p.newWorker(source, buf, errs)
-	out := pratt.parse()
-	if len(errs.GetErrors()) > 0 {
-		return nil, errs
-	}
-	return ast.NewAST(out, pratt.helper.getSourceInfo()), errs
-}
-
-func (p *PrattParser) newWorker(source common.Source, buf runes.Buffer, errs *common.Errors) *prattParser {
 	accu := AccumulatorName
 	if p.enableHiddenAccumulatorName {
 		accu = HiddenAccumulatorName
 	}
 	fac := ast.NewExprFactoryWithAccumulator(accu)
-	pp := &prattParser{
+	pratt := &prattParser{
 		content:                    buf,
 		length:                     int32(buf.Len()),
 		helper:                     newParserHelper(source, fac),
@@ -198,8 +189,12 @@ func (p *PrattParser) newWorker(source common.Source, buf runes.Buffer, errs *co
 		enableVariadicOperatorASTs: p.enableVariadicOperatorASTs,
 		enableIdentEscapeSyntax:    p.enableIdentEscapeSyntax,
 	}
-	pp.initTokenStream()
-	return pp
+	pratt.initTokenStream()
+	out := pratt.parse()
+	if len(errs.GetErrors()) > 0 {
+		return nil, errs
+	}
+	return ast.NewAST(out, pratt.helper.getSourceInfo()), errs
 }
 
 func (p *prattParser) initTokenStream() {
