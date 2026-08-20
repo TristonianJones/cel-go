@@ -454,7 +454,7 @@ func (p *prattParser) parseBinaryAndTernary(minPrec int) ast.Expr {
 		}
 
 		if opInfo.name == operators.LogicalOr || opInfo.name == operators.LogicalAnd {
-			lhs = p.parseBalancedLogicalChain(lhs, opInfo)
+			lhs = p.parseLogicalChain(lhs, opInfo)
 			continue
 		}
 
@@ -477,7 +477,7 @@ func (p *prattParser) parseTernary(lhs ast.Expr) ast.Expr {
 	return p.helper.newGlobalCall(opID, operators.Conditional, lhs, trueExpr, falseExpr)
 }
 
-func (p *prattParser) parseBalancedLogicalChain(lhs ast.Expr, opInfo binaryOpInfo) ast.Expr {
+func (p *prattParser) parseLogicalChain(lhs ast.Expr, opInfo binaryOpInfo) ast.Expr {
 	l := p.newLogicManager(opInfo.name, lhs)
 	for p.peekTok.kind == opInfo.kind {
 		opTok := p.nextToken()
