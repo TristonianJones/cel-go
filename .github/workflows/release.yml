@@ -1,0 +1,132 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.30.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+        with:
+          go-version-file: 'go.mod'
+          check-latest: true
+
+      - name: Determine Release Tag
+        id: tag
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Build REPL Binaries and Packages
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          mkdir -p dist
+          
+          # Target platforms: OS/ARCH
+          PLATFORMS=(
+            "linux/amd64"
+            "linux/arm64"
+            "darwin/amd64"
+            "darwin/arm64"
+            "windows/amd64"
+          )
+          
+          for PLATFORM in "${PLATFORMS[@]}"; do
+            GOOS="${PLATFORM%/*}"
+            GOARCH="${PLATFORM#*/}"
+            
+            OUTPUT_NAME="cel-repl"
+            if [ "$GOOS" = "windows" ]; then
+              OUTPUT_NAME="cel-repl.exe"
+            fi
+            
+            STAGE_DIR="dist/stage_${GOOS}_${GOARCH}"
+            mkdir -p "$STAGE_DIR"
+            
+            echo "Building cel-repl for ${GOOS}/${GOARCH}..."
+            (
+              cd repl
+              CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -ldflags="-s -w" -o "../${STAGE_DIR}/${OUTPUT_NAME}" ./main
+            )
+            
+            cp LICENSE "$STAGE_DIR/"
+            cp repl/main/README.md "$STAGE_DIR/"
+            
+            ARCHIVE_NAME="cel-repl_${TAG#v}_${GOOS}_${GOARCH}"
+            if [ "$GOOS" = "windows" ]; then
+              (cd "$STAGE_DIR" && zip -r "../../dist/${ARCHIVE_NAME}.zip" ./)
+            else
+              tar -czf "dist/${ARCHIVE_NAME}.tar.gz" -C "$STAGE_DIR" .
+            fi
+            
+            rm -rf "$STAGE_DIR"
+          done
+
+      - name: Generate Checksums
+        id: checksums
+        run: |
+          cd dist
+          sha256sum * > checksums.txt
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a # v3.8.1
+
+      - name: Sign Checksums with Sigstore Cosign
+        run: |
+          cd dist
+          # Keyless signing via GitHub Actions OIDC token
+          cosign sign-blob --yes \
+            --bundle checksums.txt.bundle \
+            checksums.txt
+          cosign sign-blob --yes \
+            --output-signature checksums.txt.sig \
+            --output-certificate checksums.txt.pem \
+            checksums.txt
+
+      - name: Upload Release Assets
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          gh release upload "$TAG" dist/* --clobber
+
+      - name: Generate SLSA Subjects
+        id: hash
+        run: |
+          cd dist
+          echo "hashes=$(sha256sum * | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+  provenance:
+    needs: [build]
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: "${{ needs.build.outputs.hashes }}"
+      upload-assets: true
