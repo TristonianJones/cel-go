@@ -162,6 +162,9 @@ func (p *parserHelper) id(ctx any) int64 {
 	case antlr.Token:
 		offset.Start = p.sourceInfo.ComputeOffset(int32(c.GetLine()), int32(c.GetColumn()))
 		offset.Stop = offset.Start + int32(len(c.GetText()))
+	case token:
+		offset.Start = c.start
+		offset.Stop = c.end
 	case common.Location:
 		offset.Start = p.sourceInfo.ComputeOffsetAbsolute(int32(c.Line()), int32(c.Column()))
 		offset.Stop = offset.Start
@@ -173,6 +176,13 @@ func (p *parserHelper) id(ctx any) int64 {
 	}
 	id := p.nextID
 	p.sourceInfo.SetOffsetRange(id, offset)
+	p.nextID++
+	return id
+}
+
+func (p *parserHelper) idFromOffsets(start, stop int32) int64 {
+	id := p.nextID
+	p.sourceInfo.SetOffsetRange(id, ast.OffsetRange{Start: start, Stop: stop})
 	p.nextID++
 	return id
 }
