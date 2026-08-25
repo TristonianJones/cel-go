@@ -18,48 +18,38 @@ import (
 	"math"
 
 	"cel.dev/cel-go/common/ast"
+	"cel.dev/cel-go/common/operators"
 	"cel.dev/cel-go/common/overloads"
 	"cel.dev/cel-go/common/types"
 )
 
-// WARNING: Any changes to cost calculations in this file require a corresponding change in interpreter/runtimecost.go
-
-// Estimator estimates the sizes of variable length input data and the costs of functions.
+// Estimator provides CallCost and Size estimates for cost calculation.
 type Estimator interface {
-	// EstimateSize returns a SizeEstimate for the given AstNode, or nil if the estimator has no
-	// estimate to provide.
-	//
-	// The size is equivalent to the result of the CEL `size()` function:
-	//  * Number of unicode characters in a string
-	//  * Number of bytes in a sequence
-	//  * Number of map entries or number of list items.
-	//
-	// EstimateSize is only called for AstNodes where CEL does not know the size; EstimateSize is not
-	// called for values defined inline in CEL where the size is already obvious to CEL.
-	EstimateSize(element AstNode) *SizeEstimate
 
-	// EstimateCallCost returns the estimated cost of an invocation, or nil if the estimator has no
-	// estimate to provide.
+	// EstimateCallCost returns the CallEstimate for a function, overload and target and arguments.
+	//
+	// If nil is returned, the cost of the function is calculated by the OverloadCostEstimate if
+	// provided, or standard CEL function cost estimation.
 	EstimateCallCost(function, overloadID string, target *AstNode, args []AstNode) *CallEstimate
+
+	// EstimateSize returns the SizeEstimate of an AstNode.
+	//
+	// If nil is returned, the size of the node is calculated by the SizingStrategy.
+	EstimateSize(element AstNode) *SizeEstimate
 }
 
-// AstNode represents an AST node for the purpose of cost estimations.
+// AstNode represents an AST node for estimating cost.
 type AstNode interface {
-	// Path returns a field path through the provided type declarations to the type of the AstNode, or nil if the AstNode does not
-	// represent type directly reachable from the provided type declarations.
-	// The first path element is a variable. All subsequent path elements are one of: field name, '@items', '@keys', '@values'.
+	// Path returns the field path of the node, if applicable.
 	Path() []string
 
-	// Type returns the deduced type of the AstNode.
+	// Type returns the type of the node.
 	Type() *types.Type
 
-	// Expr returns the expression of the AstNode.
+	// Expr returns the ast.Expr of the node.
 	Expr() ast.Expr
 
-	// ComputedSize returns a size estimate of the AstNode derived from information available in the CEL expression.
-	// For constants and inline list and map declarations, the exact size is returned. For concatenated list, strings
-	// and bytes, the size is derived from the size estimates of the operands. nil is returned if there is no
-	// computed size available.
+	// ComputedSize returns the SizeEstimate of the node if one was computed during cost estimation.
 	ComputedSize() *SizeEstimate
 }
 
@@ -70,25 +60,25 @@ type astNode struct {
 	derivedSize *SizeEstimate
 }
 
-func (e astNode) Path() []string {
-	return e.path
+func (a astNode) Path() []string {
+	return a.path
 }
 
-func (e astNode) Type() *types.Type {
-	return e.t
+func (a astNode) Type() *types.Type {
+	return a.t
 }
 
-func (e astNode) Expr() ast.Expr {
-	return e.expr
+func (a astNode) Expr() ast.Expr {
+	return a.expr
 }
 
-func (e astNode) ComputedSize() *SizeEstimate {
-	return e.derivedSize
+func (a astNode) ComputedSize() *SizeEstimate {
+	return a.derivedSize
 }
 
-// NewAstNode creates a new AstNode for cost estimation.
+// NewAstNode returns an AstNode with the given expression, path, type, and derived size.
 func NewAstNode(expr ast.Expr, path []string, t *types.Type, derivedSize *SizeEstimate) AstNode {
-	return &astNode{
+	return astNode{
 		path:        path,
 		t:           t,
 		expr:        expr,
@@ -96,13 +86,18 @@ func NewAstNode(expr ast.Expr, path []string, t *types.Type, derivedSize *SizeEs
 	}
 }
 
-// CostOption configures flags which affect cost computations.
-type CostOption func(*coster) error
+// Option configures flags which affect cost computations.
+type Option func(*coster) error
+
+// CostOption is an alias for Option.
+//
+// Deprecated: use Option.
+type CostOption = Option
 
 // PresenceTestHasCost determines whether presence testing has a cost of one or zero.
 //
 // Defaults to presence test has a cost of one.
-func PresenceTestHasCost(hasCost bool) CostOption {
+func PresenceTestHasCost(hasCost bool) Option {
 	return func(c *coster) error {
 		if hasCost {
 			c.presenceTestCost = selectAndIdentCost
@@ -120,15 +115,23 @@ type FunctionEstimator func(estimator Estimator, target *AstNode, args []AstNode
 //
 // When a OverloadCostEstimate is provided, it will override the cost calculation of the CostEstimator provided to
 // the Cost() call.
-func OverloadCostEstimate(overloadID string, functionCoster FunctionEstimator) CostOption {
+func OverloadCostEstimate(overloadID string, functionCoster FunctionEstimator) Option {
 	return func(c *coster) error {
 		c.overloadEstimators[overloadID] = functionCoster
 		return nil
 	}
 }
 
+// EstimateSizingStrategy configures a custom SizingStrategy for cost estimation.
+func EstimateSizingStrategy(strategy SizingStrategy) Option {
+	return func(c *coster) error {
+		c.sizingStrategy = strategy
+		return nil
+	}
+}
+
 // Cost estimates the cost of the parsed and type checked CEL expression.
-func Cost(checked *ast.AST, estimator Estimator, opts ...CostOption) (CostEstimate, error) {
+func Cost(checked *ast.AST, estimator Estimator, opts ...Option) (CostEstimate, error) {
 	c := &coster{
 		checkedAST:         checked,
 		estimator:          estimator,
@@ -136,7 +139,6 @@ func Cost(checked *ast.AST, estimator Estimator, opts ...CostOption) (CostEstima
 		exprPaths:          map[int64][]string{},
 		localVars:          make(scopes),
 		computedSizes:      map[int64]SizeEstimate{},
-		computedEntrySizes: map[int64]entrySizeEstimate{},
 		presenceTestCost:   FixedCostEstimate(1),
 	}
 	for _, opt := range opts {
@@ -155,80 +157,31 @@ type coster struct {
 	localVars scopes
 	// computedSizes tracks the computed sizes of call results.
 	computedSizes map[int64]SizeEstimate
-	// computedEntrySizes tracks the size of list and map entries
-	computedEntrySizes map[int64]entrySizeEstimate
 
-	checkedAST         *ast.AST
-	estimator          Estimator
-	overloadEstimators map[string]FunctionEstimator
+	checkedAST               *ast.AST
+	estimator                Estimator
+	sizingStrategy           SizingStrategy
+	overloadEstimators       map[string]FunctionEstimator
+	sizingOverloadEstimators map[string]FunctionEstimator
 	// presenceTestCost will either be a zero or one based on whether has() macros count against cost computations.
 	presenceTestCost CostEstimate
 }
 
-// entrySizeEstimate captures the container kind and associated key/index and value SizeEstimate values.
-//
-// An entrySizeEstimate only exists if both the key/index and the value have SizeEstimate values, otherwise
-// a nil entrySizeEstimate should be used.
-type entrySizeEstimate struct {
-	containerKind types.Kind
-	key           SizeEstimate
-	val           SizeEstimate
-}
-
-// container returns the container kind (list or map) of the entry.
-func (s *entrySizeEstimate) container() types.Kind {
-	if s == nil {
-		return types.UnknownKind
-	}
-	return s.containerKind
-}
-
-// keySize returns the SizeEstimate for the key if one exists.
-func (s *entrySizeEstimate) keySize() *SizeEstimate {
-	if s == nil {
-		return nil
-	}
-	return &s.key
-}
-
-// valSize returns the SizeEstimate for the value if one exists.
-func (s *entrySizeEstimate) valSize() *SizeEstimate {
-	if s == nil {
-		return nil
-	}
-	return &s.val
-}
-
-func (s *entrySizeEstimate) union(other *entrySizeEstimate) *entrySizeEstimate {
-	if s == nil || other == nil {
-		return nil
-	}
-	sk := s.key.Union(other.key)
-	sv := s.val.Union(other.val)
-	return &entrySizeEstimate{
-		containerKind: s.containerKind,
-		key:           sk,
-		val:           sv,
-	}
-}
-
-// localVar captures the local variable size and entrySize estimates if they exist for variables
+// localVar captures the local variable size estimates if they exist for variables
 type localVar struct {
-	exprID    int64
-	path      []string
-	size      *SizeEstimate
-	entrySize *entrySizeEstimate
+	exprID int64
+	path   []string
+	size   *SizeEstimate
 }
 
 // scopes is a stack of variable name to integer id stack to handle scopes created by cel.bind() like macros
 type scopes map[string][]*localVar
 
-func (s scopes) push(varName string, expr ast.Expr, path []string, size *SizeEstimate, entrySize *entrySizeEstimate) {
+func (s scopes) push(varName string, expr ast.Expr, path []string, size *SizeEstimate) {
 	s[varName] = append(s[varName], &localVar{
-		exprID:    expr.ID(),
-		path:      path,
-		size:      size,
-		entrySize: entrySize,
+		exprID: expr.ID(),
+		path:   path,
+		size:   size,
 	})
 }
 
@@ -246,57 +199,61 @@ func (s scopes) peek(varName string) (*localVar, bool) {
 }
 
 func (c *coster) pushIterKey(varName string, rangeExpr ast.Expr) {
-	entrySize := c.computeEntrySize(rangeExpr)
-	size := entrySize.keySize()
-	path := c.getPath(rangeExpr)
-	container := entrySize.container()
-	if container == types.UnknownKind {
-		container = c.getType(rangeExpr).Kind()
+	rangeSize := c.sizeOrUnknown(rangeExpr)
+	var size *SizeEstimate
+	if rangeSize.Key != nil {
+		size = rangeSize.Key
+	} else {
+		s := FixedSizeEstimate(1)
+		size = &s
 	}
+	path := c.getPath(rangeExpr)
+	container := c.getType(rangeExpr).Kind()
 	subpath := "@keys"
 	if container == types.ListKind {
 		subpath = "@indices"
 	}
-	c.localVars.push(varName, rangeExpr, append(path, subpath), size, nil)
+	c.localVars.push(varName, rangeExpr, append(path, subpath), size)
 }
 
 func (c *coster) pushIterValue(varName string, rangeExpr ast.Expr) {
-	entrySize := c.computeEntrySize(rangeExpr)
-	size := entrySize.valSize()
-	path := c.getPath(rangeExpr)
-	container := entrySize.container()
-	if container == types.UnknownKind {
-		container = c.getType(rangeExpr).Kind()
+	rangeSize := c.sizeOrUnknown(rangeExpr)
+	var size *SizeEstimate
+	if rangeSize.Elem != nil {
+		size = rangeSize.Elem
 	}
+	path := c.getPath(rangeExpr)
+	container := c.getType(rangeExpr).Kind()
 	subpath := "@values"
 	if container == types.ListKind {
 		subpath = "@items"
 	}
-	c.localVars.push(varName, rangeExpr, append(path, subpath), size, nil)
+	c.localVars.push(varName, rangeExpr, append(path, subpath), size)
 }
 
 func (c *coster) pushIterSingle(varName string, rangeExpr ast.Expr) {
-	entrySize := c.computeEntrySize(rangeExpr)
-	size := entrySize.keySize()
+	rangeSize := c.sizeOrUnknown(rangeExpr)
+	var size *SizeEstimate
 	subpath := "@keys"
-	container := entrySize.container()
-	if container == types.UnknownKind {
-		container = c.getType(rangeExpr).Kind()
-	}
+	container := c.getType(rangeExpr).Kind()
 	if container == types.ListKind {
-		size = entrySize.valSize()
+		size = rangeSize.Elem
 		subpath = "@items"
+	} else {
+		if rangeSize.Key != nil {
+			size = rangeSize.Key
+		} else {
+			s := FixedSizeEstimate(1)
+			size = &s
+		}
 	}
 	path := c.getPath(rangeExpr)
-	c.localVars.push(varName, rangeExpr, append(path, subpath), size, nil)
+	c.localVars.push(varName, rangeExpr, append(path, subpath), size)
 }
 
 func (c *coster) pushLocalVar(varName string, e ast.Expr) {
 	path := c.getPath(e)
-	// note: retrieve the entry size for the local variable based on the size of the binding expression
-	// since the binding expression could be a list or map, the entry size should also be propagated
-	entrySize := c.computeEntrySize(e)
-	c.localVars.push(varName, e, path, c.computeSize(e), entrySize)
+	c.localVars.push(varName, e, path, c.computeSize(e))
 }
 
 func (c *coster) peekLocalVar(varName string) (*localVar, bool) {
@@ -307,45 +264,62 @@ func (c *coster) popLocalVar(varName string) {
 	c.localVars.pop(varName)
 }
 
+func (c *coster) getPath(e ast.Expr) []string {
+	if e == nil {
+		return nil
+	}
+	if path, ok := c.exprPaths[e.ID()]; ok {
+		return path
+	}
+	return nil
+}
+
+func (c *coster) addPath(e ast.Expr, path []string) {
+	if len(path) == 0 {
+		return
+	}
+	c.exprPaths[e.ID()] = path
+}
+
+func (c *coster) getType(e ast.Expr) *types.Type {
+	return c.checkedAST.GetType(e.ID())
+}
+
 func (c *coster) cost(e ast.Expr) CostEstimate {
 	if e == nil {
 		return CostEstimate{}
 	}
-	var estimate CostEstimate
 	switch e.Kind() {
 	case ast.LiteralKind:
-		estimate = constCost
+		return constCost
 	case ast.IdentKind:
-		estimate = c.costIdent(e)
+		return c.costIdent(e)
 	case ast.SelectKind:
-		estimate = c.costSelect(e)
+		return c.costSelect(e)
 	case ast.CallKind:
-		estimate = c.costCall(e)
+		return c.costCall(e)
 	case ast.ListKind:
-		estimate = c.costCreateList(e)
+		return c.costCreateList(e)
 	case ast.MapKind:
-		estimate = c.costCreateMap(e)
+		return c.costCreateMap(e)
 	case ast.StructKind:
-		estimate = c.costCreateStruct(e)
+		return c.costCreateStruct(e)
 	case ast.ComprehensionKind:
 		if c.isBind(e) {
-			estimate = c.costBind(e)
-		} else {
-			estimate = c.costComprehension(e)
+			return c.costBind(e)
 		}
+		return c.costComprehension(e)
 	default:
 		return CostEstimate{}
 	}
-	return estimate
 }
 
 func (c *coster) costIdent(e ast.Expr) CostEstimate {
-	identName := e.AsIdent()
-	// build and track the field path
-	if v, ok := c.peekLocalVar(identName); ok {
+	ident := e.AsIdent()
+	if v, ok := c.peekLocalVar(ident); ok {
 		c.addPath(e, v.path)
 	} else {
-		c.addPath(e, []string{identName})
+		c.addPath(e, []string{ident})
 	}
 	return selectAndIdentCost
 }
@@ -354,24 +328,41 @@ func (c *coster) costSelect(e ast.Expr) CostEstimate {
 	sel := e.AsSelect()
 	var sum CostEstimate
 	if sel.IsTestOnly() {
-		// recurse, but do not add any cost
-		// this is equivalent to how evalTestOnly increments the runtime cost counter
-		// but does not add any additional cost for the qualifier, except here we do
-		// the reverse (ident adds cost)
 		sum = sum.Add(c.presenceTestCost)
-		sum = sum.Add(c.cost(sel.Operand()))
-		return sum
-	}
-	sum = sum.Add(c.cost(sel.Operand()))
-	targetType := c.getType(sel.Operand())
-	switch targetType.Kind() {
-	case types.MapKind, types.StructKind, types.TypeParamKind:
+	} else {
 		sum = sum.Add(selectAndIdentCost)
 	}
-
-	// build and track the field path
-	c.addPath(e, append(c.getPath(sel.Operand()), sel.FieldName()))
+	sum = sum.Add(c.cost(sel.Operand()))
+	sum = sum.Add(c.relativeAttributeCost(sel.Operand()))
+	targetPath := c.getPath(sel.Operand())
+	if len(targetPath) > 0 {
+		c.addPath(e, append(targetPath, sel.FieldName()))
+	}
 	return sum
+}
+
+// relativeAttributeCost is the cost of qualifying a value which was computed rather than named.
+func (c *coster) relativeAttributeCost(operand ast.Expr) CostEstimate {
+	if isAttributeChain(operand) {
+		return CostEstimate{}
+	}
+	return FixedCostEstimate(SelectAndIdentCost)
+}
+
+// isAttributeChain reports whether an expression is resolved as part of a single attribute
+// during evaluation. A chain begins at an identifier, or at a ternary which selects between
+// attributes, and is extended by field selections and index operations.
+func isAttributeChain(e ast.Expr) bool {
+	switch e.Kind() {
+	case ast.IdentKind, ast.SelectKind:
+		return true
+	case ast.CallKind:
+		switch e.AsCall().FunctionName() {
+		case operators.Index, operators.Conditional:
+			return true
+		}
+	}
+	return false
 }
 
 func (c *coster) costCall(e ast.Expr) CostEstimate {
@@ -385,6 +376,10 @@ func (c *coster) costCall(e ast.Expr) CostEstimate {
 	args := call.Args()
 	var sum CostEstimate
 
+	if call.FunctionName() == operators.Index && len(args) > 0 {
+		sum = sum.Add(c.relativeAttributeCost(args[0]))
+	}
+
 	argTypes := make([]AstNode, len(args))
 	argCosts := make([]CostEstimate, len(args))
 	for i, arg := range args {
@@ -394,7 +389,11 @@ func (c *coster) costCall(e ast.Expr) CostEstimate {
 
 	overloadIDs := c.checkedAST.GetOverloadIDs(e.ID())
 	if len(overloadIDs) == 0 {
-		return CostEstimate{}
+		var argCostSum CostEstimate
+		for _, a := range argCosts {
+			argCostSum = argCostSum.Add(a)
+		}
+		return FixedCostEstimate(1).Add(sum).Add(argCostSum)
 	}
 	var targetType *AstNode
 	if call.IsMemberFunction() {
@@ -420,13 +419,10 @@ func (c *coster) costCall(e ast.Expr) CostEstimate {
 		switch overload {
 		case overloads.IndexList:
 			if len(args) > 0 {
-				// note: assigning resultSize here could be redundant with the path-based lookup later
-				resultSize = c.computeEntrySize(args[0]).valSize()
 				c.addPath(e, append(c.getPath(args[0]), "@items"))
 			}
 		case overloads.IndexMap:
 			if len(args) > 0 {
-				resultSize = c.computeEntrySize(args[0]).valSize()
 				c.addPath(e, append(c.getPath(args[0]), "@values"))
 			}
 		}
@@ -453,40 +449,20 @@ func (c *coster) maybeUnwrapDynCall(e ast.Expr) *CostEstimate {
 func (c *coster) costCreateList(e ast.Expr) CostEstimate {
 	create := e.AsList()
 	var sum CostEstimate
-	itemSize := SizeEstimate{Min: math.MaxUint64, Max: 0}
-	if create.Size() == 0 {
-		itemSize.Min = 0
+	for _, elem := range create.Elements() {
+		sum = sum.Add(c.cost(elem))
 	}
-	for _, e := range create.Elements() {
-		sum = sum.Add(c.cost(e))
-		is := c.sizeOrUnknown(e)
-		itemSize = itemSize.Union(is)
-	}
-	c.setEntrySize(e, &entrySizeEstimate{containerKind: types.ListKind, key: FixedSizeEstimate(1), val: itemSize})
 	return sum.Add(createListBaseCost)
 }
 
 func (c *coster) costCreateMap(e ast.Expr) CostEstimate {
 	mapVal := e.AsMap()
 	var sum CostEstimate
-	keySize := SizeEstimate{Min: math.MaxUint64, Max: 0}
-	valSize := SizeEstimate{Min: math.MaxUint64, Max: 0}
-	if mapVal.Size() == 0 {
-		valSize.Min = 0
-		keySize.Min = 0
-	}
 	for _, ent := range mapVal.Entries() {
 		entry := ent.AsMapEntry()
 		sum = sum.Add(c.cost(entry.Key()))
 		sum = sum.Add(c.cost(entry.Value()))
-		// Compute the key size range
-		ks := c.sizeOrUnknown(entry.Key())
-		keySize = keySize.Union(ks)
-		// Compute the value size range
-		vs := c.sizeOrUnknown(entry.Value())
-		valSize = valSize.Union(vs)
 	}
-	c.setEntrySize(e, &entrySizeEstimate{containerKind: types.MapKind, key: keySize, val: valSize})
 	return sum.Add(createMapBaseCost)
 }
 
@@ -538,13 +514,16 @@ func (c *coster) costComprehension(e ast.Expr) CostEstimate {
 	case ast.LiteralKind:
 		c.setSize(e, c.computeSize(comp.AccuInit()))
 	case ast.ListKind, ast.MapKind:
-		c.setSize(e, &rangeCnt)
-		// For a step which produces a container value, it will have an entry size associated
-		// with its expression id.
-		if stepEntrySize := c.computeEntrySize(comp.LoopStep()); stepEntrySize != nil {
-			c.setEntrySize(e, stepEntrySize)
-			break
+		accuSize := rangeCnt
+		if stepSize := c.computeSize(comp.LoopStep()); stepSize != nil {
+			if stepSize.Elem != nil {
+				accuSize.Elem = stepSize.Elem
+			}
+			if stepSize.Key != nil {
+				accuSize.Key = stepSize.Key
+			}
 		}
+		c.setSize(e, &accuSize)
 	}
 	return sum
 }
@@ -574,147 +553,47 @@ func (c *coster) costBind(e ast.Expr) CostEstimate {
 	return sum
 }
 
-func (c *coster) functionCost(e ast.Expr, function, overloadID string, target *AstNode, args []AstNode, argCosts []CostEstimate) CallEstimate {
-	argCostSum := func() CostEstimate {
-		var sum CostEstimate
-		for _, a := range argCosts {
-			sum = sum.Add(a)
+func calculateArgCost(overloadID string, argCosts []CostEstimate) CostEstimate {
+	switch overloadID {
+	case overloads.LogicalOr, overloads.LogicalAnd:
+		if len(argCosts) == 2 {
+			return CostEstimate{Min: argCosts[0].Min, Max: argCosts[0].Add(argCosts[1]).Max}
 		}
-		return sum
+	case overloads.Conditional:
+		if len(argCosts) == 3 {
+			return argCosts[0].Add(argCosts[1].Union(argCosts[2]))
+		}
 	}
+	var sum CostEstimate
+	for _, a := range argCosts {
+		sum = sum.Add(a)
+	}
+	return sum
+}
+
+func (c *coster) functionCost(e ast.Expr, function, overloadID string, target *AstNode, args []AstNode, argCosts []CostEstimate) CallEstimate {
+	argCost := calculateArgCost(overloadID, argCosts)
 	if len(c.overloadEstimators) != 0 {
 		if estimator, found := c.overloadEstimators[overloadID]; found {
 			if est := estimator(c.estimator, target, args); est != nil {
-				callEst := *est
-				return CallEstimate{CostEstimate: callEst.Add(argCostSum()), ResultSize: est.ResultSize}
+				return CallEstimate{CostEstimate: est.Add(argCost), ResultSize: est.ResultSize}
 			}
 		}
 	}
-	if est := c.estimator.EstimateCallCost(function, overloadID, target, args); est != nil {
-		callEst := *est
-		return CallEstimate{CostEstimate: callEst.Add(argCostSum()), ResultSize: est.ResultSize}
+	if c.estimator != nil {
+		if est := c.estimator.EstimateCallCost(function, overloadID, target, args); est != nil {
+			return CallEstimate{CostEstimate: est.Add(argCost), ResultSize: est.ResultSize}
+		}
 	}
-	switch overloadID {
-	// O(n) functions
-	case overloads.ExtFormatString:
-		if target != nil {
-			// ResultSize not calculated because we can't bound the max size.
-			return CallEstimate{
-				CostEstimate: c.sizeOrUnknown(*target).MultiplyByCostFactor(StringTraversalCostFactor).Add(argCostSum())}
-		}
-	case overloads.StringToBytes:
-		if len(args) == 1 {
-			sz := c.sizeOrUnknown(args[0])
-			// ResultSize max is when each char converts to 4 bytes.
-			return CallEstimate{
-				CostEstimate: sz.MultiplyByCostFactor(StringTraversalCostFactor).Add(argCostSum()),
-				ResultSize:   &SizeEstimate{Min: sz.Min, Max: sz.Max * 4}}
-		}
-	case overloads.BytesToString:
-		if len(args) == 1 {
-			sz := c.sizeOrUnknown(args[0])
-			// ResultSize min is when 4 bytes convert to 1 char.
-			return CallEstimate{
-				CostEstimate: sz.MultiplyByCostFactor(StringTraversalCostFactor).Add(argCostSum()),
-				ResultSize:   &SizeEstimate{Min: sz.Min / 4, Max: sz.Max}}
-		}
-	case overloads.ExtQuoteString:
-		if len(args) == 1 {
-			sz := c.sizeOrUnknown(args[0])
-			// ResultSize max is when each char is escaped. 2 quote chars always added.
-			return CallEstimate{
-				CostEstimate: sz.MultiplyByCostFactor(StringTraversalCostFactor).Add(argCostSum()),
-				ResultSize:   &SizeEstimate{Min: sz.Min + 2, Max: sz.Max*2 + 2}}
-		}
-	case overloads.StartsWithString, overloads.EndsWithString:
-		if len(args) == 1 {
-			return CallEstimate{CostEstimate: c.sizeOrUnknown(args[0]).MultiplyByCostFactor(StringTraversalCostFactor).Add(argCostSum())}
-		}
-	case overloads.InList:
-		// If a list is composed entirely of constant values this is O(1), but we don't account for that here.
-		// We just assume all list containment checks are O(n).
-		if len(args) == 2 {
-			return CallEstimate{CostEstimate: c.sizeOrUnknown(args[1]).MultiplyByCostFactor(1).Add(argCostSum())}
-		}
-	// O(nm) functions
-	case overloads.Matches, overloads.MatchesString:
-		// https://swtch.com/~rsc/regexp/regexp1.html applies to RE2 implementation supported by CEL
-		var strNode, regexNode AstNode
-		if overloadID == overloads.MatchesString && target != nil && len(args) == 1 {
-			strNode = *target
-			regexNode = args[0]
-		} else if overloadID == overloads.Matches && target == nil && len(args) == 2 {
-			strNode = args[0]
-			regexNode = args[1]
-		}
-		if strNode != nil && regexNode != nil {
-			// Add one to string length for purposes of cost calculation to prevent product of string and regex to be 0
-			// in case where string is empty but regex is still expensive.
-			strCost := c.sizeOrUnknown(strNode).Add(SizeEstimate{Min: 1, Max: 1}).MultiplyByCostFactor(StringTraversalCostFactor)
-			// We don't know how many expressions are in the regex, just the string length (a huge
-			// improvement here would be to somehow get a count the number of expressions in the regex or
-			// how many states are in the regex state machine and use that to measure regex cost).
-			// For now, we're making a guess that each expression in a regex is typically at least 4 chars
-			// in length.
-			regexCost := c.sizeOrUnknown(regexNode).MultiplyByCostFactor(RegexStringLengthCostFactor)
-			return CallEstimate{CostEstimate: strCost.Multiply(regexCost).Add(argCostSum())}
-		}
-	case overloads.ContainsString:
-		if target != nil && len(args) == 1 {
-			strCost := c.sizeOrUnknown(*target).MultiplyByCostFactor(StringTraversalCostFactor)
-			substrCost := c.sizeOrUnknown(args[0]).MultiplyByCostFactor(StringTraversalCostFactor)
-			return CallEstimate{CostEstimate: strCost.Multiply(substrCost).Add(argCostSum())}
-		}
-	case overloads.LogicalOr, overloads.LogicalAnd:
-		lhs := argCosts[0]
-		rhs := argCosts[1]
-		// min cost is min of LHS for short circuited && or ||
-		argCost := CostEstimate{Min: lhs.Min, Max: lhs.Add(rhs).Max}
-		return CallEstimate{CostEstimate: argCost}
-	case overloads.Conditional:
-		size := c.sizeOrUnknown(args[1]).Union(c.sizeOrUnknown(args[2]))
-		resultEntrySize := c.computeEntrySize(args[1].Expr()).union(c.computeEntrySize(args[2].Expr()))
-		c.setEntrySize(e, resultEntrySize)
-		conditionalCost := argCosts[0]
-		ifTrueCost := argCosts[1]
-		ifFalseCost := argCosts[2]
-		argCost := conditionalCost.Add(ifTrueCost.Union(ifFalseCost))
-		return CallEstimate{CostEstimate: argCost, ResultSize: &size}
-	case overloads.AddString, overloads.AddBytes, overloads.AddList:
-		if len(args) == 2 {
-			lhsSize := c.sizeOrUnknown(args[0])
-			rhsSize := c.sizeOrUnknown(args[1])
-			resultSize := lhsSize.Add(rhsSize)
-			rhsEntrySize := c.computeEntrySize(args[0].Expr())
-			lhsEntrySize := c.computeEntrySize(args[1].Expr())
-			resultEntrySize := rhsEntrySize.union(lhsEntrySize)
-			if resultEntrySize != nil {
-				c.setEntrySize(e, resultEntrySize)
-			}
-			switch overloadID {
-			case overloads.AddList:
-				// list concatenation is O(1), but we handle it here to track size
-				return CallEstimate{CostEstimate: FixedCostEstimate(1).Add(argCostSum()), ResultSize: &resultSize}
-			default:
-				return CallEstimate{CostEstimate: resultSize.MultiplyByCostFactor(StringTraversalCostFactor).Add(argCostSum()), ResultSize: &resultSize}
+	if c.sizingStrategy != nil {
+		if estimator, found := c.getSizingOverloadEstimators()[overloadID]; found {
+			if est := estimator(c.estimator, target, args); est != nil {
+				return CallEstimate{CostEstimate: est.Add(argCost), ResultSize: est.ResultSize}
 			}
 		}
-	case overloads.LessString, overloads.GreaterString, overloads.LessEqualsString, overloads.GreaterEqualsString,
-		overloads.LessBytes, overloads.GreaterBytes, overloads.LessEqualsBytes, overloads.GreaterEqualsBytes,
-		overloads.Equals, overloads.NotEquals:
-		lhsCost := c.sizeOrUnknown(args[0])
-		rhsCost := c.sizeOrUnknown(args[1])
-		min := uint64(0)
-		smallestMax := lhsCost.Max
-		if rhsCost.Max < smallestMax {
-			smallestMax = rhsCost.Max
-		}
-		if smallestMax > 0 {
-			min = 1
-		}
-		// equality of 2 scalar values results in a cost of 1
-		return CallEstimate{
-			CostEstimate: CostEstimate{Min: min, Max: smallestMax}.MultiplyByCostFactor(StringTraversalCostFactor).Add(argCostSum()),
+	} else if estimator, found := stdOverloadEstimators[overloadID]; found {
+		if est := estimator(c.estimator, target, args); est != nil {
+			return CallEstimate{CostEstimate: est.Add(argCost), ResultSize: est.ResultSize}
 		}
 	}
 	// O(1) functions
@@ -722,38 +601,27 @@ func (c *coster) functionCost(e ast.Expr, function, overloadID string, target *A
 
 	// Benchmarks suggest that most of the other operations take +/- 50% of a base cost unit
 	// which on an Intel xeon 2.20GHz CPU is 50ns.
-	return CallEstimate{CostEstimate: FixedCostEstimate(1).Add(argCostSum())}
+	return CallEstimate{CostEstimate: FixedCostEstimate(1).Add(argCost)}
 }
 
-func (c *coster) getType(e ast.Expr) *types.Type {
-	return c.checkedAST.GetType(e.ID())
-}
-
-func (c *coster) getPath(e ast.Expr) []string {
-	if e.Kind() == ast.IdentKind {
-		if v, found := c.peekLocalVar(e.AsIdent()); found {
-			return v.path[:]
-		}
+func (c *coster) getSizingOverloadEstimators() map[string]FunctionEstimator {
+	if c.sizingOverloadEstimators == nil {
+		c.sizingOverloadEstimators = StandardOverloadEstimatorsWithOptions(c.sizingStrategy)
 	}
-	return c.exprPaths[e.ID()][:]
+	return c.sizingOverloadEstimators
 }
 
-func (c *coster) addPath(e ast.Expr, path []string) {
-	c.exprPaths[e.ID()] = path
-}
+var (
+	stdOverloadEstimators = StandardOverloadEstimators()
+)
 
 func isAccumulatorVar(name string) bool {
 	return name == accumulatorName || name == hiddenAccumulatorName
 }
 
-func (c *coster) newAstNode(e ast.Expr) *astNode {
-	path := c.getPath(e)
-	if len(path) > 0 && isAccumulatorVar(path[0]) {
-		// only provide paths to root vars; omit accumulator vars
-		path = nil
-	}
-	return &astNode{
-		path:        path,
+func (c *coster) newAstNode(e ast.Expr) AstNode {
+	return astNode{
+		path:        c.getPath(e),
 		t:           c.getType(e),
 		expr:        e,
 		derivedSize: c.computeSize(e)}
@@ -783,7 +651,89 @@ func (c *coster) sizeOrUnknown(node any) SizeEstimate {
 
 func (c *coster) copySizeEstimates(dst, src ast.Expr) {
 	c.setSize(dst, c.computeSize(src))
-	c.setEntrySize(dst, c.computeEntrySize(src))
+}
+
+func (c *coster) getSizingStrategy() SizingStrategy {
+	if c.sizingStrategy != nil {
+		return c.sizingStrategy
+	}
+	return defaultSizing
+}
+
+type estimatorContext struct {
+	coster    *coster
+	estimator Estimator
+	target    *AstNode
+	args      []AstNode
+}
+
+func (e *estimatorContext) Estimator() Estimator {
+	return e.estimator
+}
+
+func (e *estimatorContext) Arg(index int) (SizeEstimate, bool) {
+	if index < len(e.args) {
+		return e.Size(e.args[index]), true
+	}
+	return UnknownSizeEstimate(), false
+}
+
+func (e *estimatorContext) Target() (SizeEstimate, bool) {
+	if e.target != nil {
+		return e.Size(*e.target), true
+	}
+	return UnknownSizeEstimate(), false
+}
+
+func (e *estimatorContext) Result() (SizeEstimate, bool) {
+	return UnknownSizeEstimate(), false
+}
+
+func (e *estimatorContext) TargetType() (*types.Type, bool) {
+	if e.target != nil && (*e.target) != nil {
+		return (*e.target).Type(), true
+	}
+	return nil, false
+}
+
+func (e *estimatorContext) ArgType(index int) (*types.Type, bool) {
+	if index < len(e.args) && e.args[index] != nil {
+		return e.args[index].Type(), true
+	}
+	return nil, false
+}
+
+func (e *estimatorContext) Size(node AstNode) SizeEstimate {
+	if node == nil {
+		return UnknownSizeEstimate()
+	}
+	if sz := node.ComputedSize(); sz != nil {
+		return *sz
+	}
+	if e.coster != nil && node.Expr() != nil {
+		if sz := e.coster.computeSize(node.Expr()); sz != nil {
+			return *sz
+		}
+	}
+	if e.coster != nil {
+		if sz, ok := e.coster.getSizingStrategy().EstimateSize(e, node); ok {
+			return sz
+		}
+	} else if e.estimator != nil {
+		if sz := e.estimator.EstimateSize(node); sz != nil {
+			return *sz
+		}
+	}
+	return UnknownSizeEstimate()
+}
+
+func (c *coster) newEstimateContext(target *AstNode, args []AstNode) *estimatorContext {
+	return &estimatorContext{
+		coster:    c,
+		estimator: c.estimator,
+		target:    target,
+		args:      args,
+	}
 }
 
 func (c *coster) computeSize(e ast.Expr) *SizeEstimate {
@@ -793,42 +743,20 @@ func (c *coster) computeSize(e ast.Expr) *SizeEstimate {
 	if size := computeExprSize(e); size != nil {
 		return size
 	}
-	// Ensure size estimates are computed first as users may choose to override the costs that
-	// CEL would otherwise ascribe to the type.
-	node := astNode{expr: e, path: c.getPath(e), t: c.getType(e)}
-	if size := c.estimator.EstimateSize(node); size != nil {
-		// storing the computed size should reduce calls to EstimateSize()
-		c.computedSizes[e.ID()] = *size
-		return size
-	}
-	if size := computeTypeSize(c.getType(e)); size != nil {
-		return size
-	}
 	if e.Kind() == ast.IdentKind {
 		varName := e.AsIdent()
 		if v, ok := c.peekLocalVar(varName); ok && v.size != nil {
 			return v.size
 		}
 	}
-	return nil
-}
-
-func (c *coster) setEntrySize(e ast.Expr, size *entrySizeEstimate) {
-	if size == nil {
-		return
+	node := astNode{expr: e, path: c.getPath(e), t: c.getType(e)}
+	ctx := c.newEstimateContext(nil, nil)
+	if size, ok := c.getSizingStrategy().EstimateSize(ctx, node); ok {
+		c.computedSizes[e.ID()] = size
+		return &size
 	}
-	c.computedEntrySizes[e.ID()] = *size
-}
-
-func (c *coster) computeEntrySize(e ast.Expr) *entrySizeEstimate {
-	if sz, found := c.computedEntrySizes[e.ID()]; found {
-		return &sz
-	}
-	if e.Kind() == ast.IdentKind {
-		varName := e.AsIdent()
-		if v, ok := c.peekLocalVar(varName); ok && v.entrySize != nil {
-			return v.entrySize
-		}
+	if size := computeTypeSize(c.getType(e)); size != nil {
+		return size
 	}
 	return nil
 }
@@ -852,10 +780,6 @@ func computeExprSize(expr ast.Expr) *SizeEstimate {
 		default:
 			return nil
 		}
-	case ast.ListKind:
-		v = uint64(expr.AsList().Size())
-	case ast.MapKind:
-		v = uint64(expr.AsMap().Size())
 	default:
 		return nil
 	}
@@ -876,7 +800,7 @@ func computeTypeSize(t *types.Type) *SizeEstimate {
 // in addition to protobuf.Any and protobuf.Value (their size is not knowable at compile time).
 func isScalar(t *types.Type) bool {
 	switch t.Kind() {
-	case types.BoolKind, types.DoubleKind, types.DurationKind, types.IntKind, types.TimestampKind, types.UintKind:
+	case types.BoolKind, types.DoubleKind, types.DurationKind, types.IntKind, types.TimestampKind, types.UintKind, types.TypeKind:
 		return true
 	case types.OpaqueKind:
 		if t.TypeName() == "optional_type" {

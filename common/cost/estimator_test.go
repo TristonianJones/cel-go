@@ -27,6 +27,7 @@ import (
 	"cel.dev/cel-go/common/overloads"
 	"cel.dev/cel-go/common/stdlib"
 	"cel.dev/cel-go/common/types"
+	"cel.dev/cel-go/common/types/ref"
 	"cel.dev/cel-go/parser"
 
 	proto3pb "cel.dev/cel-go/test/proto3pb"
@@ -48,7 +49,7 @@ func TestCost(t *testing.T) {
 		expr    string
 		vars    []*decls.VariableDecl
 		hints   map[string]uint64
-		options []cost.CostOption
+		options []cost.Option
 		wanted  cost.CostEstimate
 	}{
 		{
@@ -80,7 +81,7 @@ func TestCost(t *testing.T) {
 			expr:    `has(input.single_int32)`,
 			vars:    []*decls.VariableDecl{decls.NewVariable("input", types.NewObjectType("google.expr.proto3.test.TestAllTypes"))},
 			wanted:  cost.CostEstimate{Min: 1, Max: 1},
-			options: []cost.CostOption{cost.PresenceTestHasCost(false)},
+			options: []cost.Option{cost.PresenceTestHasCost(false)},
 		},
 		{
 			name:   "select: field test only",
@@ -93,14 +94,14 @@ func TestCost(t *testing.T) {
 			expr:    `has(input.testAttr.nestedAttr)`,
 			vars:    []*decls.VariableDecl{decls.NewVariable("input", nestedMap)},
 			wanted:  cost.CostEstimate{Min: 3, Max: 3},
-			options: []cost.CostOption{cost.PresenceTestHasCost(true)},
+			options: []cost.Option{cost.PresenceTestHasCost(true)},
 		},
 		{
 			name:    "select: non-proto field test no has() cost",
 			expr:    `has(input.testAttr.nestedAttr)`,
 			vars:    []*decls.VariableDecl{decls.NewVariable("input", nestedMap)},
 			wanted:  cost.CostEstimate{Min: 2, Max: 2},
-			options: []cost.CostOption{cost.PresenceTestHasCost(false)},
+			options: []cost.Option{cost.PresenceTestHasCost(false)},
 		},
 		{
 			name:   "select: non-proto field test",
@@ -445,7 +446,7 @@ func TestCost(t *testing.T) {
 				decls.NewVariable("str2", types.StringType),
 			},
 			hints: map[string]uint64{"str1": 10, "str2": 10},
-			options: []cost.CostOption{
+			options: []cost.Option{
 				cost.OverloadCostEstimate(overloads.ContainsString,
 					func(estimator cost.Estimator, target *cost.AstNode, args []cost.AstNode) *cost.CallEstimate {
 						if target != nil && len(args) == 1 {
@@ -577,17 +578,17 @@ func TestCost(t *testing.T) {
 		{
 			name:   ".map list literal selection",
 			expr:   `[1,2,3,4,5].map(x, x)[4]`,
-			wanted: cost.CostEstimate{Min: 87, Max: 87},
+			wanted: cost.CostEstimate{Min: 88, Max: 88},
 		},
 		{
 			name:   "nested array selection",
 			expr:   `[[1,2],[1,2],[1,2],[1,2],[1,2]][4]`,
-			wanted: cost.CostEstimate{Min: 61, Max: 61},
+			wanted: cost.CostEstimate{Min: 62, Max: 62},
 		},
 		{
 			name:   "nested map selection",
 			expr:   `{'a': [1,2], 'b': [1,2], 'c': [1,2], 'd': [1,2], 'e': [1,2]}.b`,
-			wanted: cost.CostEstimate{Min: 81, Max: 81},
+			wanted: cost.CostEstimate{Min: 82, Max: 82},
 		},
 		{
 			name:   "comprehension on nested list",
@@ -632,12 +633,12 @@ func TestCost(t *testing.T) {
 		{
 			name:   "literal map access",
 			expr:   `{'hello': 'hi'}['hello'] != {'hello': 'bye'}['hello']`,
-			wanted: cost.CostEstimate{Min: 63, Max: 63},
+			wanted: cost.CostEstimate{Min: 65, Max: 65},
 		},
 		{
 			name:   "literal list access",
 			expr:   `['hello', 'hi'][0] != ['hello', 'bye'][1]`,
-			wanted: cost.CostEstimate{Min: 23, Max: 23},
+			wanted: cost.CostEstimate{Min: 25, Max: 25},
 		},
 		{
 			name:   "type call",
@@ -658,17 +659,17 @@ func TestCost(t *testing.T) {
 			vars: []*decls.VariableDecl{
 				decls.NewVariable("self", types.NewMapType(types.StringType, types.IntType)),
 			},
-			wanted: cost.CostEstimate{Min: 5, Max: 1844674407370955268},
+			wanted: cost.CostEstimate{Min: 5, Max: 5},
 		},
 		{
 			name:   "type literal equality cost",
 			expr:   `type(1) == int`,
-			wanted: cost.CostEstimate{Min: 3, Max: 1844674407370955266},
+			wanted: cost.CostEstimate{Min: 3, Max: 3},
 		},
 		{
 			name:   "type variable equality cost",
 			expr:   `type(1) == int`,
-			wanted: cost.CostEstimate{Min: 3, Max: 1844674407370955266},
+			wanted: cost.CostEstimate{Min: 3, Max: 3},
 		},
 		{
 			name: "namespace variable equality",
@@ -729,7 +730,7 @@ func TestCost(t *testing.T) {
 		{
 			name: "bytes list max",
 			expr: "[bytes('012345678901'), bytes('012345678901'), bytes('012345678901'), bytes('012345678901'), bytes('012345678901')].max()",
-			options: []cost.CostOption{
+			options: []cost.Option{
 				cost.OverloadCostEstimate("list_bytes_max",
 					func(estimator cost.Estimator, target *cost.AstNode, args []cost.AstNode) *cost.CallEstimate {
 						if target != nil {
@@ -868,4 +869,65 @@ func sizeEstimate(estimator cost.Estimator, t cost.AstNode) cost.SizeEstimate {
 		return *sz
 	}
 	return cost.SizeEstimate{Min: 0, Max: math.MaxUint64}
+}
+
+type testCustomSizingStrategy struct{}
+
+func (testCustomSizingStrategy) EstimateSize(ctx cost.EstimateContext, node cost.AstNode) (cost.SizeEstimate, bool) {
+	if node.Path() != nil && len(node.Path()) > 0 && node.Path()[0] == "custom_str" {
+		return cost.SizeEstimate{Min: 10, Max: 20}, true
+	}
+	if node.Path() != nil && len(node.Path()) > 0 && node.Path()[0] == "custom_list" {
+		return cost.SizeEstimate{Min: 1, Max: 5, Elem: &cost.SizeEstimate{Min: 15, Max: 30}}, true
+	}
+	return cost.SizeEstimate{}, false
+}
+
+func (testCustomSizingStrategy) TrackSize(ctx cost.TrackContext, value ref.Val) (uint64, bool) {
+	return cost.ActualSize(value), true
+}
+
+func TestCustomSizingStrategy(t *testing.T) {
+	prse, err := parser.NewParser(parser.Macros(parser.AllMacros...))
+	if err != nil {
+		t.Fatalf("parser.NewParser() failed: %v", err)
+	}
+	src := common.NewStringSource("custom_str.contains('abc')", "<input>")
+	pe, errs := prse.Parse(src)
+	if len(errs.GetErrors()) != 0 {
+		t.Fatalf("Parse() failed: %v", errs.ToDisplayString())
+	}
+	reg, err := types.NewRegistry()
+	if err != nil {
+		t.Fatalf("types.NewRegistry() failed: %v", err)
+	}
+	e, err := checker.NewEnv(containers.DefaultContainer, reg)
+	if err != nil {
+		t.Fatalf("checker.NewEnv() failed: %v", err)
+	}
+	err = e.AddFunctions(stdlib.Functions()...)
+	if err != nil {
+		t.Fatalf("AddFunctions failed: %v", err)
+	}
+	err = e.AddIdents(decls.NewVariable("custom_str", types.StringType))
+	if err != nil {
+		t.Fatalf("AddIdents failed: %v", err)
+	}
+	checked, errs := checker.Check(pe, src, e)
+	if len(errs.GetErrors()) != 0 {
+		t.Fatalf("Check() failed: %v", errs.ToDisplayString())
+	}
+
+	res, err := cost.Cost(checked, nil, cost.EstimateSizingStrategy(testCustomSizingStrategy{}))
+	if err != nil {
+		t.Fatalf("Cost() failed: %v", err)
+	}
+	// 'abc' has length 3, cost traversal factor 0.1 -> ceil(3 * 0.1) = 1
+	// custom_str has min 10, max 20 -> min ceil(10 * 0.1) = 1, max ceil(20 * 0.1) = 2
+	// contains cost: min 1 * 1 = 1, max 2 * 1 = 2
+	// ident cost = 1
+	// total = ident(1) + call(min 1, max 2) = min 2, max 3
+	if res.Min != 2 || res.Max != 3 {
+		t.Errorf("got cost %v, wanted {Min: 2, Max: 3}", res)
+	}
 }

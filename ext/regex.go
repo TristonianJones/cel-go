@@ -348,7 +348,7 @@ func estimateExtractCost() checker.FunctionEstimator {
 			resultSize := rangedSizeEstimate(0, targetSize.Max)
 			// The total cost is the search cost (target + regex) plus the allocation cost for the result string.
 			return callEstimate(
-				regexCost.Multiply(targetCost).Add(checker.CostEstimate(resultSize)),
+				regexCost.Multiply(targetCost).Add(resultSize.AsCost()),
 				&resultSize,
 			)
 		}
@@ -371,7 +371,7 @@ func estimateExtractAllCost() checker.FunctionEstimator {
 			allocationSize := resultSize.Add(fixedSizeEstimate(cost.ListCreateBaseCost))
 			// The total cost is the search cost (target + regex) plus the allocation cost for the result list.
 			return callEstimate(
-				targetCost.Multiply(regexCost).Add(checker.CostEstimate(allocationSize)),
+				targetCost.Multiply(regexCost).Add(allocationSize.AsCost()),
 				&resultSize,
 			)
 		}

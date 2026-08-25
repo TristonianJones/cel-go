@@ -15,7 +15,6 @@
 package cost
 
 import (
-	"cel.dev/cel-go/common/overloads"
 	"cel.dev/cel-go/common/types/ref"
 )
 
@@ -79,6 +78,14 @@ func OverloadTracker(overloadID string, fnTracker FunctionTracker) TrackerOption
 	}
 }
 
+// TrackerSizingStrategy configures a SizingStrategy for runtime cost tracking.
+func TrackerSizingStrategy(strategy SizingStrategy) TrackerOption {
+	return func(tracker *Tracker) error {
+		tracker.sizingStrategy = strategy
+		return nil
+	}
+}
+
 // LimitExceededError indicates that the actual cost limit was exceeded during evaluation.
 type LimitExceededError struct {
 	Message string
@@ -90,11 +97,13 @@ func (e LimitExceededError) Error() string {
 
 // Tracker represents the information needed for tracking runtime cost.
 type Tracker struct {
-	Estimator            ActualCostEstimator
-	overloadTrackers     map[string]FunctionTracker
-	Limit                *uint64
-	presenceTestHasCost  bool
-	limitExceededHandler func()
+	Estimator              ActualCostEstimator
+	overloadTrackers       map[string]FunctionTracker
+	sizingStrategy         SizingStrategy
+	sizingOverloadTrackers map[string]FunctionTracker
+	Limit                  *uint64
+	presenceTestHasCost    bool
+	limitExceededHandler   func()
 
 	cost uint64
 }
@@ -119,11 +128,13 @@ func NewTracker(estimator ActualCostEstimator, opts ...TrackerOption) (*Tracker,
 // The different clones can be used independently from each other.
 func (c *Tracker) Clone() (*Tracker, error) {
 	tracker := &Tracker{
-		Estimator:            c.Estimator,
-		overloadTrackers:     c.overloadTrackers,
-		Limit:                c.Limit,
-		presenceTestHasCost:  c.presenceTestHasCost,
-		limitExceededHandler: c.limitExceededHandler,
+		Estimator:              c.Estimator,
+		overloadTrackers:       c.overloadTrackers,
+		sizingStrategy:         c.sizingStrategy,
+		sizingOverloadTrackers: c.sizingOverloadTrackers,
+		Limit:                  c.Limit,
+		presenceTestHasCost:    c.presenceTestHasCost,
+		limitExceededHandler:   c.limitExceededHandler,
 	}
 	return tracker, nil
 }
@@ -208,6 +219,13 @@ func (c *Tracker) checkLimit() {
 	}
 }
 
+func (c *Tracker) getSizingOverloadTrackers() map[string]FunctionTracker {
+	if c.sizingOverloadTrackers == nil {
+		c.sizingOverloadTrackers = StandardOverloadTrackersWithOptions(c.sizingStrategy)
+	}
+	return c.sizingOverloadTrackers
+}
+
 // CostCall calculates the runtime cost for a function call.
 func (c *Tracker) CostCall(call Call, args []ref.Val, result ref.Val) uint64 {
 	var total uint64
@@ -227,62 +245,31 @@ func (c *Tracker) CostCall(call Call, args []ref.Val, result ref.Val) uint64 {
 			return total
 		}
 	}
-	// if user didn't specify, the default way of calculating runtime cost would be used.
-	// if user has their own implementation of ActualCostEstimator, make sure to cover the mapping between overloadId and cost calculation
-	switch call.OverloadID() {
-	// O(n) functions
-	case overloads.StartsWithString, overloads.EndsWithString:
-		total = SafeAdd(total, SafeMultiplyByFactor(ActualSize(args[1]), StringTraversalCostFactor))
-	case overloads.StringToBytes, overloads.BytesToString, overloads.ExtQuoteString, overloads.ExtFormatString:
-		total = SafeAdd(total, SafeMultiplyByFactor(ActualSize(args[0]), StringTraversalCostFactor))
-	case overloads.InList:
-		// If a list is composed entirely of constant values this is O(1), but we don't account for that here.
-		// We just assume all list containment checks are O(n).
-		total = SafeAdd(total, ActualSize(args[1]))
-	// O(min(m, n)) functions
-	case overloads.LessString, overloads.GreaterString, overloads.LessEqualsString, overloads.GreaterEqualsString,
-		overloads.LessBytes, overloads.GreaterBytes, overloads.LessEqualsBytes, overloads.GreaterEqualsBytes,
-		overloads.Equals, overloads.NotEquals:
-		// When we check the equality of 2 scalar values (e.g. 2 integers, 2 floating-point numbers, 2 booleans etc.),
-		// the CostTracker.ActualSize() function by definition returns 1 for each operand, resulting in an overall cost
-		// of 1.
-		lhsSize := ActualSize(args[0])
-		rhsSize := ActualSize(args[1])
-		minSize := min(rhsSize, lhsSize)
-		total = SafeAdd(total, SafeMultiplyByFactor(minSize, StringTraversalCostFactor))
-	// O(m+n) functions
-	case overloads.AddString, overloads.AddBytes:
-		// In the worst case scenario, we would need to reallocate a new backing store and copy both operands over.
-		argSize := SafeAdd(ActualSize(args[0]), ActualSize(args[1]))
-		total = SafeAdd(total, SafeMultiplyByFactor(argSize, StringTraversalCostFactor))
-	// O(nm) functions
-	case overloads.Matches, overloads.MatchesString:
-		// https://swtch.com/~rsc/regexp/regexp1.html applies to RE2 implementation supported by CEL
-		// Add one to string length for purposes of cost calculation to prevent product of string and regex to be 0
-		// in case where string is empty but regex is still expensive.
-		strCost := SafeMultiplyByFactor(SafeAdd(1, ActualSize(args[0])), StringTraversalCostFactor)
-		// We don't know how many expressions are in the regex, just the string length (a huge
-		// improvement here would be to somehow get a count the number of expressions in the regex or
-		// how many states are in the regex state machine and use that to measure regex cost).
-		// For now, we're making a guess that each expression in a regex is typically at least 4 chars
-		// in length.
-		regexCost := SafeMultiplyByFactor(ActualSize(args[1]), RegexStringLengthCostFactor)
-		total = SafeAdd(total, SafeMultiply(strCost, regexCost))
-	case overloads.ContainsString:
-		strCost := SafeMultiplyByFactor(ActualSize(args[0]), StringTraversalCostFactor)
-		substrCost := SafeMultiplyByFactor(ActualSize(args[1]), StringTraversalCostFactor)
-		total = SafeAdd(total, SafeMultiply(strCost, substrCost))
-
-	default:
-		// The following operations are assumed to have O(1) complexity.
-		// - AddList due to the implementation. Index lookup can be O(c) the
-		//    number of concatenated lists, but we don't track that is cost calculations.
-		// - Conversions, since none perform a traversal of a type of unbound length.
-		// - Computing the size of strings, byte sequences, lists and maps.
-		// - Logical operations and all operators on fixed width scalars (comparisons, equality)
-		// - Any functions that don't have a declared cost either here or in provided ActualCostEstimator.
-		total = SafeAdd(total, 1)
-
+	if c.sizingStrategy != nil {
+		if tracker, found := c.getSizingOverloadTrackers()[call.OverloadID()]; found {
+			callCost := tracker(args, result)
+			if callCost != nil {
+				total = SafeAdd(total, *callCost)
+				return total
+			}
+		}
+	} else if tracker, found := stdOverloadTrackers[call.OverloadID()]; found {
+		callCost := tracker(args, result)
+		if callCost != nil {
+			total = SafeAdd(total, *callCost)
+			return total
+		}
 	}
-	return total
+	// The following operations are assumed to have O(1) complexity.
+	// - AddList due to the implementation. Index lookup can be O(c) the
+	//    number of concatenated lists, but we don't track that in cost calculations.
+	// - Conversions, since none perform a traversal of a type of unbound length.
+	// - Computing the size of strings, byte sequences, lists and maps.
+	// - Logical operations and all operators on fixed width scalars (comparisons, equality)
+	// - Any functions that don't have a declared cost either here or in provided ActualCostEstimator.
+	return SafeAdd(total, 1)
 }
+
+var (
+	stdOverloadTrackers = StandardOverloadTrackers()
+)
