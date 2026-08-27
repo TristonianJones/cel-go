@@ -13,6 +13,7 @@ go_library(
         "default_strategy.go",
         "estimator.go",
         "model.go",
+        "standard.go",
         "strategy.go",
         "tracker.go",
     ],
@@ -36,6 +37,7 @@ go_test(
         "default_strategy_test.go",
         "estimator_test.go",
         "model_test.go",
+        "standard_test.go",
         "tracker_test.go",
     ],
     embed = [
