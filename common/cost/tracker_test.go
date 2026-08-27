@@ -51,37 +51,63 @@ func (c testCall) OverloadID() string {
 	return c.overloadID
 }
 
-func TestCostTrackerBasic(t *testing.T) {
+func TestCostTracker_BasicOperations(t *testing.T) {
 	tracker, err := cost.NewTracker(nil,
 		cost.TrackerPresenceTestHasCost(true),
 	)
 	if err != nil {
-		t.Fatalf("NewCostTracker() failed: %v", err)
+		t.Fatalf("NewTracker() failed: %v", err)
 	}
 
-	tracker.CreateList(1, nil)
-	if tracker.ActualCost() != cost.ListCreateBaseCost {
-		t.Errorf("ActualCost() after CreateList = %d, want %d", tracker.ActualCost(), cost.ListCreateBaseCost)
+	tests := []struct {
+		name     string
+		action   func()
+		wantCost uint64
+	}{
+		{
+			name: "create_list",
+			action: func() {
+				tracker.CreateList(1, nil)
+			},
+			wantCost: cost.ListCreateBaseCost,
+		},
+		{
+			name: "create_map",
+			action: func() {
+				tracker.CreateMap(2, nil)
+			},
+			wantCost: cost.ListCreateBaseCost + cost.MapCreateBaseCost,
+		},
+		{
+			name: "create_struct",
+			action: func() {
+				tracker.CreateStruct(3, nil)
+			},
+			wantCost: cost.ListCreateBaseCost + cost.MapCreateBaseCost + cost.StructCreateBaseCost,
+		},
+		{
+			name: "eval_attribute",
+			action: func() {
+				tracker.EvalAttribute(4, false, nil)
+			},
+			wantCost: cost.ListCreateBaseCost + cost.MapCreateBaseCost + cost.StructCreateBaseCost + cost.SelectAndIdentCost,
+		},
+		{
+			name: "qualify",
+			action: func() {
+				tracker.Qualify(5)
+			},
+			wantCost: cost.ListCreateBaseCost + cost.MapCreateBaseCost + cost.StructCreateBaseCost + cost.SelectAndIdentCost + 1,
+		},
 	}
 
-	tracker.CreateMap(2, nil)
-	if tracker.ActualCost() != cost.ListCreateBaseCost+cost.MapCreateBaseCost {
-		t.Errorf("ActualCost() after CreateMap = %d, want %d", tracker.ActualCost(), cost.ListCreateBaseCost+cost.MapCreateBaseCost)
-	}
-
-	tracker.CreateStruct(3, nil)
-	if tracker.ActualCost() != cost.ListCreateBaseCost+cost.MapCreateBaseCost+cost.StructCreateBaseCost {
-		t.Errorf("ActualCost() after CreateStruct = %d, want %d", tracker.ActualCost(), cost.ListCreateBaseCost+cost.MapCreateBaseCost+cost.StructCreateBaseCost)
-	}
-
-	tracker.EvalAttribute(4, false, nil)
-	if tracker.ActualCost() != cost.ListCreateBaseCost+cost.MapCreateBaseCost+cost.StructCreateBaseCost+cost.SelectAndIdentCost {
-		t.Errorf("ActualCost() after EvalAttribute = %d, want %d", tracker.ActualCost(), cost.ListCreateBaseCost+cost.MapCreateBaseCost+cost.StructCreateBaseCost+cost.SelectAndIdentCost)
-	}
-
-	tracker.Qualify(5)
-	if tracker.ActualCost() != cost.ListCreateBaseCost+cost.MapCreateBaseCost+cost.StructCreateBaseCost+cost.SelectAndIdentCost+1 {
-		t.Errorf("ActualCost() after Qualify = %d, want %d", tracker.ActualCost(), cost.ListCreateBaseCost+cost.MapCreateBaseCost+cost.StructCreateBaseCost+cost.SelectAndIdentCost+1)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.action()
+			if tracker.ActualCost() != tc.wantCost {
+				t.Errorf("ActualCost() = %d, want %d", tracker.ActualCost(), tc.wantCost)
+			}
+		})
 	}
 
 	if !tracker.PresenceTestHasCost() {
@@ -89,7 +115,7 @@ func TestCostTrackerBasic(t *testing.T) {
 	}
 }
 
-func TestCostTrackerLimit(t *testing.T) {
+func TestCostTracker_LimitExceededPanic(t *testing.T) {
 	var exceeded bool
 	tracker, err := cost.NewTracker(nil,
 		cost.TrackerLimit(15),
@@ -98,7 +124,7 @@ func TestCostTrackerLimit(t *testing.T) {
 		}),
 	)
 	if err != nil {
-		t.Fatalf("NewCostTracker() failed: %v", err)
+		t.Fatalf("NewTracker() failed: %v", err)
 	}
 
 	tracker.CreateList(1, nil) // cost = 10 <= 15
@@ -119,7 +145,7 @@ func TestCostTrackerLimit(t *testing.T) {
 	tracker.CreateList(2, nil) // cost = 20 > 15 -> panic
 }
 
-func TestCostTrackerOverloadTracker(t *testing.T) {
+func TestCostTracker_CustomOverloadTracker(t *testing.T) {
 	tracker, err := cost.NewTracker(nil,
 		cost.OverloadTracker("custom_op", func(args []ref.Val, result ref.Val) *uint64 {
 			c := uint64(42)
@@ -127,7 +153,7 @@ func TestCostTrackerOverloadTracker(t *testing.T) {
 		}),
 	)
 	if err != nil {
-		t.Fatalf("NewCostTracker() failed: %v", err)
+		t.Fatalf("NewTracker() failed: %v", err)
 	}
 
 	call := testCall{function: "custom", overloadID: "custom_op"}
@@ -137,10 +163,10 @@ func TestCostTrackerOverloadTracker(t *testing.T) {
 	}
 }
 
-func TestCostTrackerClone(t *testing.T) {
+func TestCostTracker_CloneStateIsolation(t *testing.T) {
 	tracker, err := cost.NewTracker(nil)
 	if err != nil {
-		t.Fatalf("NewCostTracker() failed: %v", err)
+		t.Fatalf("NewTracker() failed: %v", err)
 	}
 	tracker.Qualify(1)
 
@@ -161,17 +187,68 @@ func TestCostTrackerClone(t *testing.T) {
 	}
 }
 
-func TestCostTrackerStandardFunctions(t *testing.T) {
-	tracker, err := cost.NewTracker(nil)
-	if err != nil {
-		t.Fatalf("NewCostTracker() failed: %v", err)
+func TestCostTracker_StandardStringFunctionTracking(t *testing.T) {
+	adapter := types.DefaultTypeAdapter
+
+	tests := []struct {
+		name       string
+		overloadID string
+		function   string
+		target     ref.Val
+		arg        ref.Val
+		result     ref.Val
+		wantCost   uint64
+	}{
+		{
+			name:       "starts_with_string",
+			overloadID: overloads.StartsWithString,
+			function:   "startsWith",
+			target:     types.String("hello world"),
+			arg:        types.String("hello"), // len 5 -> ceil(5 * 0.1) = 1
+			result:     types.True,
+			wantCost:   1,
+		},
+		{
+			name:       "ends_with_string",
+			overloadID: overloads.EndsWithString,
+			function:   "endsWith",
+			target:     types.String("hello world"),
+			arg:        types.String("world"), // len 5 -> ceil(5 * 0.1) = 1
+			result:     types.True,
+			wantCost:   1,
+		},
+		{
+			name:       "contains_string",
+			overloadID: overloads.ContainsString,
+			function:   "contains",
+			target:     types.String("hello world"),
+			arg:        types.String("lo wo"), // len 5 -> ceil(11*0.1) * ceil(5*0.1) = 2 * 1 = 2
+			result:     types.True,
+			wantCost:   2,
+		},
+		{
+			name:       "in_list_string",
+			overloadID: overloads.InList,
+			function:   "@in",
+			target:     types.String("item"),
+			arg:        adapter.NativeToValue([]string{"a", "b", "c"}),
+			result:     types.False,
+			wantCost:   3,
+		},
 	}
 
-	// StartsWith
-	tracker.EvalBinary(nil, 1, testCall{function: "startsWith", overloadID: overloads.StartsWithString}, types.String("hello world"), types.String("hello"), types.True)
-	// cost.ActualSize("hello") = 5. cost = ceil(5 * 0.1) = 1.
-	if tracker.ActualCost() != 1 {
-		t.Errorf("ActualCost() after startsWith = %d, want 1", tracker.ActualCost())
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tracker, err := cost.NewTracker(nil)
+			if err != nil {
+				t.Fatalf("NewTracker() failed: %v", err)
+			}
+			call := testCall{function: tc.function, overloadID: tc.overloadID}
+			tracker.EvalBinary(nil, 1, call, tc.target, tc.arg, tc.result)
+			if tracker.ActualCost() != tc.wantCost {
+				t.Errorf("ActualCost() = %d, want %d", tracker.ActualCost(), tc.wantCost)
+			}
+		})
 	}
 }
 
@@ -253,7 +330,7 @@ func computeCost(t *testing.T, expr string, vars []*decls.VariableDecl, ctx inte
 	t.Helper()
 
 	s := common.NewTextSource(expr)
-	p, err := parser.NewParser(parser.Macros(parser.AllMacros...))
+	p, err := parser.NewParser(parser.Macros(testMacros...))
 	if err != nil {
 		t.Fatalf("Failed to initialize parser: %v", err)
 	}
@@ -266,6 +343,10 @@ func computeCost(t *testing.T, expr string, vars []*decls.VariableDecl, ctx inte
 	reg := newTestRegistry(t, types.ProtoTypeDefs(&proto3pb.TestAllTypes{}))
 	attrs := interpreter.NewAttributeFactory(cont, reg, reg)
 	env := newTestEnv(t, cont, reg)
+	err = env.AddFunctions(mapInsertFunctionDecl())
+	if err != nil {
+		t.Fatalf("Failed to add mapInsertFunctionDecl: %v", err)
+	}
 	err = env.AddIdents(vars...)
 	if err != nil {
 		t.Fatalf("Failed to initialize env: %v", err)
@@ -286,7 +367,7 @@ func computeCost(t *testing.T, expr string, vars []*decls.VariableDecl, ctx inte
 	if err != nil {
 		t.Fatalf("cost.Cost() failed: %v", err)
 	}
-	interp := newStandardInterpreter(t, cont, reg, reg, attrs)
+	interp := newStandardInterpreter(t, cont, reg, reg, attrs, mapInsertFunctionDecl())
 	prg, err := interp.NewInterpretable(checked,
 		interpreter.CostObserver(interpreter.CostTrackerFactory(func() (*cost.Tracker, error) {
 			return costTracker, nil
@@ -1006,6 +1087,167 @@ func TestRuntimeCost(t *testing.T) {
 			name: "nested comprehension",
 			expr: `[1,2,3].all(i, i in [1,2,3].map(j, j + j))`,
 			want: 86,
+		},
+		// cel.bind runtime cost tracking test cases
+		{
+			name: "bind: literal init and scalar result",
+			expr: `cel.bind(a, 'hello', a + '!')`,
+			want: 12,
+		},
+		{
+			name: "bind: nested binds",
+			expr: `cel.bind(a, 'hello!', cel.bind(b, 'goodbye', a + ' and, ' + b))`,
+			want: 26,
+		},
+		{
+			name: "bind: shadowed bind",
+			expr: `cel.bind(a, cel.bind(a, 'world', a + '!'), 'hello ' + a)`,
+			want: 25,
+		},
+		{
+			name: "bind: with variable list and index",
+			expr: `cel.bind(a, input, a[0])`,
+			vars: []*decls.VariableDecl{decls.NewVariable("input", intList)},
+			want: 13,
+			in:   map[string]any{"input": []int{1, 2}},
+		},
+		{
+			name: "bind: with variable map and index",
+			expr: `cel.bind(m, input, m['key'])`,
+			vars: []*decls.VariableDecl{decls.NewVariable("input", types.NewMapType(types.StringType, types.StringType))},
+			want: 13,
+			in:   map[string]any{"input": map[string]string{"key": "value"}},
+		},
+		{
+			name: "bind: with comprehension over empty list",
+			vars: []*decls.VariableDecl{decls.NewVariable("input", allList)},
+			expr: `cel.bind(a, input, a.all(x, true))`,
+			want: 13,
+			in: map[string]any{
+				"input": []*proto3pb.TestAllTypes{},
+			},
+		},
+		{
+			name: "bind: with list and indexing",
+			expr: `cel.bind(a, [1, 2, 3], a[0])`,
+			want: 22,
+		},
+		{
+			name: "bind: derived size propagation to comprehension",
+			expr: `cel.bind(v, [1, 2, 3], v.all(x, true))`,
+			want: 31,
+		},
+		{
+			name:               "bind: limit exceeded",
+			expr:               `cel.bind(a, [1, 2, 3], a.all(x, true))`,
+			limit:              25,
+			expectExceedsLimit: true,
+		},
+
+		// Two-variable comprehension runtime cost tracking test cases
+		{
+			name: "two-var all: list literal",
+			expr: `[1, 2, 3].all(i, v, i < v)`,
+			want: 29,
+		},
+		{
+			name: "two-var all: list variable early return false",
+			vars: []*decls.VariableDecl{decls.NewVariable("input", intList)},
+			expr: `input.all(i, v, i > v) == false`,
+			want: 11,
+			in:   map[string]any{"input": []int{1, 2, 3}},
+		},
+		{
+			name: "two-var all: list variable",
+			vars: []*decls.VariableDecl{decls.NewVariable("input", intList)},
+			expr: `input.all(i, v, i < 5)`,
+			want: 17,
+			in:   map[string]any{"input": []int{1, 2, 3}},
+		},
+		{
+			name: "two-var all: map literal early return false",
+			expr: `{'hello': 'world', 'taco': 'taco'}.all(k, v, k != v) == false`,
+			want: 44,
+		},
+		{
+			name: "two-var exists: list literal",
+			expr: `[1, 2, 3].exists(i, v, i == 1 && v == 2)`,
+			want: 28,
+		},
+		{
+			name: "two-var exists: map literal",
+			expr: `{"a": 1, "b": 2}.exists(k, v, k == "a" && v == 1)`,
+			want: 42,
+		},
+		{
+			name: "two-var existsOne: list variable",
+			vars: []*decls.VariableDecl{decls.NewVariable("input", intList)},
+			expr: `input.existsOne(i, v, v == 1)`,
+			want: 11,
+			in:   map[string]any{"input": []int{1, 2, 3}},
+		},
+		{
+			name: "two-var exists_one: list variable",
+			vars: []*decls.VariableDecl{decls.NewVariable("input", intList)},
+			expr: `input.exists_one(i, v, v == 1)`,
+			want: 11,
+			in:   map[string]any{"input": []int{1, 2, 3}},
+		},
+		{
+			name: "two-var transformList: 3-arg list literal",
+			expr: `[1, 2, 3].transformList(i, v, i + v)`,
+			want: 66,
+		},
+		{
+			name: "two-var transformList: 4-arg with filter list literal",
+			expr: `[1, 2, 3].transformList(i, v, i % 2 == 0, i + v)`,
+			want: 60,
+		},
+		{
+			name: "two-var transformList: 3-arg map literal",
+			expr: `{"a": 1, "b": 2}.transformList(k, v, k)`,
+			want: 67,
+		},
+		{
+			name: "two-var transformMap: 3-arg map literal",
+			expr: `{"a": 1, "b": 2}.transformMap(k, v, v + 1)`,
+			want: 71,
+		},
+		{
+			name: "two-var transformMap: 4-arg with filter map literal",
+			expr: `{"a": 1, "b": 2}.transformMap(k, v, v > 1, v + 1)`,
+			want: 70,
+		},
+		{
+			name: "two-var transformMapEntry: 3-arg map literal",
+			expr: `{"a": 1, "b": 2}.transformMapEntry(k, v, {v: k})`,
+			want: 129,
+		},
+		{
+			name: "two-var transformMapEntry: 4-arg with filter map literal",
+			expr: `{"a": 1, "b": 2}.transformMapEntry(k, v, v > 1, {v: k})`,
+			want: 99,
+		},
+		{
+			name: "two-var nested all",
+			expr: `[1, 2].all(i, v, [1, 2].all(j, w, i + j < v + w))`,
+			want: 79,
+		},
+		{
+			name: "bind with two-var comprehension",
+			expr: `cel.bind(l, [1, 2, 3], l.all(i, v, i < v))`,
+			want: 40,
+		},
+		{
+			name: "bind with two-var transformList",
+			expr: `cel.bind(m, {"a": 1, "b": 2}, m.transformList(k, v, k))`,
+			want: 78,
+		},
+		{
+			name:               "two-var transformList: limit exceeded",
+			expr:               `[1, 2, 3, 4, 5].transformList(i, v, i + v)`,
+			limit:              50,
+			expectExceedsLimit: true,
 		},
 	}
 

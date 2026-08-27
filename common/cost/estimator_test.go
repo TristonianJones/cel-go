@@ -15,18 +15,23 @@
 package cost_test
 
 import (
+	"fmt"
 	"math"
 	"strings"
 	"testing"
 
 	"cel.dev/cel-go/checker"
 	"cel.dev/cel-go/common"
+	"cel.dev/cel-go/common/ast"
 	"cel.dev/cel-go/common/containers"
 	"cel.dev/cel-go/common/cost"
 	"cel.dev/cel-go/common/decls"
+	"cel.dev/cel-go/common/operators"
 	"cel.dev/cel-go/common/overloads"
 	"cel.dev/cel-go/common/stdlib"
 	"cel.dev/cel-go/common/types"
+	"cel.dev/cel-go/common/types/ref"
+	"cel.dev/cel-go/common/types/traits"
 	"cel.dev/cel-go/parser"
 
 	proto3pb "cel.dev/cel-go/test/proto3pb"
@@ -48,7 +53,7 @@ func TestCost(t *testing.T) {
 		expr    string
 		vars    []*decls.VariableDecl
 		hints   map[string]uint64
-		options []cost.CostOption
+		options []cost.Option
 		wanted  cost.CostEstimate
 	}{
 		{
@@ -80,7 +85,7 @@ func TestCost(t *testing.T) {
 			expr:    `has(input.single_int32)`,
 			vars:    []*decls.VariableDecl{decls.NewVariable("input", types.NewObjectType("google.expr.proto3.test.TestAllTypes"))},
 			wanted:  cost.CostEstimate{Min: 1, Max: 1},
-			options: []cost.CostOption{cost.PresenceTestHasCost(false)},
+			options: []cost.Option{cost.PresenceTestHasCost(false)},
 		},
 		{
 			name:   "select: field test only",
@@ -93,14 +98,14 @@ func TestCost(t *testing.T) {
 			expr:    `has(input.testAttr.nestedAttr)`,
 			vars:    []*decls.VariableDecl{decls.NewVariable("input", nestedMap)},
 			wanted:  cost.CostEstimate{Min: 3, Max: 3},
-			options: []cost.CostOption{cost.PresenceTestHasCost(true)},
+			options: []cost.Option{cost.PresenceTestHasCost(true)},
 		},
 		{
 			name:    "select: non-proto field test no has() cost",
 			expr:    `has(input.testAttr.nestedAttr)`,
 			vars:    []*decls.VariableDecl{decls.NewVariable("input", nestedMap)},
 			wanted:  cost.CostEstimate{Min: 2, Max: 2},
-			options: []cost.CostOption{cost.PresenceTestHasCost(false)},
+			options: []cost.Option{cost.PresenceTestHasCost(false)},
 		},
 		{
 			name:   "select: non-proto field test",
@@ -445,7 +450,7 @@ func TestCost(t *testing.T) {
 				decls.NewVariable("str2", types.StringType),
 			},
 			hints: map[string]uint64{"str1": 10, "str2": 10},
-			options: []cost.CostOption{
+			options: []cost.Option{
 				cost.OverloadCostEstimate(overloads.ContainsString,
 					func(estimator cost.Estimator, target *cost.AstNode, args []cost.AstNode) *cost.CallEstimate {
 						if target != nil && len(args) == 1 {
@@ -577,17 +582,17 @@ func TestCost(t *testing.T) {
 		{
 			name:   ".map list literal selection",
 			expr:   `[1,2,3,4,5].map(x, x)[4]`,
-			wanted: cost.CostEstimate{Min: 87, Max: 87},
+			wanted: cost.CostEstimate{Min: 88, Max: 88},
 		},
 		{
 			name:   "nested array selection",
 			expr:   `[[1,2],[1,2],[1,2],[1,2],[1,2]][4]`,
-			wanted: cost.CostEstimate{Min: 61, Max: 61},
+			wanted: cost.CostEstimate{Min: 62, Max: 62},
 		},
 		{
 			name:   "nested map selection",
 			expr:   `{'a': [1,2], 'b': [1,2], 'c': [1,2], 'd': [1,2], 'e': [1,2]}.b`,
-			wanted: cost.CostEstimate{Min: 81, Max: 81},
+			wanted: cost.CostEstimate{Min: 82, Max: 82},
 		},
 		{
 			name:   "comprehension on nested list",
@@ -632,12 +637,12 @@ func TestCost(t *testing.T) {
 		{
 			name:   "literal map access",
 			expr:   `{'hello': 'hi'}['hello'] != {'hello': 'bye'}['hello']`,
-			wanted: cost.CostEstimate{Min: 63, Max: 63},
+			wanted: cost.CostEstimate{Min: 65, Max: 65},
 		},
 		{
 			name:   "literal list access",
 			expr:   `['hello', 'hi'][0] != ['hello', 'bye'][1]`,
-			wanted: cost.CostEstimate{Min: 23, Max: 23},
+			wanted: cost.CostEstimate{Min: 25, Max: 25},
 		},
 		{
 			name:   "type call",
@@ -658,17 +663,17 @@ func TestCost(t *testing.T) {
 			vars: []*decls.VariableDecl{
 				decls.NewVariable("self", types.NewMapType(types.StringType, types.IntType)),
 			},
-			wanted: cost.CostEstimate{Min: 5, Max: 1844674407370955268},
+			wanted: cost.CostEstimate{Min: 5, Max: 5},
 		},
 		{
 			name:   "type literal equality cost",
 			expr:   `type(1) == int`,
-			wanted: cost.CostEstimate{Min: 3, Max: 1844674407370955266},
+			wanted: cost.CostEstimate{Min: 3, Max: 3},
 		},
 		{
 			name:   "type variable equality cost",
 			expr:   `type(1) == int`,
-			wanted: cost.CostEstimate{Min: 3, Max: 1844674407370955266},
+			wanted: cost.CostEstimate{Min: 3, Max: 3},
 		},
 		{
 			name: "namespace variable equality",
@@ -729,7 +734,7 @@ func TestCost(t *testing.T) {
 		{
 			name: "bytes list max",
 			expr: "[bytes('012345678901'), bytes('012345678901'), bytes('012345678901'), bytes('012345678901'), bytes('012345678901')].max()",
-			options: []cost.CostOption{
+			options: []cost.Option{
 				cost.OverloadCostEstimate("list_bytes_max",
 					func(estimator cost.Estimator, target *cost.AstNode, args []cost.AstNode) *cost.CallEstimate {
 						if target != nil {
@@ -751,6 +756,154 @@ func TestCost(t *testing.T) {
 			},
 			wanted: cost.CostEstimate{Min: 25, Max: 35},
 		},
+		// cel.bind test cases
+		{
+			name:   "bind: literal init and scalar result",
+			expr:   `cel.bind(a, 'hello', a + '!')`,
+			wanted: cost.CostEstimate{Min: 12, Max: 12},
+		},
+		{
+			name:   "bind: nested binds",
+			expr:   `cel.bind(a, 'hello!', cel.bind(b, 'goodbye', a + ' and, ' + b))`,
+			wanted: cost.CostEstimate{Min: 26, Max: 26},
+		},
+		{
+			name:   "bind: shadowed bind",
+			expr:   `cel.bind(a, cel.bind(a, 'world', a + '!'), 'hello ' + a)`,
+			wanted: cost.CostEstimate{Min: 25, Max: 25},
+		},
+		{
+			name: "bind: with variable list and index",
+			expr: `cel.bind(a, input, a[0])`,
+			vars: []*decls.VariableDecl{decls.NewVariable("input", intList)},
+			wanted: cost.CostEstimate{Min: 13, Max: 13},
+		},
+		{
+			name: "bind: with variable map and index",
+			expr: `cel.bind(m, input, m['key'])`,
+			vars: []*decls.VariableDecl{decls.NewVariable("input", types.NewMapType(types.StringType, types.StringType))},
+			wanted: cost.CostEstimate{Min: 13, Max: 13},
+		},
+		{
+			name: "bind: with comprehension and size hints",
+			vars: []*decls.VariableDecl{decls.NewVariable("input", allList)},
+			hints: map[string]uint64{"input": 100},
+			expr: `cel.bind(a, input, a.all(x, true))`,
+			wanted: cost.CostEstimate{Min: 13, Max: 313},
+		},
+		{
+			name: "bind: nested with list and size hints",
+			vars: []*decls.VariableDecl{decls.NewVariable("input", nestedList)},
+			hints: map[string]uint64{"input": 50, "input.@items": 10},
+			expr: `cel.bind(a, input, a.all(x, x.all(y, true)))`,
+			wanted: cost.CostEstimate{Min: 13, Max: 1763},
+		},
+		{
+			name:   "bind: unused bind variable",
+			expr:   `cel.bind(a, [1, 2, 3], 42)`,
+			wanted: cost.CostEstimate{Min: 20, Max: 20},
+		},
+		{
+			name:   "bind: derived size propagation to comprehension",
+			expr:   `cel.bind(v, [1, 2, 3], v.all(x, true))`,
+			wanted: cost.CostEstimate{Min: 31, Max: 31},
+		},
+
+		// Two-variable comprehension test cases
+		{
+			name:   "two-var all: list literal",
+			expr:   `[1, 2, 3].all(i, v, i < v)`,
+			wanted: cost.CostEstimate{Min: 20, Max: 29},
+		},
+		{
+			name:   "two-var all: list variable with hints",
+			vars:   []*decls.VariableDecl{decls.NewVariable("input", allList)},
+			hints:  map[string]uint64{"input": 100},
+			expr:   `input.all(i, v, true)`,
+			wanted: cost.CostEstimate{Min: 2, Max: 302},
+		},
+		{
+			name:   "two-var all: map literal",
+			expr:   `{"a": 1, "b": 2}.all(k, v, k != "" && v > 0)`,
+			wanted: cost.CostEstimate{Min: 37, Max: 43},
+		},
+		{
+			name:   "two-var all: map variable with hints",
+			vars:   []*decls.VariableDecl{decls.NewVariable("input", allMap)},
+			hints:  map[string]uint64{"input": 50},
+			expr:   `input.all(k, v, true)`,
+			wanted: cost.CostEstimate{Min: 2, Max: 152},
+		},
+		{
+			name:   "two-var exists: list literal",
+			expr:   `[1, 2, 3].exists(i, v, i == 1 && v == 2)`,
+			wanted: cost.CostEstimate{Min: 23, Max: 35},
+		},
+		{
+			name:   "two-var exists: map literal",
+			expr:   `{"a": 1, "b": 2}.exists(k, v, k == "a" && v == 1)`,
+			wanted: cost.CostEstimate{Min: 39, Max: 47},
+		},
+		{
+			name:   "two-var existsOne: list literal",
+			expr:   `[1, 2, 3].existsOne(i, v, v == 1)`,
+			wanted: cost.CostEstimate{Min: 21, Max: 24},
+		},
+		{
+			name:   "two-var exists_one: list literal",
+			expr:   `[1, 2, 3].exists_one(i, v, v == 1)`,
+			wanted: cost.CostEstimate{Min: 21, Max: 24},
+		},
+		{
+			name:   "two-var transformList: 3-arg list literal",
+			expr:   `[1, 2, 3].transformList(i, v, i + v)`,
+			wanted: cost.CostEstimate{Min: 66, Max: 66},
+		},
+		{
+			name:   "two-var transformList: 4-arg with filter list literal",
+			expr:   `[1, 2, 3].transformList(i, v, i % 2 == 0, i + v)`,
+			wanted: cost.CostEstimate{Min: 33, Max: 75},
+		},
+		{
+			name:   "two-var transformList: 3-arg map literal",
+			expr:   `{"a": 1, "b": 2}.transformList(k, v, k)`,
+			wanted: cost.CostEstimate{Min: 67, Max: 67},
+		},
+		{
+			name:   "two-var transformMap: 3-arg map literal",
+			expr:   `{"a": 1, "b": 2}.transformMap(k, v, v + 1)`,
+			wanted: cost.CostEstimate{Min: 71, Max: 71},
+		},
+		{
+			name:   "two-var transformMap: 4-arg with filter map literal",
+			expr:   `{"a": 1, "b": 2}.transformMap(k, v, v > 1, v + 1)`,
+			wanted: cost.CostEstimate{Min: 67, Max: 75},
+		},
+		{
+			name:   "two-var transformMapEntry: 3-arg map literal",
+			expr:   `{"a": 1, "b": 2}.transformMapEntry(k, v, {v: k})`,
+			wanted: cost.CostEstimate{Min: 129, Max: 129},
+		},
+		{
+			name:   "two-var transformMapEntry: 4-arg with filter map literal",
+			expr:   `{"a": 1, "b": 2}.transformMapEntry(k, v, v > 1, {v: k})`,
+			wanted: cost.CostEstimate{Min: 67, Max: 133},
+		},
+		{
+			name:   "two-var nested all",
+			expr:   `[1, 2].all(i, v, [1, 2].all(j, w, i + j < v + w))`,
+			wanted: cost.CostEstimate{Min: 17, Max: 79},
+		},
+		{
+			name:   "bind with two-var comprehension",
+			expr:   `cel.bind(l, [1, 2, 3], l.all(i, v, i < v))`,
+			wanted: cost.CostEstimate{Min: 31, Max: 40},
+		},
+		{
+			name:   "bind with two-var transformList",
+			expr:   `cel.bind(m, {"a": 1, "b": 2}, m.transformList(k, v, k))`,
+			wanted: cost.CostEstimate{Min: 78, Max: 78},
+		},
 	}
 
 	for _, tst := range cases {
@@ -759,7 +912,7 @@ func TestCost(t *testing.T) {
 			if tc.hints == nil {
 				tc.hints = map[string]uint64{}
 			}
-			p, err := parser.NewParser(parser.Macros(parser.AllMacros...))
+			p, err := parser.NewParser(parser.Macros(testMacros...))
 			if err != nil {
 				t.Fatalf("parser.NewParser() failed: %v", err)
 			}
@@ -785,7 +938,7 @@ func TestCost(t *testing.T) {
 				decls.MemberOverload("list_bytes_max",
 					[]*types.Type{types.NewListType(types.BytesType)},
 					types.BytesType))
-			err = e.AddFunctions(maxFunc)
+			err = e.AddFunctions(maxFunc, mapInsertFunctionDecl())
 			if err != nil {
 				t.Fatalf("environment creation error: %v", err)
 			}
@@ -868,4 +1021,338 @@ func sizeEstimate(estimator cost.Estimator, t cost.AstNode) cost.SizeEstimate {
 		return *sz
 	}
 	return cost.SizeEstimate{Min: 0, Max: math.MaxUint64}
+}
+
+type testCustomSizingStrategy struct{}
+
+func (testCustomSizingStrategy) EstimateSize(ctx cost.EstimateContext, node cost.AstNode) (cost.SizeEstimate, bool) {
+	if node.Path() != nil && len(node.Path()) > 0 && node.Path()[0] == "custom_str" {
+		return cost.SizeEstimate{Min: 10, Max: 20}, true
+	}
+	if node.Path() != nil && len(node.Path()) > 0 && node.Path()[0] == "custom_list" {
+		return cost.SizeEstimate{Min: 1, Max: 5, Elem: &cost.SizeEstimate{Min: 15, Max: 30}}, true
+	}
+	return cost.SizeEstimate{}, false
+}
+
+func (testCustomSizingStrategy) TrackSize(ctx cost.TrackContext, value ref.Val) (uint64, bool) {
+	return cost.ActualSize(value), true
+}
+
+func TestCustomSizingStrategy(t *testing.T) {
+	prse, err := parser.NewParser(parser.Macros(parser.AllMacros...))
+	if err != nil {
+		t.Fatalf("parser.NewParser() failed: %v", err)
+	}
+	src := common.NewStringSource("custom_str.contains('abc')", "<input>")
+	pe, errs := prse.Parse(src)
+	if len(errs.GetErrors()) != 0 {
+		t.Fatalf("Parse() failed: %v", errs.ToDisplayString())
+	}
+	reg, err := types.NewRegistry()
+	if err != nil {
+		t.Fatalf("types.NewRegistry() failed: %v", err)
+	}
+	e, err := checker.NewEnv(containers.DefaultContainer, reg)
+	if err != nil {
+		t.Fatalf("checker.NewEnv() failed: %v", err)
+	}
+	err = e.AddFunctions(stdlib.Functions()...)
+	if err != nil {
+		t.Fatalf("AddFunctions failed: %v", err)
+	}
+	err = e.AddIdents(decls.NewVariable("custom_str", types.StringType))
+	if err != nil {
+		t.Fatalf("AddIdents failed: %v", err)
+	}
+	checked, errs := checker.Check(pe, src, e)
+	if len(errs.GetErrors()) != 0 {
+		t.Fatalf("Check() failed: %v", errs.ToDisplayString())
+	}
+
+	res, err := cost.Cost(checked, nil, cost.EstimateSizingStrategy(testCustomSizingStrategy{}))
+	if err != nil {
+		t.Fatalf("Cost() failed: %v", err)
+	}
+	// 'abc' has length 3, cost traversal factor 0.1 -> ceil(3 * 0.1) = 1
+	// custom_str has min 10, max 20 -> min ceil(10 * 0.1) = 1, max ceil(20 * 0.1) = 2
+	// contains cost: min 1 * 1 = 1, max 2 * 1 = 2
+	// ident cost = 1
+	// total = ident(1) + call(min 1, max 2) = min 2, max 3
+	if res.Min != 2 || res.Max != 3 {
+		t.Errorf("got cost %v, wanted {Min: 2, Max: 3}", res)
+	}
+}
+
+var (
+	testMacros = append(
+		append([]parser.Macro{}, parser.AllMacros...),
+		testCelBindMacro(),
+		testTwoVarAllMacro(),
+		testTwoVarExistsMacro(),
+		testTwoVarExistsOneMacro(),
+		testTwoVarExistsOneMacroNew(),
+		testTwoVarTransformListMacro(),
+		testTwoVarTransformListFilterMacro(),
+		testTwoVarTransformMapMacro(),
+		testTwoVarTransformMapFilterMacro(),
+		testTwoVarTransformMapEntryMacro(),
+		testTwoVarTransformMapEntryFilterMacro(),
+	)
+)
+
+func testCelBindMacro() parser.Macro {
+	return parser.NewReceiverMacro("bind", 3, func(eh parser.ExprHelper, target ast.Expr, args []ast.Expr) (ast.Expr, *common.Error) {
+		if target == nil || target.Kind() != ast.IdentKind || target.AsIdent() != "cel" {
+			return nil, nil
+		}
+		varIdent := args[0]
+		if varIdent.Kind() != ast.IdentKind {
+			return nil, eh.NewError(varIdent.ID(), "cel.bind() variable names must be simple identifiers")
+		}
+		varName := varIdent.AsIdent()
+		varInit := args[1]
+		resultExpr := args[2]
+		return eh.NewComprehension(
+			eh.NewList(),
+			"#unused",
+			varName,
+			varInit,
+			eh.NewLiteral(types.False),
+			eh.NewIdent(varName),
+			resultExpr,
+		), nil
+	})
+}
+
+func testTwoVarAllMacro() parser.Macro {
+	return parser.NewReceiverMacro("all", 3, func(eh parser.ExprHelper, target ast.Expr, args []ast.Expr) (ast.Expr, *common.Error) {
+		iterVar1, iterVar2, err := extractTwoVarIterVars(eh, args[0], args[1])
+		if err != nil {
+			return nil, err
+		}
+		return eh.NewComprehensionTwoVar(
+			target,
+			iterVar1,
+			iterVar2,
+			eh.AccuIdentName(),
+			eh.NewLiteral(types.True),
+			eh.NewCall(operators.NotStrictlyFalse, eh.NewAccuIdent()),
+			eh.NewCall(operators.LogicalAnd, eh.NewAccuIdent(), args[2]),
+			eh.NewAccuIdent(),
+		), nil
+	})
+}
+
+func testTwoVarExistsMacro() parser.Macro {
+	return parser.NewReceiverMacro("exists", 3, func(eh parser.ExprHelper, target ast.Expr, args []ast.Expr) (ast.Expr, *common.Error) {
+		iterVar1, iterVar2, err := extractTwoVarIterVars(eh, args[0], args[1])
+		if err != nil {
+			return nil, err
+		}
+		return eh.NewComprehensionTwoVar(
+			target,
+			iterVar1,
+			iterVar2,
+			eh.AccuIdentName(),
+			eh.NewLiteral(types.False),
+			eh.NewCall(operators.NotStrictlyFalse, eh.NewCall(operators.LogicalNot, eh.NewAccuIdent())),
+			eh.NewCall(operators.LogicalOr, eh.NewAccuIdent(), args[2]),
+			eh.NewAccuIdent(),
+		), nil
+	})
+}
+
+func testTwoVarExistsOneMacro() parser.Macro {
+	return parser.NewReceiverMacro("exists_one", 3, testTwoVarExistsOneExpander)
+}
+
+func testTwoVarExistsOneMacroNew() parser.Macro {
+	return parser.NewReceiverMacro("existsOne", 3, testTwoVarExistsOneExpander)
+}
+
+func testTwoVarExistsOneExpander(eh parser.ExprHelper, target ast.Expr, args []ast.Expr) (ast.Expr, *common.Error) {
+	iterVar1, iterVar2, err := extractTwoVarIterVars(eh, args[0], args[1])
+	if err != nil {
+		return nil, err
+	}
+	return eh.NewComprehensionTwoVar(
+		target,
+		iterVar1,
+		iterVar2,
+		eh.AccuIdentName(),
+		eh.NewLiteral(types.Int(0)),
+		eh.NewLiteral(types.True),
+		eh.NewCall(operators.Conditional, args[2],
+			eh.NewCall(operators.Add, eh.NewAccuIdent(), eh.NewLiteral(types.Int(1))),
+			eh.NewAccuIdent()),
+		eh.NewCall(operators.Equals, eh.NewAccuIdent(), eh.NewLiteral(types.Int(1))),
+	), nil
+}
+
+func testTwoVarTransformListMacro() parser.Macro {
+	return parser.NewReceiverMacro("transformList", 3, testTwoVarTransformListExpander)
+}
+
+func testTwoVarTransformListFilterMacro() parser.Macro {
+	return parser.NewReceiverMacro("transformList", 4, testTwoVarTransformListExpander)
+}
+
+func testTwoVarTransformListExpander(eh parser.ExprHelper, target ast.Expr, args []ast.Expr) (ast.Expr, *common.Error) {
+	iterVar1, iterVar2, err := extractTwoVarIterVars(eh, args[0], args[1])
+	if err != nil {
+		return nil, err
+	}
+	var transform, filter ast.Expr
+	if len(args) == 4 {
+		filter = args[2]
+		transform = args[3]
+	} else {
+		transform = args[2]
+	}
+	step := eh.NewCall(operators.Add, eh.NewAccuIdent(), eh.NewList(transform))
+	if filter != nil {
+		step = eh.NewCall(operators.Conditional, filter, step, eh.NewAccuIdent())
+	}
+	return eh.NewComprehensionTwoVar(
+		target,
+		iterVar1,
+		iterVar2,
+		eh.AccuIdentName(),
+		eh.NewList(),
+		eh.NewLiteral(types.True),
+		step,
+		eh.NewAccuIdent(),
+	), nil
+}
+
+func testTwoVarTransformMapMacro() parser.Macro {
+	return parser.NewReceiverMacro("transformMap", 3, testTwoVarTransformMapExpander)
+}
+
+func testTwoVarTransformMapFilterMacro() parser.Macro {
+	return parser.NewReceiverMacro("transformMap", 4, testTwoVarTransformMapExpander)
+}
+
+func testTwoVarTransformMapExpander(eh parser.ExprHelper, target ast.Expr, args []ast.Expr) (ast.Expr, *common.Error) {
+	iterVar1, iterVar2, err := extractTwoVarIterVars(eh, args[0], args[1])
+	if err != nil {
+		return nil, err
+	}
+	var transform, filter ast.Expr
+	if len(args) == 4 {
+		filter = args[2]
+		transform = args[3]
+	} else {
+		transform = args[2]
+	}
+	step := eh.NewCall("cel.@mapInsert", eh.NewAccuIdent(), eh.NewIdent(iterVar1), transform)
+	if filter != nil {
+		step = eh.NewCall(operators.Conditional, filter, step, eh.NewAccuIdent())
+	}
+	return eh.NewComprehensionTwoVar(
+		target,
+		iterVar1,
+		iterVar2,
+		eh.AccuIdentName(),
+		eh.NewMap(),
+		eh.NewLiteral(types.True),
+		step,
+		eh.NewAccuIdent(),
+	), nil
+}
+
+func testTwoVarTransformMapEntryMacro() parser.Macro {
+	return parser.NewReceiverMacro("transformMapEntry", 3, testTwoVarTransformMapEntryExpander)
+}
+
+func testTwoVarTransformMapEntryFilterMacro() parser.Macro {
+	return parser.NewReceiverMacro("transformMapEntry", 4, testTwoVarTransformMapEntryExpander)
+}
+
+func testTwoVarTransformMapEntryExpander(eh parser.ExprHelper, target ast.Expr, args []ast.Expr) (ast.Expr, *common.Error) {
+	iterVar1, iterVar2, err := extractTwoVarIterVars(eh, args[0], args[1])
+	if err != nil {
+		return nil, err
+	}
+	var transform, filter ast.Expr
+	if len(args) == 4 {
+		filter = args[2]
+		transform = args[3]
+	} else {
+		transform = args[2]
+	}
+	step := eh.NewCall("cel.@mapInsert", eh.NewAccuIdent(), transform)
+	if filter != nil {
+		step = eh.NewCall(operators.Conditional, filter, step, eh.NewAccuIdent())
+	}
+	return eh.NewComprehensionTwoVar(
+		target,
+		iterVar1,
+		iterVar2,
+		eh.AccuIdentName(),
+		eh.NewMap(),
+		eh.NewLiteral(types.True),
+		step,
+		eh.NewAccuIdent(),
+	), nil
+}
+
+func extractTwoVarIterVars(eh parser.ExprHelper, arg0, arg1 ast.Expr) (string, string, *common.Error) {
+	if arg0.Kind() != ast.IdentKind {
+		return "", "", eh.NewError(arg0.ID(), "argument must be a simple name")
+	}
+	if arg1.Kind() != ast.IdentKind {
+		return "", "", eh.NewError(arg1.ID(), "argument must be a simple name")
+	}
+	iterVar1 := arg0.AsIdent()
+	iterVar2 := arg1.AsIdent()
+	if iterVar1 == iterVar2 {
+		return "", "", eh.NewError(arg1.ID(), fmt.Sprintf("duplicate variable name: %s", iterVar1))
+	}
+	if iterVar1 == eh.AccuIdentName() || iterVar1 == parser.AccumulatorName {
+		return "", "", eh.NewError(arg0.ID(), "iteration variable overwrites accumulator variable")
+	}
+	if iterVar2 == eh.AccuIdentName() || iterVar2 == parser.AccumulatorName {
+		return "", "", eh.NewError(arg1.ID(), "iteration variable overwrites accumulator variable")
+	}
+	return iterVar1, iterVar2, nil
+}
+
+func mapInsertFunctionDecl() *decls.FunctionDecl {
+	kType := types.NewTypeParamType("K")
+	vType := types.NewTypeParamType("V")
+	mapKVType := types.NewMapType(kType, vType)
+	fn, _ := decls.NewFunction("cel.@mapInsert",
+		decls.Overload("@mapInsert_map_key_value",
+			[]*types.Type{mapKVType, kType, vType},
+			mapKVType),
+		decls.Overload("@mapInsert_map_map",
+			[]*types.Type{mapKVType, mapKVType},
+			mapKVType),
+		decls.SingletonFunctionBinding(func(args ...ref.Val) ref.Val {
+			if len(args) == 3 {
+				m := args[0].(traits.Mapper)
+				k := args[1]
+				v := args[2]
+				return types.InsertMapKeyValue(m, k, v)
+			}
+			if len(args) == 2 {
+				tm := args[0].(traits.Mapper)
+				um := args[1].(traits.Mapper)
+				umIt := um.Iterator()
+				for umIt.HasNext() == types.True {
+					k := umIt.Next()
+					updateOrErr := types.InsertMapKeyValue(tm, k, um.Get(k))
+					if types.IsError(updateOrErr) {
+						return updateOrErr
+					}
+					tm = updateOrErr.(traits.Mapper)
+				}
+				return tm
+			}
+			return types.NoSuchOverloadErr()
+		}),
+	)
+	return fn
 }
