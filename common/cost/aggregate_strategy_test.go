@@ -172,11 +172,11 @@ func TestAggregateSizingStrategy_EstimateSize_List(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		ctx      EstimateContext
-		node     AstNode
-		wantOk   bool
-		check    func(t *testing.T, sz SizeEstimate)
+		name   string
+		ctx    EstimateContext
+		node   AstNode
+		wantOk bool
+		check  func(t *testing.T, sz SizeEstimate)
 	}{
 		{
 			name:   "literal_list_elements",

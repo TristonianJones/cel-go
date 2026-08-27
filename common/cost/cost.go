@@ -90,6 +90,14 @@ func SafeAdd(x, y uint64, rest ...uint64) uint64 {
 	return sum
 }
 
+// SafeSubtract returns the difference of x - y, saturating at zero.
+func SafeSubtract(x, y uint64) uint64 {
+	if x > y {
+		return x - y
+	}
+	return 0
+}
+
 // SafeMultiply returns the product of the input values, saturating at math.MaxUint64.
 func SafeMultiply(x, y uint64) uint64 {
 	if y != 0 && x > math.MaxUint64/y {
@@ -153,8 +161,8 @@ func RangedSizeEstimate(min, max uint64) SizeEstimate {
 	return SizeEstimate{Min: min, Max: max}
 }
 
-// AtLeastOne returns a size estimate with min and max guaranteed to be at least 1.
-func AtLeastOne(size SizeEstimate) SizeEstimate {
+// AtLeastOneSize returns a size estimate with min and max guaranteed to be at least 1.
+func AtLeastOneSize(size SizeEstimate) SizeEstimate {
 	if size.Min == 0 {
 		size.Min = 1
 	}
@@ -183,6 +191,17 @@ func (se SizeEstimate) Add(sizeEstimate SizeEstimate) SizeEstimate {
 	res := SizeEstimate{
 		Min: SafeAdd(se.Min, sizeEstimate.Min),
 		Max: SafeAdd(se.Max, sizeEstimate.Max),
+	}
+	res.Key = mergeSizeEstimatePtr(se.Key, sizeEstimate.Key)
+	res.Elem = mergeSizeEstimatePtr(se.Elem, sizeEstimate.Elem)
+	return res
+}
+
+// Subtract subtracts another SizeEstimate and returns the difference, saturating at zero.
+func (se SizeEstimate) Subtract(sizeEstimate SizeEstimate) SizeEstimate {
+	res := SizeEstimate{
+		Min: SafeSubtract(se.Min, sizeEstimate.Max),
+		Max: SafeSubtract(se.Max, sizeEstimate.Min),
 	}
 	res.Key = mergeSizeEstimatePtr(se.Key, sizeEstimate.Key)
 	res.Elem = mergeSizeEstimatePtr(se.Elem, sizeEstimate.Elem)
@@ -326,6 +345,9 @@ func ActualSize(value ref.Val) uint64 {
 
 // EstimateSize returns a SizeEstimate for the given node from its computed size, estimator, or unknown.
 func EstimateSize(estimator Estimator, node AstNode) SizeEstimate {
+	if node == nil {
+		return UnknownSizeEstimate()
+	}
 	if l := node.ComputedSize(); l != nil {
 		return *l
 	}
@@ -359,10 +381,13 @@ func EstimateListAlloc(sz SizeEstimate, costFactor float64) (CostEstimate, *Size
 // NodeAsUintValue returns the value of a literal int node as a uint64, or the default value if the
 // node is not a non-negative int literal.
 func NodeAsUintValue(node AstNode, defaultVal uint64) uint64 {
-	if node.Expr().Kind() != ast.LiteralKind {
+	if node == nil || node.Expr() == nil || node.Expr().Kind() != ast.LiteralKind {
 		return defaultVal
 	}
 	lit := node.Expr().AsLiteral()
+	if lit.Type() == types.UintType {
+		return uint64(lit.(types.Uint))
+	}
 	if lit.Type() != types.IntType {
 		return defaultVal
 	}
@@ -370,5 +395,5 @@ func NodeAsUintValue(node AstNode, defaultVal uint64) uint64 {
 	if val < types.IntZero {
 		return 0
 	}
-	return uint64(lit.(types.Int))
+	return uint64(val)
 }

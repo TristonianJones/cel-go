@@ -142,11 +142,14 @@ var StandardOverloadModels = []OverloadModel{
 
 // StandardOverloadEstimators returns the map of FunctionEstimator instances for standard overloads.
 func StandardOverloadEstimators() map[string]FunctionEstimator {
-	return StandardOverloadEstimatorsWithOptions(nil)
+	return StandardOverloadEstimatorsWithOptions(DefaultSizingStrategy())
 }
 
 // StandardOverloadEstimatorsWithOptions returns the map of FunctionEstimator instances for standard overloads with an optional SizingStrategy.
 func StandardOverloadEstimatorsWithOptions(strategy SizingStrategy) map[string]FunctionEstimator {
+	if strategy == nil {
+		strategy = DefaultSizingStrategy()
+	}
 	estimators := make(map[string]FunctionEstimator, len(StandardOverloadModels))
 	for _, m := range StandardOverloadModels {
 		estimators[m.ID] = m.FunctionEstimatorWithOptions(strategy)
@@ -156,11 +159,14 @@ func StandardOverloadEstimatorsWithOptions(strategy SizingStrategy) map[string]F
 
 // StandardOverloadTrackers returns the map of FunctionTracker instances for standard overloads.
 func StandardOverloadTrackers() map[string]FunctionTracker {
-	return StandardOverloadTrackersWithOptions(nil)
+	return StandardOverloadTrackersWithOptions(DefaultSizingStrategy())
 }
 
 // StandardOverloadTrackersWithOptions returns the map of FunctionTracker instances for standard overloads with an optional SizingStrategy.
 func StandardOverloadTrackersWithOptions(strategy SizingStrategy) map[string]FunctionTracker {
+	if strategy == nil {
+		strategy = DefaultSizingStrategy()
+	}
 	trackers := make(map[string]FunctionTracker, len(StandardOverloadModels))
 	for _, m := range StandardOverloadModels {
 		trackers[m.ID] = m.FunctionTrackerWithOptions(strategy)

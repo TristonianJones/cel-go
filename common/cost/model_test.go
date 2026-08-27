@@ -23,13 +23,29 @@ import (
 )
 
 type testEvalContext struct {
-	estimator  Estimator
-	strategy   SizingStrategy
-	args       []SizeEstimate
-	receiver   *SizeEstimate
-	result     *SizeEstimate
-	targetType *types.Type
-	argTypes   []*types.Type
+	estimator     Estimator
+	strategy      SizingStrategy
+	args          []SizeEstimate
+	argValues     []uint64
+	receiver      *SizeEstimate
+	receiverValue *uint64
+	result        *SizeEstimate
+	targetType    *types.Type
+	argTypes      []*types.Type
+}
+
+func (t *testEvalContext) ArgValue(index int, defaultVal uint64) uint64 {
+	if index < len(t.argValues) {
+		return t.argValues[index]
+	}
+	return defaultVal
+}
+
+func (t *testEvalContext) TargetValue(defaultVal uint64) uint64 {
+	if t.receiverValue != nil {
+		return *t.receiverValue
+	}
+	return defaultVal
 }
 
 func (t *testEvalContext) Arg(index int) (SizeEstimate, bool) {
@@ -105,14 +121,17 @@ func TestQuantityExprs_Estimate(t *testing.T) {
 	arg1 := MapSizeEstimate(RangedSizeEstimate(3, 5), key1, elem1)
 	rcv := MapSizeEstimate(RangedSizeEstimate(4, 8), rcvKey, rcvElem)
 
+	receiverVal := uint64(20)
 	ctx := &testEvalContext{
 		args: []SizeEstimate{
 			arg0,
 			arg1,
 		},
-		receiver:   &rcv,
-		targetType: types.NewListType(types.StringType),
-		argTypes:   []*types.Type{types.NewListType(types.IntType)},
+		argValues:     []uint64{3, 10},
+		receiver:      &rcv,
+		receiverValue: &receiverVal,
+		targetType:    types.NewListType(types.StringType),
+		argTypes:      []*types.Type{types.NewListType(types.IntType)},
 	}
 
 	tests := []struct {
@@ -131,6 +150,16 @@ func TestQuantityExprs_Estimate(t *testing.T) {
 			expected: arg0,
 		},
 		{
+			name:     "int_arg_quantity",
+			expr:     IntArg(0, 99),
+			expected: FixedSizeEstimate(3),
+		},
+		{
+			name:     "int_arg_default_quantity",
+			expr:     IntArg(5, 99),
+			expected: FixedSizeEstimate(99),
+		},
+		{
 			name:     "arg_element_quantity",
 			expr:     ArgElem(0),
 			expected: elem0,
@@ -144,6 +173,11 @@ func TestQuantityExprs_Estimate(t *testing.T) {
 			name:     "target_quantity",
 			expr:     Target(),
 			expected: rcv,
+		},
+		{
+			name:     "int_target_quantity",
+			expr:     IntTarget(99),
+			expected: FixedSizeEstimate(20),
 		},
 		{
 			name:     "target_element_quantity",
@@ -161,6 +195,11 @@ func TestQuantityExprs_Estimate(t *testing.T) {
 			expected: arg0.Add(arg1),
 		},
 		{
+			name:     "sub_quantity",
+			expr:     Sub(Arg(0), Arg(1)),
+			expected: arg0.Subtract(arg1),
+		},
+		{
 			name:     "mul_quantity",
 			expr:     Mul(Arg(0), Arg(1)),
 			expected: RangedSizeEstimate(6, 50),
@@ -169,6 +208,31 @@ func TestQuantityExprs_Estimate(t *testing.T) {
 			name:     "scale_quantity",
 			expr:     Scale(Arg(0), 0.5),
 			expected: ListSizeEstimate(RangedSizeEstimate(1, 5), elem0),
+		},
+		{
+			name:     "string_scan_quantity",
+			expr:     StringScan(Const(20)),
+			expected: FixedSizeEstimate(2),
+		},
+		{
+			name:     "list_alloc_quantity",
+			expr:     ListAlloc(Const(10), 0.5),
+			expected: FixedSizeEstimate(ListCreateBaseCost + 5),
+		},
+		{
+			name:     "traversal_with_alloc_quantity",
+			expr:     Traversal(Const(20), 0.5, 10),
+			expected: FixedSizeEstimate(20),
+		},
+		{
+			name:     "traversal_without_alloc_quantity",
+			expr:     Traversal(Const(20), 0.5, 0),
+			expected: FixedSizeEstimate(10),
+		},
+		{
+			name:     "at_least_one_quantity",
+			expr:     AtLeastOneQuantity(Const(0)),
+			expected: FixedSizeEstimate(1),
 		},
 		{
 			name:     "square_quantity",
@@ -263,9 +327,12 @@ func TestQuantityExprs_Estimate(t *testing.T) {
 }
 
 func TestQuantityExprs_Track(t *testing.T) {
+	rcvTrackVal := uint64(20)
 	trackCtx := &testTrackContext{
-		args:     []uint64{10, 5},
-		receiver: 8,
+		args:          []uint64{10, 5},
+		argValues:     []uint64{3, 10},
+		receiver:      8,
+		receiverValue: &rcvTrackVal,
 	}
 
 	scalarTests := []struct {
@@ -275,10 +342,21 @@ func TestQuantityExprs_Track(t *testing.T) {
 	}{
 		{name: "const_scalar", expr: Const(42), expected: 42},
 		{name: "arg_scalar", expr: Arg(0), expected: 10},
+		{name: "int_arg_scalar", expr: IntArg(0, 99), expected: 3},
+		{name: "int_arg_default_scalar", expr: IntArg(5, 99), expected: 99},
 		{name: "target_scalar", expr: Target(), expected: 8},
+		{name: "int_target_scalar", expr: IntTarget(99), expected: 20},
 		{name: "sum_scalar", expr: Sum(Arg(0), Arg(1)), expected: 15},
+		{name: "sub_scalar", expr: Sub(Arg(0), Arg(1)), expected: 5},
+		{name: "sub_scalar_saturates", expr: Sub(Arg(1), Arg(0)), expected: 0},
 		{name: "mul_scalar", expr: Mul(Arg(0), Arg(1)), expected: 50},
 		{name: "scale_scalar", expr: Scale(Arg(0), 1.5), expected: 15},
+		{name: "string_scan_scalar", expr: StringScan(Const(20)), expected: 2},
+		{name: "list_alloc_scalar", expr: ListAlloc(Const(10), 0.5), expected: ListCreateBaseCost + 5},
+		{name: "traversal_with_alloc_scalar", expr: Traversal(Const(20), 0.5, 10), expected: 20},
+		{name: "traversal_without_alloc_scalar", expr: Traversal(Const(20), 0.5, 0), expected: 10},
+		{name: "at_least_one_scalar_zero", expr: AtLeastOneQuantity(Const(0)), expected: 1},
+		{name: "at_least_one_scalar_nonzero", expr: AtLeastOneQuantity(Const(5)), expected: 5},
 		{name: "square_scalar", expr: Square(Arg(1)), expected: 25},
 		{name: "min_scalar", expr: Min(Arg(0), Arg(1)), expected: 5},
 		{name: "max_scalar", expr: Max(Arg(0), Arg(1)), expected: 10},
@@ -296,10 +374,26 @@ func TestQuantityExprs_Track(t *testing.T) {
 }
 
 type testTrackContext struct {
-	args      []uint64
-	receiver  uint64
-	result    uint64
-	estimator ActualCostEstimator
+	args          []uint64
+	argValues     []uint64
+	receiver      uint64
+	receiverValue *uint64
+	result        uint64
+	estimator     ActualCostEstimator
+}
+
+func (t *testTrackContext) ArgValue(index int, defaultVal uint64) uint64 {
+	if index < len(t.argValues) {
+		return t.argValues[index]
+	}
+	return defaultVal
+}
+
+func (t *testTrackContext) TargetValue(defaultVal uint64) uint64 {
+	if t.receiverValue != nil {
+		return *t.receiverValue
+	}
+	return defaultVal
 }
 
 func (t *testTrackContext) Arg(index int) uint64 {
@@ -350,7 +444,9 @@ func TestModel_HasTargetInspection(t *testing.T) {
 		{name: "arg_expr", expr: Arg(0), wantTarget: false},
 		{name: "arg_elem_expr", expr: ArgElem(0), wantTarget: false},
 		{name: "arg_key_expr", expr: ArgKey(0), wantTarget: false},
+		{name: "int_arg_expr", expr: IntArg(0, 10), wantTarget: false},
 		{name: "target_expr", expr: Target(), wantTarget: true},
+		{name: "int_target_expr", expr: IntTarget(10), wantTarget: true},
 		{name: "target_elem_expr", expr: TargetElem(), wantTarget: true},
 		{name: "target_key_expr", expr: TargetKey(), wantTarget: true},
 		{name: "result_expr", expr: Result(), wantTarget: false},
@@ -358,6 +454,17 @@ func TestModel_HasTargetInspection(t *testing.T) {
 		{name: "elem_of_arg", expr: ElemOf(Arg(0)), wantTarget: false},
 		{name: "key_of_target", expr: KeyOf(Target()), wantTarget: true},
 		{name: "key_of_arg", expr: KeyOf(Arg(0)), wantTarget: false},
+		{name: "sub_with_target_lhs", expr: Sub(Target(), Arg(0)), wantTarget: true},
+		{name: "sub_with_target_rhs", expr: Sub(Arg(0), Target()), wantTarget: true},
+		{name: "sub_without_target", expr: Sub(Arg(0), Arg(1)), wantTarget: false},
+		{name: "at_least_one_with_target", expr: AtLeastOneQuantity(Target()), wantTarget: true},
+		{name: "at_least_one_without_target", expr: AtLeastOneQuantity(Arg(0)), wantTarget: false},
+		{name: "string_scan_with_target", expr: StringScan(Target()), wantTarget: true},
+		{name: "string_scan_without_target", expr: StringScan(Arg(0)), wantTarget: false},
+		{name: "list_alloc_with_target", expr: ListAlloc(Target(), 1.0), wantTarget: true},
+		{name: "list_alloc_without_target", expr: ListAlloc(Arg(0), 1.0), wantTarget: false},
+		{name: "traversal_with_target", expr: Traversal(Target(), 1.0, 10), wantTarget: true},
+		{name: "traversal_without_target", expr: Traversal(Arg(0), 1.0, 10), wantTarget: false},
 		{name: "min_with_target", expr: Min(Arg(0), Target()), wantTarget: true},
 		{name: "min_without_target", expr: Min(Arg(0), Arg(1)), wantTarget: false},
 		{name: "max_with_target", expr: Max(Target(), Arg(0)), wantTarget: true},
@@ -536,6 +643,26 @@ func TestModel_MissingContextFallbacks(t *testing.T) {
 			checkEst: func(t *testing.T, sz SizeEstimate) {
 				if sz != FixedSizeEstimate(1) {
 					t.Errorf("got %v, want 1", sz)
+				}
+			},
+		},
+		{
+			name:      "missing_int_arg",
+			expr:      IntArg(0, 42),
+			wantTrack: 42,
+			checkEst: func(t *testing.T, sz SizeEstimate) {
+				if sz != FixedSizeEstimate(42) {
+					t.Errorf("got %v, want 42", sz)
+				}
+			},
+		},
+		{
+			name:      "missing_int_target",
+			expr:      IntTarget(42),
+			wantTrack: 42,
+			checkEst: func(t *testing.T, sz SizeEstimate) {
+				if sz != FixedSizeEstimate(42) {
+					t.Errorf("got %v, want 42", sz)
 				}
 			},
 		},
@@ -891,6 +1018,25 @@ func TestModel_TrackerEvalContextMethods(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "target_value",
+			check: func(t *testing.T) {
+				if val := tCtx.TargetValue(99); val != 99 {
+					t.Errorf("TargetValue(99) for string target = %d, want 99", val)
+				}
+			},
+		},
+		{
+			name: "arg_value",
+			check: func(t *testing.T) {
+				if val := tCtx.ArgValue(0, 99); val != 100 {
+					t.Errorf("ArgValue(0, 99) = %d, want 100", val)
+				}
+				if val := tCtx.ArgValue(5, 99); val != 99 {
+					t.Errorf("ArgValue(5, 99) = %d, want 99", val)
+				}
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -1011,6 +1157,25 @@ func TestModel_EstimatorEvalContextMethods(t *testing.T) {
 			check: func(t *testing.T) {
 				if _, ok := eCtx.ArgType(5); ok {
 					t.Errorf("ArgType(5) should return false")
+				}
+			},
+		},
+		{
+			name: "target_value",
+			check: func(t *testing.T) {
+				if val := eCtx.TargetValue(99); val != 99 {
+					t.Errorf("TargetValue(99) = %d, want 99", val)
+				}
+			},
+		},
+		{
+			name: "arg_value",
+			check: func(t *testing.T) {
+				if val := eCtx.ArgValue(0, 99); val != 99 {
+					t.Errorf("ArgValue(0, 99) = %d, want 99", val)
+				}
+				if val := eCtx.ArgValue(5, 99); val != 99 {
+					t.Errorf("ArgValue(5, 99) = %d, want 99", val)
 				}
 			},
 		},

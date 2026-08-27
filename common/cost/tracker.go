@@ -84,6 +84,9 @@ func OverloadTracker(overloadID string, fnTracker FunctionTracker) TrackerOption
 // TrackerSizingStrategy configures a SizingStrategy for runtime cost tracking.
 func TrackerSizingStrategy(strategy SizingStrategy) TrackerOption {
 	return func(tracker *Tracker) error {
+		if strategy == nil {
+			strategy = DefaultSizingStrategy()
+		}
 		tracker.sizingStrategy = strategy
 		return nil
 	}
@@ -124,6 +127,12 @@ func NewTracker(estimator ActualCostEstimator, opts ...TrackerOption) (*Tracker,
 		if err != nil {
 			return nil, err
 		}
+	}
+	if tracker.sizingStrategy == nil {
+		tracker.sizingStrategy = DefaultSizingStrategy()
+	}
+	if tracker.sizingStrategy != defaultSizing {
+		tracker.sizingOverloadTrackers = StandardOverloadTrackersWithOptions(tracker.sizingStrategy)
 	}
 	return tracker, nil
 }
@@ -224,11 +233,11 @@ func (c *Tracker) checkLimit() {
 	}
 }
 
-func (c *Tracker) getSizingOverloadTrackers() map[string]FunctionTracker {
-	if c.sizingOverloadTrackers == nil {
-		c.sizingOverloadTrackers = StandardOverloadTrackersWithOptions(c.sizingStrategy)
+func (c *Tracker) getStandardOverloadTrackers() map[string]FunctionTracker {
+	if c.sizingOverloadTrackers != nil {
+		return c.sizingOverloadTrackers
 	}
-	return c.sizingOverloadTrackers
+	return stdOverloadTrackers
 }
 
 // CostCall calculates the runtime cost for a function call.
@@ -250,15 +259,7 @@ func (c *Tracker) CostCall(call Call, args []ref.Val, result ref.Val) uint64 {
 			return total
 		}
 	}
-	if c.sizingStrategy != nil {
-		if tracker, found := c.getSizingOverloadTrackers()[call.OverloadID()]; found {
-			callCost := tracker(args, result)
-			if callCost != nil {
-				total = SafeAdd(total, *callCost)
-				return total
-			}
-		}
-	} else if tracker, found := stdOverloadTrackers[call.OverloadID()]; found {
+	if tracker, found := c.getStandardOverloadTrackers()[call.OverloadID()]; found {
 		callCost := tracker(args, result)
 		if callCost != nil {
 			total = SafeAdd(total, *callCost)

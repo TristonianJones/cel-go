@@ -1,4 +1,4 @@
-// Copyright 2022 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,25 +15,20 @@
 package cost_test
 
 import (
-	"fmt"
 	"math"
 	"math/rand"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	"cel.dev/cel-go/checker"
-	"cel.dev/cel-go/common"
-	"cel.dev/cel-go/common/containers"
+	"cel.dev/cel-go/cel"
 	"cel.dev/cel-go/common/cost"
 	"cel.dev/cel-go/common/decls"
 	"cel.dev/cel-go/common/overloads"
-	"cel.dev/cel-go/common/stdlib"
 	"cel.dev/cel-go/common/types"
 	"cel.dev/cel-go/common/types/ref"
-	"cel.dev/cel-go/interpreter"
-	"cel.dev/cel-go/parser"
 
 	proto3pb "cel.dev/cel-go/test/proto3pb"
 )
@@ -276,14 +271,14 @@ func TestTrackCostAdvanced(t *testing.T) {
 			ctx := constructActivation(t, tc.in)
 			lhsCost, _, err := computeCost(t, tc.lhsExpr, nil, ctx, nil)
 			if err != nil {
-				t.Fatalf("Interpreter.Eval(activation interpreter.Activation) failed to eval expression due: %v", err)
+				t.Fatalf("Program.Eval(activation) failed to eval expression due: %v", err)
 			}
 			rhsCost, _, err := computeCost(t, tc.rhsExpr, nil, ctx, nil)
 			if err != nil {
-				t.Fatalf("Interpreter.Eval(activation interpreter.Activation) failed to eval expression due: %v", err)
+				t.Fatalf("Program.Eval(activation) failed to eval expression due: %v", err)
 			}
 			if lhsCost != rhsCost {
-				t.Errorf(`Interpreter.Eval(activation interpreter.Activation) failed return a cost for %s of %d equal to a cost for %s of %d`,
+				t.Errorf(`Program.Eval(activation) failed return a cost for %s of %d equal to a cost for %s of %d`,
 					tc.lhsExpr, lhsCost, tc.rhsExpr, rhsCost)
 			}
 		})
@@ -312,93 +307,67 @@ func TestTrackCostAdvanced(t *testing.T) {
 			ctx := constructActivation(t, tc.in)
 			lhsCost, _, err := computeCost(t, tc.lhsExpr, nil, ctx, nil)
 			if err != nil {
-				t.Fatalf("Interpreter.Eval(activation interpreter.Activation) failed to eval expression due: %v", err)
+				t.Fatalf("Program.Eval(activation) failed to eval expression due: %v", err)
 			}
 			rhsCost, _, err := computeCost(t, tc.rhsExpr, nil, ctx, nil)
 			if err != nil {
-				t.Fatalf("Interpreter.Eval(activation interpreter.Activation) failed to eval expression due: %v", err)
+				t.Fatalf("Program.Eval(activation) failed to eval expression due: %v", err)
 			}
 			if lhsCost >= rhsCost {
-				t.Errorf(`Interpreter.Eval(activation interpreter.Activation) failed return a cost for %s of %d less than the cost for %s of %d`,
+				t.Errorf(`Program.Eval(activation) failed return a cost for %s of %d less than the cost for %s of %d`,
 					tc.lhsExpr, lhsCost, tc.rhsExpr, rhsCost)
 			}
 		})
 	}
 }
 
-func computeCost(t *testing.T, expr string, vars []*decls.VariableDecl, ctx interpreter.Activation, options []cost.TrackerOption) (actualCost uint64, est cost.CostEstimate, err error) {
+func computeCost(t *testing.T, expr string, vars []*decls.VariableDecl, ctx cel.Activation, options []cost.TrackerOption) (actualCost uint64, est cost.CostEstimate, err error) {
 	t.Helper()
 
-	s := common.NewTextSource(expr)
-	p, err := parser.NewParser(parser.Macros(testMacros...))
+	env, err := testCelEnv.Extend(cel.VariableDecls(vars...))
 	if err != nil {
-		t.Fatalf("Failed to initialize parser: %v", err)
+		t.Fatalf("env.Extend() failed: %v", err)
 	}
-	parsed, errs := p.Parse(s)
-	if len(errs.GetErrors()) != 0 {
-		t.Fatalf(`Failed to Parse expression "%s", error: %v`, expr, errs.GetErrors())
+	checked, iss := env.Compile(expr)
+	if iss.Err() != nil {
+		t.Fatalf("env.Compile(%q) failed: %v", expr, iss.Err())
 	}
 
-	cont := containers.DefaultContainer
-	reg := newTestRegistry(t, types.ProtoTypeDefs(&proto3pb.TestAllTypes{}))
-	attrs := interpreter.NewAttributeFactory(cont, reg, reg)
-	env := newTestEnv(t, cont, reg)
-	err = env.AddFunctions(mapInsertFunctionDecl())
+	// The estimate must be configured with the same presence test behavior as the tracker,
+	// so derive it from a tracker built with the same options.
+	tracker, err := cost.NewTracker(nil, options...)
 	if err != nil {
-		t.Fatalf("Failed to add mapInsertFunctionDecl: %v", err)
+		t.Fatalf("cost.NewTracker() failed: %v", err)
 	}
-	err = env.AddIdents(vars...)
-	if err != nil {
-		t.Fatalf("Failed to initialize env: %v", err)
-	}
-	costTracker, err := cost.NewTracker(&testRuntimeCostEstimator{}, options...)
-	if err != nil {
-		t.Fatalf("cost.NewCostTracker() failed: %v", err)
-	}
-	costTracker, err = costTracker.Clone()
-	if err != nil {
-		t.Fatalf("checker.Clone() failed: %v", err)
-	}
-	checked, errs := checker.Check(parsed, s, env)
-	if len(errs.GetErrors()) != 0 {
-		t.Fatalf(`Failed to check expression "%s", error: %v`, expr, errs.GetErrors())
-	}
-	est, err = cost.Cost(checked, testTrackerCostEstimator{}, cost.PresenceTestHasCost(costTracker.PresenceTestHasCost()))
+	est, err = cost.Cost(checked.NativeRep(), testTrackerCostEstimator{},
+		cost.PresenceTestHasCost(tracker.PresenceTestHasCost()))
 	if err != nil {
 		t.Fatalf("cost.Cost() failed: %v", err)
 	}
-	interp := newStandardInterpreter(t, cont, reg, reg, attrs, mapInsertFunctionDecl())
-	prg, err := interp.NewInterpretable(checked,
-		interpreter.CostObserver(interpreter.CostTrackerFactory(func() (*cost.Tracker, error) {
-			return costTracker, nil
-		})))
-	if err != nil {
-		t.Fatalf(`Failed to check expression "%s", error: %v`, expr, errs.GetErrors())
-	}
 
-	defer func() {
-		if r := recover(); r != nil {
-			switch t := r.(type) {
-			case interpreter.EvalCancelledError:
-				err = t
-			default:
-				err = fmt.Errorf("internal error: %v", r)
-			}
-		}
-	}()
-	frame := interpreter.AsFrame(ctx)
-	prg.Exec(frame)
-	return costTracker.ActualCost(), est, err
+	prg, err := env.Program(checked,
+		cel.CostTracking(&testRuntimeCostEstimator{}),
+		cel.CostTrackerOptions(options...))
+	if err != nil {
+		t.Fatalf("env.Program() failed: %v", err)
+	}
+	// Program.Eval recovers evaluation panics itself, and attaches the cost tracker to the
+	// details even when evaluation fails, so a cost limit breach still reports its cost.
+	_, det, err := prg.Eval(ctx)
+	if cost := det.ActualCost(); cost != nil {
+		actualCost = *cost
+	}
+	return actualCost, est, err
 }
 
-func constructActivation(t testing.TB, in any) interpreter.Activation {
+func constructActivation(t testing.TB, in any) cel.Activation {
 	t.Helper()
 	if in == nil {
-		return interpreter.EmptyActivation()
+		return cel.NoVars()
 	}
-	a, err := interpreter.NewActivation(in)
+	a, err := cel.NewActivation(in)
 	if err != nil {
-		t.Fatalf("interpreter.NewActivation(%v) failed: %v", in, err)
+		t.Fatalf("cel.NewActivation(%v) failed: %v", in, err)
 	}
 	return a
 }
@@ -467,6 +436,7 @@ func TestRuntimeCost(t *testing.T) {
 
 	allMap := types.NewMapType(types.StringType, allTypes)
 	nestedMap := types.NewMapType(types.StringType, allMap)
+	nestedMapStr := types.NewMapType(types.StringType, types.NewMapType(types.StringType, types.StringType))
 	cases := []struct {
 		name         string
 		expr         string
@@ -533,6 +503,48 @@ func TestRuntimeCost(t *testing.T) {
 			vars: []*decls.VariableDecl{decls.NewVariable("input", types.NewListType(types.StringType))},
 			want: 3,
 			in:   map[string]any{"input": []string{"v"}},
+		},
+		{
+			name: "optional select: map",
+			expr: `input.?key`,
+			vars: []*decls.VariableDecl{decls.NewVariable("input", types.NewMapType(types.StringType, types.StringType))},
+			want: 2,
+			in:   map[string]any{"input": map[string]string{"key": "v"}},
+		},
+		{
+			name: "optional index: map",
+			expr: `input[?'key']`,
+			vars: []*decls.VariableDecl{decls.NewVariable("input", types.NewMapType(types.StringType, types.StringType))},
+			want: 2,
+			in:   map[string]any{"input": map[string]string{"key": "v"}},
+		},
+		{
+			// An optional select extends the attribute chain, so the trailing selection
+			// only adds a qualifier cost rather than a second attribute resolution.
+			name: "optional select: chained",
+			expr: `input.?key.subkey`,
+			vars: []*decls.VariableDecl{decls.NewVariable("input", nestedMapStr)},
+			want: 3,
+			in:   map[string]any{"input": map[string]map[string]string{"key": {"subkey": "v"}}},
+		},
+		{
+			name: "optional index: chained",
+			expr: `input[?'key'].subkey`,
+			vars: []*decls.VariableDecl{decls.NewVariable("input", nestedMapStr)},
+			want: 3,
+			in:   map[string]any{"input": map[string]map[string]string{"key": {"subkey": "v"}}},
+		},
+		{
+			// A computed operand requires a relative attribute, which costs an extra
+			// attribute resolution on top of the qualifier.
+			name: "optional index: map literal",
+			expr: `{'key': 'v'}[?'key']`,
+			want: 32,
+		},
+		{
+			name: "optional index: list literal",
+			expr: `['v'][?0]`,
+			want: 12,
 		},
 		{
 			name:    "select: field test only no has() cost",
@@ -1166,8 +1178,8 @@ func TestRuntimeCost(t *testing.T) {
 		},
 		{
 			name: "two-var all: map literal early return false",
-			expr: `{'hello': 'world', 'taco': 'taco'}.all(k, v, k != v) == false`,
-			want: 44,
+			expr: `{'hello': 'world'}.all(k, v, k != v) == false`,
+			want: 38,
 		},
 		{
 			name: "two-var exists: list literal",
@@ -1176,8 +1188,8 @@ func TestRuntimeCost(t *testing.T) {
 		},
 		{
 			name: "two-var exists: map literal",
-			expr: `{"a": 1, "b": 2}.exists(k, v, k == "a" && v == 1)`,
-			want: 42,
+			expr: `{"a": 1}.exists(k, v, k == "a" && v == 1)`,
+			want: 39,
 		},
 		{
 			name: "two-var existsOne: list variable",
@@ -1267,16 +1279,16 @@ func TestRuntimeCost(t *testing.T) {
 				if tc.expectExceedsLimit {
 					return
 				}
-				t.Fatalf("Interpreter.Eval(activation interpreter.Activation) failed due to: %v", err)
+				t.Fatalf("Program.Eval(activation) failed due to: %v", err)
 			}
 			if tc.expectExceedsLimit {
-				t.Fatalf("Interpreter.Eval(activation interpreter.Activation) failed to return a cost exceeded error for limit %d, got cost %d", tc.limit, actualCost)
+				t.Fatalf("Program.Eval(activation) failed to return a cost exceeded error for limit %d, got cost %d", tc.limit, actualCost)
 			}
 			if actualCost != tc.want {
-				t.Fatalf("Interpreter.Eval(activation interpreter.Activation) failed to return expected runtime cost %d, got %d", tc.want, actualCost)
+				t.Fatalf("Program.Eval(activation) failed to return expected runtime cost %d, got %d", tc.want, actualCost)
 			}
 			if est.Min > actualCost || est.Max < actualCost {
-				t.Fatalf("Interpreter.Eval(activation interpreter.Activation) failed to return cost in range of estimate cost [%d, %d], got %d",
+				t.Fatalf("Program.Eval(activation) failed to return cost in range of estimate cost [%d, %d], got %d",
 					est.Min, est.Max, actualCost)
 			}
 		})
@@ -1314,42 +1326,17 @@ func BenchmarkCostTracking(b *testing.B) {
 
 	for _, bm := range benchmarks {
 		b.Run(bm.name, func(b *testing.B) {
-			s := common.NewTextSource(bm.expr)
-			p, err := parser.NewParser(parser.Macros(parser.AllMacros...))
+			env, err := testCelEnv.Extend(cel.VariableDecls(bm.vars...))
 			if err != nil {
-				b.Fatalf("Failed to initialize parser: %v", err)
+				b.Fatalf("env.Extend() failed: %v", err)
 			}
-			parsed, errs := p.Parse(s)
-			if len(errs.GetErrors()) != 0 {
-				b.Fatalf("Parse(%s) failed: %v", bm.expr, errs.GetErrors())
+			checked, iss := env.Compile(bm.expr)
+			if iss.Err() != nil {
+				b.Fatalf("env.Compile(%q) failed: %v", bm.expr, iss.Err())
 			}
-
-			cont := containers.DefaultContainer
-			reg := newTestRegistry(b, types.ProtoTypeDefs(&proto3pb.TestAllTypes{}))
-			attrs := interpreter.NewAttributeFactory(cont, reg, reg)
-			env := newTestEnv(b, cont, reg)
-			if len(bm.vars) > 0 {
-				err = env.AddIdents(bm.vars...)
-				if err != nil {
-					b.Fatalf("Failed to add idents: %v", err)
-				}
-			}
-			checked, errs := checker.Check(parsed, s, env)
-			if len(errs.GetErrors()) != 0 {
-				b.Fatalf("Check(%s) failed: %v", bm.expr, errs.GetErrors())
-			}
-
-			evalCostTracker, err := cost.NewTracker(nil)
+			prg, err := env.Program(checked, cel.CostTracking(nil))
 			if err != nil {
-				b.Fatalf("cost.NewCostTracker() failed: %v", err)
-			}
-			trackerFactory := func() (*cost.Tracker, error) {
-				return evalCostTracker.Clone()
-			}
-			interp := newStandardInterpreter(b, cont, reg, reg, attrs)
-			prg, err := interp.NewInterpretable(checked, interpreter.CostObserver(interpreter.CostTrackerFactory(trackerFactory)))
-			if err != nil {
-				b.Fatalf("NewInterpretable(%s) failed: %v", bm.expr, err)
+				b.Fatalf("env.Program(%s) failed: %v", bm.expr, err)
 			}
 
 			ctx := constructActivation(b, bm.in)
@@ -1362,59 +1349,39 @@ func BenchmarkCostTracking(b *testing.B) {
 	}
 }
 
-func newTestEnv(t testing.TB, cont *containers.Container, reg *types.Registry) *checker.Env {
-	t.Helper()
-	env, err := checker.NewEnv(cont, reg, checker.CrossTypeNumericComparisons(true))
-	if err != nil {
-		t.Fatalf("checker.NewEnv(%v, %v) failed: %v", cont, reg, err)
-	}
-	err = env.AddFunctions(stdlib.Functions()...)
-	if err != nil {
-		t.Fatalf("env.Add(stdlib.Functions()...) failed: %v", err)
-	}
-	return env
+type testConcurrentSizingStrategy struct{}
+
+func (testConcurrentSizingStrategy) EstimateSize(ctx cost.EstimateContext, node cost.AstNode) (cost.SizeEstimate, bool) {
+	return cost.FixedSizeEstimate(10), true
 }
 
-func newTestRegistry(t testing.TB, opts ...types.RegistryOption) *types.Registry {
-	t.Helper()
-	var o []any
-	for _, opt := range opts {
-		o = append(o, opt)
-	}
-	reg, err := types.NewRegistry(o...)
-	if err != nil {
-		t.Fatalf("types.NewRegistry() failed: %v", err)
-	}
-	return reg
+func (testConcurrentSizingStrategy) TrackSize(ctx cost.TrackContext, value ref.Val) (uint64, bool) {
+	return 10, true
 }
 
-func newStandardInterpreter(t testing.TB,
-	container *containers.Container,
-	provider types.Provider,
-	adapter types.Adapter,
-	resolver interpreter.AttributeFactory,
-	optFuncs ...*decls.FunctionDecl) interpreter.Interpreter {
-	t.Helper()
-	disp := interpreter.NewDispatcher()
-	for _, fn := range stdlib.Functions() {
-		bindings, err := fn.Bindings()
-		if err != nil {
-			t.Fatalf("fn.Bindings() failed for function %v. error: %v", fn.Name(), err)
-		}
-		err = disp.Add(bindings...)
-		if err != nil {
-			t.Fatalf("dispatcher.Add() failed: %v", err)
-		}
+func TestTracker_ConcurrentCloneRace(t *testing.T) {
+	tracker, err := cost.NewTracker(nil, cost.TrackerSizingStrategy(testConcurrentSizingStrategy{}))
+	if err != nil {
+		t.Fatalf("NewTracker() failed: %v", err)
 	}
-	for _, fn := range optFuncs {
-		bindings, err := fn.Bindings()
-		if err != nil {
-			t.Fatalf("fn.Bindings() failed for function %v. error: %v", fn.Name(), err)
-		}
-		err = disp.Add(bindings...)
-		if err != nil {
-			t.Fatalf("dispatcher.Add() failed: %v", err)
-		}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			clone, err := tracker.Clone()
+			if err != nil {
+				t.Errorf("tracker.Clone() failed: %v", err)
+				return
+			}
+			clone.CostCall(testCall{function: "startsWith", overloadID: overloads.StartsWithString}, []ref.Val{types.String("hello"), types.String("h")}, types.True)
+			clone.CostCall(testCall{function: "_==_", overloadID: overloads.Equals}, []ref.Val{types.String("a"), types.String("b")}, types.False)
+			clone.CreateList(1, nil)
+			if clone.ActualCost() == 0 {
+				t.Errorf("clone.ActualCost() should be non-zero")
+			}
+		}()
 	}
-	return interpreter.NewInterpreter(disp, container, provider, adapter, resolver)
+	wg.Wait()
 }

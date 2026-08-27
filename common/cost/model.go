@@ -48,6 +48,12 @@ type EstimateContext interface {
 
 	// Size returns the estimated size based on the SizingStrategy configured on the Estimator.
 	Size(node AstNode) SizeEstimate
+
+	// ArgValue returns the literal/constant uint64 value of the argument at index, or defaultVal.
+	ArgValue(index int, defaultVal uint64) uint64
+
+	// TargetValue returns the literal/constant uint64 value of the receiver/target, or defaultVal.
+	TargetValue(defaultVal uint64) uint64
 }
 
 // TrackContext provides value size and argument evaluation during runtime cost tracking.
@@ -68,6 +74,12 @@ type TrackContext interface {
 
 	// Size returns the actual runtime size of a value.
 	Size(value ref.Val) uint64
+
+	// ArgValue returns the uint64 value of the argument at index, or defaultVal.
+	ArgValue(index int, defaultVal uint64) uint64
+
+	// TargetValue returns the uint64 value of the receiver/target, or defaultVal.
+	TargetValue(defaultVal uint64) uint64
 }
 
 // QuantityExpr represents a computable size or cost equation.
@@ -145,6 +157,28 @@ func ArgKey(index int) QuantityExpr {
 	return KeyOf(Arg(index))
 }
 
+// intArgExpr represents the integer value of an argument.
+type intArgExpr struct {
+	index      int
+	defaultVal uint64
+}
+
+func (a intArgExpr) estimate(ctx EstimateContext) SizeEstimate {
+	return FixedSizeEstimate(ctx.ArgValue(a.index, a.defaultVal))
+}
+
+func (a intArgExpr) track(ctx TrackContext) uint64 {
+	return ctx.ArgValue(a.index, a.defaultVal)
+}
+
+func (intArgExpr) hasTarget() bool { return false }
+
+// IntArg creates an expression referencing the integer value of the argument at the given index,
+// falling back to defaultVal if the argument is not a non-negative integer.
+func IntArg(index int, defaultVal uint64) QuantityExpr {
+	return intArgExpr{index: index, defaultVal: defaultVal}
+}
+
 // targetExpr represents the size of the receiver/target object.
 type targetExpr struct{}
 
@@ -200,6 +234,27 @@ func ElemOf(expr QuantityExpr) QuantityExpr {
 // TargetKey creates an expression referencing the key size of the receiver / target object.
 func TargetKey() QuantityExpr {
 	return KeyOf(Target())
+}
+
+// intTargetExpr represents the integer value of the receiver/target object.
+type intTargetExpr struct {
+	defaultVal uint64
+}
+
+func (t intTargetExpr) estimate(ctx EstimateContext) SizeEstimate {
+	return FixedSizeEstimate(ctx.TargetValue(t.defaultVal))
+}
+
+func (t intTargetExpr) track(ctx TrackContext) uint64 {
+	return ctx.TargetValue(t.defaultVal)
+}
+
+func (intTargetExpr) hasTarget() bool { return true }
+
+// IntTarget creates an expression referencing the integer value of the receiver/target object,
+// falling back to defaultVal if the target is not a non-negative integer.
+func IntTarget(defaultVal uint64) QuantityExpr {
+	return intTargetExpr{defaultVal: defaultVal}
 }
 
 // keyExpr represents the key size of another quantity expression.
@@ -280,6 +335,30 @@ func (a addExpr) hasTarget() bool {
 // Sum creates an expression representing the sum of the given terms.
 func Sum(terms ...QuantityExpr) QuantityExpr {
 	return addExpr{terms: terms}
+}
+
+// subExpr represents the subtraction of two quantity expressions.
+type subExpr struct {
+	lhs, rhs QuantityExpr
+}
+
+func (s subExpr) estimate(ctx EstimateContext) SizeEstimate {
+	lhsVal := s.lhs.estimate(ctx)
+	rhsVal := s.rhs.estimate(ctx)
+	return lhsVal.Subtract(rhsVal)
+}
+
+func (s subExpr) track(ctx TrackContext) uint64 {
+	return SafeSubtract(s.lhs.track(ctx), s.rhs.track(ctx))
+}
+
+func (s subExpr) hasTarget() bool {
+	return hasTarget(s.lhs) || hasTarget(s.rhs)
+}
+
+// Sub creates an expression representing lhs - rhs, saturated at zero.
+func Sub(lhs, rhs QuantityExpr) QuantityExpr {
+	return subExpr{lhs: lhs, rhs: rhs}
 }
 
 // mulExpr represents the product of multiple quantity expressions.
@@ -586,6 +665,50 @@ func AtMost(maxExpr QuantityExpr) QuantityExpr {
 	return Ranged(Const(0), maxExpr)
 }
 
+// atLeastOneExpr represents a quantity guaranteed to be at least 1.
+type atLeastOneExpr struct {
+	expr QuantityExpr
+}
+
+func (a atLeastOneExpr) estimate(ctx EstimateContext) SizeEstimate {
+	return AtLeastOneSize(a.expr.estimate(ctx))
+}
+
+func (a atLeastOneExpr) track(ctx TrackContext) uint64 {
+	val := a.expr.track(ctx)
+	if val == 0 {
+		return 1
+	}
+	return val
+}
+
+func (a atLeastOneExpr) hasTarget() bool {
+	return hasTarget(a.expr)
+}
+
+// AtLeastOneQuantity creates an expression ensuring the quantity is at least 1.
+func AtLeastOneQuantity(expr QuantityExpr) QuantityExpr {
+	return atLeastOneExpr{expr: expr}
+}
+
+// StringScan creates an expression representing the cost of scanning a string.
+func StringScan(expr QuantityExpr) QuantityExpr {
+	return Scale(expr, StringTraversalCostFactor)
+}
+
+// ListAlloc creates an expression representing list allocation cost with base cost and scaled element count.
+func ListAlloc(elemCount QuantityExpr, costFactor float64) QuantityExpr {
+	return Sum(Const(ListCreateBaseCost), Scale(elemCount, costFactor))
+}
+
+// Traversal creates an expression representing the traversal and optional allocation cost over an expression.
+func Traversal(expr QuantityExpr, costFactor float64, allocCost uint64) QuantityExpr {
+	if allocCost == 0 {
+		return Scale(expr, costFactor)
+	}
+	return Sum(Const(allocCost), Scale(expr, costFactor))
+}
+
 // listExpr represents a list size estimate composed of length and element size expressions.
 type listExpr struct {
 	lenExpr  QuantityExpr
@@ -690,11 +813,14 @@ func (m OverloadModel) hasTarget() bool {
 
 // FunctionEstimator returns a FunctionEstimator implementing the cost model.
 func (m OverloadModel) FunctionEstimator() FunctionEstimator {
-	return m.FunctionEstimatorWithOptions(nil)
+	return m.FunctionEstimatorWithOptions(DefaultSizingStrategy())
 }
 
 // FunctionEstimatorWithOptions returns a FunctionEstimator implementing the cost model with an optional SizingStrategy.
 func (m OverloadModel) FunctionEstimatorWithOptions(strategy SizingStrategy) FunctionEstimator {
+	if strategy == nil {
+		strategy = DefaultSizingStrategy()
+	}
 	hasTarget := m.hasTarget()
 	return func(estimator Estimator, target *AstNode, args []AstNode) *CallEstimate {
 		if hasTarget && target == nil {
@@ -719,11 +845,14 @@ func (m OverloadModel) FunctionEstimatorWithOptions(strategy SizingStrategy) Fun
 
 // FunctionTracker returns a FunctionTracker implementing the cost model.
 func (m OverloadModel) FunctionTracker() FunctionTracker {
-	return m.FunctionTrackerWithOptions(nil)
+	return m.FunctionTrackerWithOptions(DefaultSizingStrategy())
 }
 
 // FunctionTrackerWithOptions returns a FunctionTracker implementing the cost model with an optional SizingStrategy.
 func (m OverloadModel) FunctionTrackerWithOptions(strategy SizingStrategy) FunctionTracker {
+	if strategy == nil {
+		strategy = DefaultSizingStrategy()
+	}
 	isMember := m.hasTarget()
 	return func(args []ref.Val, result ref.Val) *uint64 {
 		ctx := &trackerEvalContext{
@@ -809,6 +938,22 @@ func (e *estimatorEvalContext) ArgType(index int) (*types.Type, bool) {
 	return nil, false
 }
 
+// ArgValue returns the uint64 value of the argument at index, or defaultVal if not a literal int/uint.
+func (e *estimatorEvalContext) ArgValue(index int, defaultVal uint64) uint64 {
+	if index < len(e.args) && e.args[index] != nil {
+		return NodeAsUintValue(e.args[index], defaultVal)
+	}
+	return defaultVal
+}
+
+// TargetValue returns the uint64 value of the receiver/target, or defaultVal if not a literal int/uint.
+func (e *estimatorEvalContext) TargetValue(defaultVal uint64) uint64 {
+	if e.target != nil && (*e.target) != nil {
+		return NodeAsUintValue(*e.target, defaultVal)
+	}
+	return defaultVal
+}
+
 // trackerEvalContext provides evaluation context for runtime cost tracking.
 type trackerEvalContext struct {
 	estimator ActualCostEstimator
@@ -816,6 +961,44 @@ type trackerEvalContext struct {
 	args      []ref.Val
 	result    ref.Val
 	isMember  bool
+}
+
+// valueAsUint returns the non-negative uint64 value of ref.Val (int or uint), or defaultVal.
+func valueAsUint(val ref.Val, defaultVal uint64) uint64 {
+	if val == nil {
+		return defaultVal
+	}
+	switch v := val.(type) {
+	case types.Int:
+		if v < 0 {
+			return 0
+		}
+		return uint64(v)
+	case types.Uint:
+		return uint64(v)
+	default:
+		return defaultVal
+	}
+}
+
+// ArgValue returns the uint64 value of the argument at index, or defaultVal.
+func (t *trackerEvalContext) ArgValue(index int, defaultVal uint64) uint64 {
+	idx := index
+	if t.isMember {
+		idx = index + 1
+	}
+	if idx < len(t.args) {
+		return valueAsUint(t.args[idx], defaultVal)
+	}
+	return defaultVal
+}
+
+// TargetValue returns the uint64 value of the receiver/target object, or defaultVal.
+func (t *trackerEvalContext) TargetValue(defaultVal uint64) uint64 {
+	if t.isMember && len(t.args) > 0 {
+		return valueAsUint(t.args[0], defaultVal)
+	}
+	return defaultVal
 }
 
 // TargetType returns the type of the receiver/target object.
