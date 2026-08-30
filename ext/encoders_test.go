@@ -549,6 +549,38 @@ func TestEncodersCosts(t *testing.T) {
 			actualCost:    math.MaxUint64,
 			version:       1,
 		},
+		{
+			name: "json_parse_string",
+			expr: "json.parse(x) == optional.of('hello')",
+			vars: []cel.EnvOption{
+				cel.Variable("x", cel.StringType),
+			},
+			in: map[string]any{
+				"x": "\"hello\"",
+			},
+			hints: map[string]uint64{
+				"x": 100,
+			},
+			estimatedCost: checker.CostEstimate{Min: 3, Max: math.MaxUint64},
+			actualCost:    math.MaxUint64,
+			version:       1,
+		},
+		{
+			name: "json_parse_string_type",
+			expr: "json.parse(x, string) == optional.of('hello')",
+			vars: []cel.EnvOption{
+				cel.Variable("x", cel.StringType),
+			},
+			in: map[string]any{
+				"x": "\"hello\"",
+			},
+			hints: map[string]uint64{
+				"x": 100,
+			},
+			estimatedCost: checker.CostEstimate{Min: 4, Max: math.MaxUint64},
+			actualCost:    math.MaxUint64,
+			version:       1,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
