@@ -74,6 +74,7 @@ go_test(
     ],
     deps = [
         "//cel:go_default_library",
+        "//checker:go_default_library",
         "//common:go_default_library",
         "//common/env:go_default_library",
         "//common/types:go_default_library",
