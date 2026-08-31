@@ -104,6 +104,48 @@ Examples:
     json.encode([1, 'two', true])             // return '[1,"two",true]'
     json.encode({'items': [1, 'two', false]}) // return '{"items":[1,"two",false]}'
 
+### JSON.Parse
+
+Introduced at version: 1
+
+Parses a JSON string to a CEL value or a specific type.
+
+    json.parse(<string>) -> <optional_type(dyn)>
+    json.parse(<string>, <type(T)>) -> <optional_type(T)>
+
+Examples:
+
+    json.parse('{"hello":"world"}') // return optional.of({'hello': 'world'})
+    json.parse('123', int)          // return optional.of(123)
+
+### YAML.Encode
+
+Introduced at version: 1
+
+Encodes a CEL value to a YAML string.
+
+    yaml.encode(<dyn>) -> <string>
+
+Examples:
+
+    yaml.encode('hello')                      // return "hello\n"
+    yaml.encode([1, 'two', true])             // return "- 1\n- two\n- true\n"
+    yaml.encode({'items': [1, 'two', false]}) // return "items:\n  - 1\n  - two\n  - false\n"
+
+### YAML.Parse
+
+Introduced at version: 1
+
+Parses a YAML string to a CEL value or a specific type.
+
+    yaml.parse(<string>) -> <optional_type(dyn)>
+    yaml.parse(<string>, <type(T)>) -> <optional_type(T)>
+
+Examples:
+
+    yaml.parse('hello: world') // return optional.of({'hello': 'world'})
+    yaml.parse('123', int)     // return optional.of(123)
+
 ## Math
 
 Math helper macros and functions.

@@ -269,6 +269,95 @@ func TestEncoders(t *testing.T) {
 		{expr: `json.parse('{"a": 1}', type([1])) == optional.none()`},
 		{expr: `json.parse('123', type({'': 1})) == optional.none()`},
 		{expr: `json.parse('[1, 2]', type({'': 1})) == optional.none()`},
+		// YAML Encode Positive & Edge Cases
+		{expr: "yaml.encode('hello') == 'hello\\n'"},
+		{expr: "yaml.encode(123) == '123\\n'"},
+		{expr: "yaml.encode(-42) == '-42\\n'"},
+		{expr: "yaml.encode(0) == '0\\n'"},
+		{expr: "yaml.encode(true) == 'true\\n'"},
+		{expr: "yaml.encode(false) == 'false\\n'"},
+		{expr: "yaml.encode(null) == 'null\\n'"},
+		{expr: "yaml.encode([]) == '[]\\n'"},
+		{expr: "yaml.encode({}) == '{}\\n'"},
+		{expr: "yaml.parse(yaml.encode([1, 'two', true])) == optional.of([1, 'two', true])"},
+		{expr: "yaml.parse(yaml.encode({'items': [1, 'two', false]})) == optional.of({'items': [1, 'two', false]})"},
+		{expr: "yaml.parse(yaml.encode({'a': 1, 'b': 2})) == optional.of({'a': 1, 'b': 2})"},
+		{expr: `yaml.parse(yaml.encode('hello\nworld\t"')) == optional.of("hello\nworld\t\"")`},
+		// YAML Parse Dynamic Positive & Edge Cases
+		{expr: `yaml.parse('hello') == optional.of('hello')`},
+		{expr: `yaml.parse('"hello"') == optional.of('hello')`},
+		{expr: `yaml.parse('123') == optional.of(123)`},
+		{expr: `yaml.parse('-42') == optional.of(-42)`},
+		{expr: `yaml.parse('0') == optional.of(0)`},
+		{expr: `yaml.parse('123.5') == optional.of(123.5)`},
+		{expr: `yaml.parse('-3.14') == optional.of(-3.14)`},
+		{expr: `yaml.parse('1e2') == optional.of(100.0)`},
+		{expr: `yaml.parse('1.25e2') == optional.of(125.0)`},
+		{expr: `yaml.parse('true') == optional.of(true)`},
+		{expr: `yaml.parse('false') == optional.of(false)`},
+		{expr: `yaml.parse('null') == optional.of(null)`},
+		{expr: `yaml.parse('~') == optional.of(null)`},
+		{expr: `yaml.parse('[]') == optional.of([])`},
+		{expr: `yaml.parse('{}') == optional.of({})`},
+		{expr: "yaml.parse('- 1\\n- two\\n- true') == optional.of([1, 'two', true])"},
+		{expr: "yaml.parse('items:\\n  - 1\\n  - two\\n  - false') == optional.of({'items': [1, 'two', false]})"},
+		{expr: "yaml.parse('a: 1\\nb: 2') == optional.of({'a': 1, 'b': 2})"},
+		{expr: `yaml.parse('{"a": 1, "b": 2}') == optional.of({'a': 1, 'b': 2})`},
+		{expr: "yaml.parse('  \\n a: 1 \\r\\n ') == optional.of({'a': 1})"},
+		{expr: "yaml.parse('    42 \\n ') == optional.of(42)"},
+		// YAML Parse Typed Positive & Edge Cases
+		{expr: `yaml.parse('123', int) == optional.of(123)`},
+		{expr: `yaml.parse('-100', int) == optional.of(-100)`},
+		{expr: `yaml.parse('0', int) == optional.of(0)`},
+		{expr: `yaml.parse('9223372036854775807', int) == optional.of(9223372036854775807)`},
+		{expr: `yaml.parse('-9223372036854775808', int) == optional.of(-9223372036854775808)`},
+		{expr: `yaml.parse('123', uint) == optional.of(123u)`},
+		{expr: `yaml.parse('0', uint) == optional.of(0u)`},
+		{expr: `yaml.parse('18446744073709551615', uint) == optional.of(18446744073709551615u)`},
+		{expr: `yaml.parse('1.5', double) == optional.of(1.5)`},
+		{expr: `yaml.parse('-2.5', double) == optional.of(-2.5)`},
+		{expr: `yaml.parse('42', double) == optional.of(42.0)`},
+		{expr: `yaml.parse('true', bool) == optional.of(true)`},
+		{expr: `yaml.parse('false', bool) == optional.of(false)`},
+		{expr: `yaml.parse('hello', string) == optional.of('hello')`},
+		{expr: `yaml.parse('""', string) == optional.of('')`},
+		{expr: `yaml.parse('"aGVsbG8="', bytes) == optional.of(b'hello')`},
+		{expr: `yaml.parse('null', null_type) == optional.of(null)`},
+		{expr: `yaml.parse('~', null_type) == optional.of(null)`},
+		{expr: `yaml.parse('"2023-01-01T00:00:00Z"', type(timestamp('2023-01-01T00:00:00Z'))) == optional.of(timestamp('2023-01-01T00:00:00Z'))`},
+		{expr: `yaml.parse('2023-01-01T00:00:00Z', type(timestamp('2023-01-01T00:00:00Z'))) == optional.of(timestamp('2023-01-01T00:00:00Z'))`},
+		{expr: `yaml.parse('"5s"', type(duration('5s'))) == optional.of(duration('5s'))`},
+		{expr: `yaml.parse('5s', type(duration('5s'))) == optional.of(duration('5s'))`},
+		{expr: "yaml.parse('- 1\\n- 2\\n- 3', type([1])) == optional.of([1, 2, 3])"},
+		{expr: "yaml.parse('a: 1\\nb: 2', type({'': 1})) == optional.of({'a': 1, 'b': 2})"},
+		// YAML Parse Negative Cases
+		{expr: `yaml.parse(': invalid') == optional.none()`},
+		{expr: `yaml.parse('[1, 2') == optional.none()`},
+		{expr: `yaml.parse('') == optional.none()`},
+		{expr: `yaml.parse('   ') == optional.none()`},
+		{expr: "yaml.parse('doc1\\n---\\ndoc2') == optional.none()"},
+		{expr: `yaml.parse('"not_an_int"', int) == optional.none()`},
+		{expr: `yaml.parse('1.5', int) == optional.none()`},
+		{expr: `yaml.parse('"123"', int) == optional.none()`},
+		{expr: `yaml.parse('true', int) == optional.none()`},
+		{expr: `yaml.parse('null', int) == optional.none()`},
+		{expr: "yaml.parse('a: 1', int) == optional.none()"},
+		{expr: `yaml.parse('-1', uint) == optional.none()`},
+		{expr: `yaml.parse('1.5', uint) == optional.none()`},
+		{expr: `yaml.parse('null', uint) == optional.none()`},
+		{expr: `yaml.parse('"1.5"', double) == optional.none()`},
+		{expr: `yaml.parse('123', bool) == optional.none()`},
+		{expr: `yaml.parse('null', bool) == optional.none()`},
+		{expr: `yaml.parse('123', string) == optional.none()`},
+		{expr: `yaml.parse('true', string) == optional.none()`},
+		{expr: `yaml.parse('null', string) == optional.none()`},
+		{expr: `yaml.parse('123', bytes) == optional.none()`},
+		{expr: `yaml.parse('"not valid base64 %%%"', bytes) == optional.none()`},
+		{expr: `yaml.parse('123', null_type) == optional.none()`},
+		{expr: `yaml.parse('123', type([1])) == optional.none()`},
+		{expr: "yaml.parse('a: 1', type([1])) == optional.none()"},
+		{expr: `yaml.parse('123', type({'': 1})) == optional.none()`},
+		{expr: "yaml.parse('- 1\\n- 2', type({'': 1})) == optional.none()"},
 	}
 
 	env, err := cel.NewEnv(Encoders())
@@ -332,6 +421,12 @@ func TestEncodersVersion(t *testing.T) {
 	if _, iss := env.Compile("json.parse('\"hello\"')"); iss.Err() == nil {
 		t.Fatal("json.parse() got no error, wanted version-gated function to be unavailable")
 	}
+	if _, iss := env.Compile("yaml.encode('hello')"); iss.Err() == nil {
+		t.Fatal("yaml.encode() got no error, wanted version-gated function to be unavailable")
+	}
+	if _, iss := env.Compile("yaml.parse('hello')"); iss.Err() == nil {
+		t.Fatal("yaml.parse() got no error, wanted version-gated function to be unavailable")
+	}
 
 	env, err = cel.NewEnv(Encoders(EncodersVersion(1)))
 	if err != nil {
@@ -359,6 +454,15 @@ func TestEncodersVersion(t *testing.T) {
 	}
 	if _, iss := env.Compile("json.parse('123', int)"); iss.Err() != nil {
 		t.Fatalf("json.parse(str, int) got %v, wanted no error", iss.Err())
+	}
+	if _, iss := env.Compile("yaml.encode('hello')"); iss.Err() != nil {
+		t.Fatalf("yaml.encode() got %v, wanted no error", iss.Err())
+	}
+	if _, iss := env.Compile("yaml.parse('hello')"); iss.Err() != nil {
+		t.Fatalf("yaml.parse() got %v, wanted no error", iss.Err())
+	}
+	if _, iss := env.Compile("yaml.parse('123', int)"); iss.Err() != nil {
+		t.Fatalf("yaml.parse(str, int) got %v, wanted no error", iss.Err())
 	}
 }
 
@@ -581,6 +685,54 @@ func TestEncodersCosts(t *testing.T) {
 			actualCost:    math.MaxUint64,
 			version:       1,
 		},
+		{
+			name: "yaml_encode_dyn",
+			expr: "yaml.encode(x) == 'hello\\n'",
+			vars: []cel.EnvOption{
+				cel.Variable("x", cel.DynType),
+			},
+			in: map[string]any{
+				"x": "hello",
+			},
+			hints: map[string]uint64{
+				"x": 100,
+			},
+			estimatedCost: checker.CostEstimate{Min: 2, Max: math.MaxUint64},
+			actualCost:    math.MaxUint64,
+			version:       1,
+		},
+		{
+			name: "yaml_parse_string",
+			expr: "yaml.parse(x) == optional.of('hello')",
+			vars: []cel.EnvOption{
+				cel.Variable("x", cel.StringType),
+			},
+			in: map[string]any{
+				"x": "hello",
+			},
+			hints: map[string]uint64{
+				"x": 100,
+			},
+			estimatedCost: checker.CostEstimate{Min: 3, Max: math.MaxUint64},
+			actualCost:    math.MaxUint64,
+			version:       1,
+		},
+		{
+			name: "yaml_parse_string_type",
+			expr: "yaml.parse(x, string) == optional.of('hello')",
+			vars: []cel.EnvOption{
+				cel.Variable("x", cel.StringType),
+			},
+			in: map[string]any{
+				"x": "hello",
+			},
+			hints: map[string]uint64{
+				"x": 100,
+			},
+			estimatedCost: checker.CostEstimate{Min: 4, Max: math.MaxUint64},
+			actualCost:    math.MaxUint64,
+			version:       1,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -728,10 +880,175 @@ func TestJSONParseCostUnbounded(t *testing.T) {
 	}
 }
 
+func TestYAMLEncodeCostUnbounded(t *testing.T) {
+	env, err := cel.NewEnv(Encoders(EncodersVersion(1)))
+	if err != nil {
+		t.Fatalf("cel.NewEnv() failed: %v", err)
+	}
+	ast, iss := env.Compile("yaml.encode('hello')")
+	if iss.Err() != nil {
+		t.Fatalf("env.Compile() failed: %v", iss.Err())
+	}
+
+	// 1. Check Cost Estimate is unbounded: Max is MaxUint64
+	est, err := env.EstimateCost(ast, testCostHintEstimator{})
+	if err != nil {
+		t.Fatalf("env.EstimateCost() failed: %v", err)
+	}
+	wantEst := checker.CostEstimate{Min: 0, Max: math.MaxUint64}
+	if est != wantEst {
+		t.Errorf("env.EstimateCost() got %v, wanted %v", est, wantEst)
+	}
+
+	// 2. Check Actual Cost is math.MaxUint64
+	prg, err := env.Program(ast, cel.CostTracking(nil))
+	if err != nil {
+		t.Fatalf("env.Program() failed: %v", err)
+	}
+	_, det, err := prg.Eval(cel.NoVars())
+	if err != nil {
+		t.Fatalf("prg.Eval() failed: %v", err)
+	}
+	if det.ActualCost() == nil {
+		t.Fatal("det.ActualCost() got nil, wanted a value")
+	}
+	if *det.ActualCost() != math.MaxUint64 {
+		t.Errorf("det.ActualCost() got %d, wanted %d", *det.ActualCost(), uint64(math.MaxUint64))
+	}
+}
+
+func TestYAMLParseCostUnbounded(t *testing.T) {
+	env, err := cel.NewEnv(Encoders(EncodersVersion(1)))
+	if err != nil {
+		t.Fatalf("cel.NewEnv() failed: %v", err)
+	}
+	ast, iss := env.Compile("yaml.parse('hello')")
+	if iss.Err() != nil {
+		t.Fatalf("env.Compile() failed: %v", iss.Err())
+	}
+
+	// 1. Check Cost Estimate is unbounded: Max is MaxUint64
+	est, err := env.EstimateCost(ast, testCostHintEstimator{})
+	if err != nil {
+		t.Fatalf("env.EstimateCost() failed: %v", err)
+	}
+	wantEst := checker.CostEstimate{Min: 0, Max: math.MaxUint64}
+	if est != wantEst {
+		t.Errorf("env.EstimateCost() got %v, wanted %v", est, wantEst)
+	}
+
+	// 2. Check Actual Cost is math.MaxUint64
+	prg, err := env.Program(ast, cel.CostTracking(nil))
+	if err != nil {
+		t.Fatalf("env.Program() failed: %v", err)
+	}
+	_, det, err := prg.Eval(cel.NoVars())
+	if err != nil {
+		t.Fatalf("prg.Eval() failed: %v", err)
+	}
+	if det.ActualCost() == nil {
+		t.Fatal("det.ActualCost() got nil, wanted a value")
+	}
+	if *det.ActualCost() != math.MaxUint64 {
+		t.Errorf("det.ActualCost() got %d, wanted %d", *det.ActualCost(), uint64(math.MaxUint64))
+	}
+}
+
+func TestYAMLParseLimits(t *testing.T) {
+	env, err := cel.NewEnv(
+		Encoders(),
+		cel.Variable("largeYaml", cel.StringType),
+	)
+	if err != nil {
+		t.Fatalf("cel.NewEnv() failed: %v", err)
+	}
+	ast, iss := env.Compile("yaml.parse(largeYaml)")
+	if iss.Err() != nil {
+		t.Fatalf("env.Compile() failed: %v", iss.Err())
+	}
+	prg, err := env.Program(ast)
+	if err != nil {
+		t.Fatalf("env.Program() failed: %v", err)
+	}
+	largeStr := strings.Repeat("a", maxYAMLSize+1)
+	_, _, err = prg.Eval(map[string]any{
+		"largeYaml": largeStr,
+	})
+	if err == nil {
+		t.Fatal("expected size limit error, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum allowed limit") {
+		t.Errorf("expected exceeds limit error, got: %v", err)
+	}
+}
+
 type testNativeUser struct {
 	Username string `json:"user_name" cel:"username"`
 	Age      int    `json:"age,omitempty" cel:"age"`
 	Secret   string `json:"-" cel:"secret"`
+}
+
+func TestYAMLParseNativeTypes(t *testing.T) {
+	nativeType, err := types.NewNativeType(reflect.TypeFor[testNativeUser](), types.ParseStructTag("cel"))
+	if err != nil {
+		t.Fatalf("types.NewNativeType failed: %v", err)
+	}
+	env, err := cel.NewEnv(
+		Encoders(),
+		cel.Types(nativeType),
+		cel.Variable("userYaml", cel.StringType),
+	)
+	if err != nil {
+		t.Fatalf("cel.NewEnv failed: %v", err)
+	}
+	tests := []struct {
+		expr string
+		vars map[string]any
+	}{
+		{
+			expr: "yaml.parse(userYaml, ext.testNativeUser).value().username == 'Alice' && yaml.parse(userYaml, ext.testNativeUser).value().age == 25",
+			vars: map[string]any{
+				"userYaml": "user_name: Alice\nage: 25\nsecret: supersecret",
+			},
+		},
+		{
+			expr: "yaml.parse(userYaml, ext.testNativeUser).value().secret == ''",
+			vars: map[string]any{
+				"userYaml": "user_name: Alice\nage: 25\nsecret: supersecret",
+			},
+		},
+		{
+			expr: "yaml.parse(yaml.encode(yaml.parse(userYaml, ext.testNativeUser).value()), ext.testNativeUser).value().username == 'Alice' && yaml.parse(yaml.encode(yaml.parse(userYaml, ext.testNativeUser).value()), ext.testNativeUser).value().age == 25",
+			vars: map[string]any{
+				"userYaml": "user_name: Alice\nage: 25\nsecret: supersecret",
+			},
+		},
+		{
+			expr: "yaml.encode(yaml.parse(userYaml, ext.testNativeUser).value()) == 'user_name: Alice\\n'",
+			vars: map[string]any{
+				"userYaml": "user_name: Alice",
+			},
+		},
+	}
+	for i, tc := range tests {
+		t.Run(fmt.Sprintf("[%d]", i), func(t *testing.T) {
+			ast, iss := env.Compile(tc.expr)
+			if iss.Err() != nil {
+				t.Fatalf("env.Compile(%q) failed: %v", tc.expr, iss.Err())
+			}
+			prg, err := env.Program(ast)
+			if err != nil {
+				t.Fatalf("env.Program() failed: %v", err)
+			}
+			out, _, err := prg.Eval(tc.vars)
+			if err != nil {
+				t.Fatalf("prg.Eval() failed: %v", err)
+			}
+			if out.Value() != true {
+				t.Errorf("got %v, wanted true for expr: %s", out.Value(), tc.expr)
+			}
+		})
+	}
 }
 
 func TestJSONParseNativeTypes(t *testing.T) {
@@ -913,6 +1230,91 @@ func TestJSONParseProtobufTypes(t *testing.T) {
 	}
 }
 
+func TestYAMLParseProtobufTypes(t *testing.T) {
+	envProto3, err := cel.NewEnv(
+		Encoders(),
+		cel.Container("google.expr.proto3.test"),
+		cel.Types(
+			&structpb.Struct{},
+			&structpb.ListValue{},
+			&proto3pb.TestAllTypes{},
+		),
+	)
+	if err != nil {
+		t.Fatalf("cel.NewEnv failed: %v", err)
+	}
+
+	proto3Tests := []string{
+		`yaml.parse('k: v', type(google.protobuf.Struct{})).hasValue()`,
+		`yaml.parse('hello: world', type(google.protobuf.Struct{})).value().hello == 'world'`,
+		`yaml.parse('- 1\n- two', type(google.protobuf.ListValue{})).value()[0] == 1`,
+		`yaml.parse('- 1\n- two', type(google.protobuf.ListValue{})).value()[1] == 'two'`,
+		`yaml.parse('invalid: :', type(google.protobuf.Struct{})) == optional.none()`,
+		`yaml.parse('single_int32: 42\nsingle_string: cel', TestAllTypes).value().single_int32 == 42`,
+		`yaml.parse('single_int32: 42\nsingle_string: cel', TestAllTypes).value().single_string == 'cel'`,
+		`yaml.parse('single_int32: 42\nsingle_string: cel', TestAllTypes).value() == TestAllTypes{single_int32: 42, single_string: 'cel'}`,
+		`yaml.parse('invalid: :', TestAllTypes) == optional.none()`,
+		`yaml.parse(yaml.encode(TestAllTypes{single_int32: 42, single_string: 'cel'}), TestAllTypes).value() == TestAllTypes{single_int32: 42, single_string: 'cel'}`,
+	}
+	for i, expr := range proto3Tests {
+		t.Run(fmt.Sprintf("proto3[%d]", i), func(t *testing.T) {
+			ast, iss := envProto3.Compile(expr)
+			if iss.Err() != nil {
+				t.Fatalf("env.Compile(%q) failed: %v", expr, iss.Err())
+			}
+			prg, err := envProto3.Program(ast)
+			if err != nil {
+				t.Fatalf("env.Program() failed: %v", err)
+			}
+			out, _, err := prg.Eval(cel.NoVars())
+			if err != nil {
+				t.Fatalf("prg.Eval() failed: %v", err)
+			}
+			if out.Value() != true {
+				t.Errorf("got %v, wanted true for expr: %s", out.Value(), expr)
+			}
+		})
+	}
+
+	envProto2, err := cel.NewEnv(
+		Encoders(),
+		cel.Container("google.expr.proto2.test"),
+		cel.Types(
+			&proto2pb.TestAllTypes{},
+		),
+	)
+	if err != nil {
+		t.Fatalf("cel.NewEnv failed: %v", err)
+	}
+
+	proto2Tests := []string{
+		`yaml.parse('single_int32: 42\nsingle_string: cel', TestAllTypes).value().single_int32 == 42`,
+		`yaml.parse('single_int32: 42\nsingle_string: cel', TestAllTypes).value().single_string == 'cel'`,
+		`yaml.parse('single_int32: 42\nsingle_string: cel', TestAllTypes).value() == TestAllTypes{single_int32: 42, single_string: 'cel'}`,
+		`yaml.parse('invalid: :', TestAllTypes) == optional.none()`,
+		`yaml.parse(yaml.encode(TestAllTypes{single_int32: 42, single_string: 'cel'}), TestAllTypes).value() == TestAllTypes{single_int32: 42, single_string: 'cel'}`,
+	}
+	for i, expr := range proto2Tests {
+		t.Run(fmt.Sprintf("proto2[%d]", i), func(t *testing.T) {
+			ast, iss := envProto2.Compile(expr)
+			if iss.Err() != nil {
+				t.Fatalf("env.Compile(%q) failed: %v", expr, iss.Err())
+			}
+			prg, err := envProto2.Program(ast)
+			if err != nil {
+				t.Fatalf("env.Program() failed: %v", err)
+			}
+			out, _, err := prg.Eval(cel.NoVars())
+			if err != nil {
+				t.Fatalf("prg.Eval() failed: %v", err)
+			}
+			if out.Value() != true {
+				t.Errorf("got %v, wanted true for expr: %s", out.Value(), expr)
+			}
+		})
+	}
+}
+
 func TestEncodersRoundtrip(t *testing.T) {
 	nativeType, err := types.NewNativeType(reflect.TypeFor[testNativeUser](), types.ParseStructTag("cel"))
 	if err != nil {
@@ -975,6 +1377,20 @@ func TestEncodersRoundtrip(t *testing.T) {
 		{name: "proto_repeated_roundtrip", expr: `json.parse(json.encode(TestAllTypes{repeated_int32: [1, 2, 3]}), TestAllTypes).value().repeated_int32 == [1, 2, 3]`},
 		{name: "proto_map_roundtrip", expr: `json.parse(json.encode(TestAllTypes{map_string_string: {'k': 'v'}}), TestAllTypes).value().map_string_string['k'] == 'v'`},
 		{name: "proto_structpb_roundtrip", expr: `json.parse(json.encode(TestAllTypes{single_struct: {'hello': 'world'}}), TestAllTypes).value().single_struct['hello'] == 'world'`},
+		{name: "yaml_string_simple", expr: `yaml.parse(yaml.encode('hello world')) == optional.of('hello world')`},
+		{name: "yaml_string_escapes", expr: `yaml.parse(yaml.encode("hello\n\t\"\\world")) == optional.of("hello\n\t\"\\world")`},
+		{name: "yaml_int_pos", expr: `yaml.parse(yaml.encode(42)) == optional.of(42)`},
+		{name: "yaml_int_neg", expr: `yaml.parse(yaml.encode(-42)) == optional.of(-42)`},
+		{name: "yaml_double_pos", expr: `yaml.parse(yaml.encode(1.5), double) == optional.of(1.5)`},
+		{name: "yaml_bool_true", expr: `yaml.parse(yaml.encode(true)) == optional.of(true)`},
+		{name: "yaml_null_val", expr: `yaml.parse(yaml.encode(null)) == optional.of(null)`},
+		{name: "yaml_bytes_val", expr: `yaml.parse(yaml.encode(b'hello'), bytes) == optional.of(b'hello')`},
+		{name: "yaml_timestamp_val", expr: `yaml.parse(yaml.encode(timestamp('2023-01-01T00:00:00Z')), type(timestamp('2023-01-01T00:00:00Z'))) == optional.of(timestamp('2023-01-01T00:00:00Z'))`},
+		{name: "yaml_duration_val", expr: `yaml.parse(yaml.encode(duration('5s')), type(duration('5s'))) == optional.of(duration('5s'))`},
+		{name: "yaml_list_primitives", expr: `yaml.parse(yaml.encode([1, 2, 3])) == optional.of([1, 2, 3])`},
+		{name: "yaml_map_nested", expr: `yaml.parse(yaml.encode({'items': [1, {'nested': true}], 'count': 42})) == optional.of({'items': [1, {'nested': true}], 'count': 42})`},
+		{name: "yaml_proto_roundtrip", expr: `yaml.parse(yaml.encode(TestAllTypes{single_int32: 42, single_string: 'cel'}), TestAllTypes).value().single_int32 == 42`},
+		{name: "yaml_native_roundtrip", expr: `yaml.parse(yaml.encode(ext.testNativeUser{username: 'Alice', age: 25}), ext.testNativeUser).value().username == 'Alice'`},
 	}
 
 	for _, tc := range tests {
@@ -1684,6 +2100,32 @@ func TestEncodersEstimatorsAndEdgeCases(t *testing.T) {
 	}
 	if _, err := JSONParseWithType(nil, nil, `123`, types.NewMapType(types.StringType, types.NewObjectType("google.expr.proto3.test.TestAllTypes"))); err == nil {
 		t.Errorf("expected proto map parse to fail on non-map JSON")
+	}
+
+	// Test YAML exported functions
+	if res, err := YAMLEncode(types.String("hello")); err != nil || res != "hello\n" {
+		t.Errorf("expected YAMLEncode to produce hello\\n, got %q, %v", res, err)
+	}
+	if _, err := YAMLEncode(mockErr); err == nil {
+		t.Errorf("expected YAMLEncode to fail on error value")
+	}
+	if val, err := YAMLParse(nil, "hello: world"); err != nil || val == nil {
+		t.Errorf("expected YAMLParse to succeed on valid YAML, got %v, %v", val, err)
+	}
+	if _, err := YAMLParse(nil, strings.Repeat("a", maxYAMLSize+1)); err == nil {
+		t.Errorf("expected YAMLParse to fail on oversized string")
+	}
+	if _, err := YAMLParse(nil, ": invalid"); err == nil {
+		t.Errorf("expected YAMLParse to fail on invalid YAML")
+	}
+	if val, err := YAMLParseWithType(nil, nil, "123", types.IntType); err != nil || val.Value() != int64(123) {
+		t.Errorf("expected YAMLParseWithType to parse 123, got %v, %v", val, err)
+	}
+	if _, err := YAMLParseWithType(nil, nil, strings.Repeat("a", maxYAMLSize+1), types.IntType); err == nil {
+		t.Errorf("expected YAMLParseWithType to fail on oversized string")
+	}
+	if _, err := YAMLParseWithType(nil, nil, ": invalid", types.IntType); err == nil {
+		t.Errorf("expected YAMLParseWithType to fail on invalid YAML")
 	}
 }
 
