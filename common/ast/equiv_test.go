@@ -181,6 +181,12 @@ func TestEquivAST(t *testing.T) {
 			expr2: `[1, 2].exists(i, i > 0)`,
 			equiv: false,
 		},
+		{
+			name:  "nested comprehension with swapped variable scoping",
+			expr1: `[2, 3, 4].all(outer, [0, 1, 2].all(inner, outer > inner))`,
+			expr2: `[2, 3, 4].all(inner, [0, 1, 2].all(outer, outer > inner))`,
+			equiv: false,
+		},
 	}
 
 	for _, tst := range tests {
@@ -403,6 +409,32 @@ func TestEquivIgnoreIdentifiers(t *testing.T) {
 	refsB := map[int64]*ast.ReferenceInfo{50: ast.NewIdentReference("x", nil)}
 	if !ast.EquivExpr(compA, compB, ast.EquivReferences(refsA, refsB), ast.EquivIgnoreIdentifiers()) {
 		t.Errorf("ast.EquivExpr with scoped ref names + EquivIgnoreIdentifiers() = false, want true")
+	}
+
+	// Nested comprehensions with swapped variable scoping are NOT equivalent even with EquivIgnoreIdentifiers
+	nestedSwappedA := mustTypeCheck(t, `[2, 3, 4].all(outer, [0, 1, 2].all(inner, outer > inner))`)
+	nestedSwappedB := mustTypeCheck(t, `[2, 3, 4].all(inner, [0, 1, 2].all(outer, outer > inner))`)
+	if ast.EquivAST(nestedSwappedA, nestedSwappedB, ast.EquivIgnoreIdentifiers()) {
+		t.Errorf("ast.EquivAST(nestedSwappedA, nestedSwappedB, EquivIgnoreIdentifiers()) = true, want false")
+	}
+	if ast.EquivAST(nestedSwappedA, nestedSwappedB) {
+		t.Errorf("ast.EquivAST(nestedSwappedA, nestedSwappedB) = true, want false")
+	}
+	if ast.EquivExpr(nestedSwappedA.Expr(), nestedSwappedB.Expr(), ast.EquivIgnoreIdentifiers()) {
+		t.Errorf("ast.EquivExpr(nestedSwappedA, nestedSwappedB, EquivIgnoreIdentifiers()) = true, want false")
+	}
+
+	// Nested comprehensions with renamed variables at matching scopes ARE equivalent with EquivIgnoreIdentifiers
+	nestedRenamedA := mustTypeCheck(t, `[2, 3, 4].all(outer, [0, 1, 2].all(inner, outer > inner))`)
+	nestedRenamedB := mustTypeCheck(t, `[2, 3, 4].all(a, [0, 1, 2].all(b, a > b))`)
+	if !ast.EquivAST(nestedRenamedA, nestedRenamedB, ast.EquivIgnoreIdentifiers()) {
+		t.Errorf("ast.EquivAST(nestedRenamedA, nestedRenamedB, EquivIgnoreIdentifiers()) = false, want true")
+	}
+	if ast.EquivAST(nestedRenamedA, nestedRenamedB) {
+		t.Errorf("ast.EquivAST(nestedRenamedA, nestedRenamedB) = true, want false")
+	}
+	if !ast.EquivExpr(nestedRenamedA.Expr(), nestedRenamedB.Expr(), ast.EquivIgnoreIdentifiers()) {
+		t.Errorf("ast.EquivExpr(nestedRenamedA, nestedRenamedB, EquivIgnoreIdentifiers()) = false, want true")
 	}
 }
 
@@ -761,11 +793,24 @@ func TestEquivBranchCoverage(t *testing.T) {
 			fac.NewLiteral(30, types.Int(0)), fac.NewLiteral(40, types.True),
 			fac.NewIdent(50, "acc2"), fac.NewIdent(60, "acc2"))
 
+		compEmptyIter := fac.NewComprehension(10, fac.NewList(20, nil, nil), "", "acc",
+			fac.NewLiteral(30, types.Int(0)), fac.NewLiteral(40, types.True),
+			fac.NewIdent(50, "acc"), fac.NewIdent(60, "acc"))
+		compEmptyAcc := fac.NewComprehension(10, fac.NewList(20, nil, nil), "i", "",
+			fac.NewLiteral(30, types.Int(0)), fac.NewLiteral(40, types.True),
+			fac.NewIdent(50, ""), fac.NewIdent(60, ""))
+
 		if ast.EquivExpr(comp1, compDiffIter) {
 			t.Errorf("ast.EquivExpr iter var mismatch = true, want false")
 		}
 		if ast.EquivExpr(comp1, compDiffAcc) {
 			t.Errorf("ast.EquivExpr accu var mismatch = true, want false")
+		}
+		if ast.EquivExpr(comp1, compEmptyIter, ast.EquivIgnoreIdentifiers()) {
+			t.Errorf("ast.EquivExpr empty iter var mismatch = true, want false")
+		}
+		if ast.EquivExpr(comp1, compEmptyAcc, ast.EquivIgnoreIdentifiers()) {
+			t.Errorf("ast.EquivExpr empty accu var mismatch = true, want false")
 		}
 	})
 
@@ -876,4 +921,86 @@ func TestEquivBranchCoverage(t *testing.T) {
 			t.Errorf("ast.EquivExpr(1.0, NaN) = true, want false")
 		}
 	})
+}
+
+func TestEquivMacroCalls(t *testing.T) {
+	fac := ast.NewExprFactory()
+
+	// Identical has macro calls
+	astHas1 := mustTypeCheck(t, `has(msg.single_int32)`)
+	astHas2 := mustTypeCheck(t, `has(msg.single_int32)`)
+	astHasDiff := mustTypeCheck(t, `has(msg.single_int64)`)
+
+	if !ast.EquivAST(astHas1, astHas2, ast.EquivMacroCalls()) {
+		t.Errorf("EquivAST(astHas1, astHas2, EquivMacroCalls()) = false, want true")
+	}
+	if !ast.EquivAST(astHas1, astHas2, ast.EquivMacroCalls(true)) {
+		t.Errorf("EquivAST(astHas1, astHas2, EquivMacroCalls(true)) = false, want true")
+	}
+	if !ast.EquivAST(astHas1, astHas2, ast.EquivMacroCalls(false)) {
+		t.Errorf("EquivAST(astHas1, astHas2, EquivMacroCalls(false)) = false, want true")
+	}
+	if ast.EquivAST(astHas1, astHasDiff, ast.EquivMacroCalls()) {
+		t.Errorf("EquivAST(astHas1, astHasDiff, EquivMacroCalls()) = true, want false")
+	}
+
+	// Comprehension macro calls
+	astAll1 := mustTypeCheck(t, `[1, 2, 3].all(x, x > 0)`)
+	astAll2 := mustTypeCheck(t, `[1, 2, 3].all(x, x > 0)`)
+	astExists := mustTypeCheck(t, `[1, 2, 3].exists(x, x > 0)`)
+	astAllDiffPred := mustTypeCheck(t, `[1, 2, 3].all(x, x > 1)`)
+
+	if !ast.EquivAST(astAll1, astAll2, ast.EquivMacroCalls()) {
+		t.Errorf("EquivAST(astAll1, astAll2, EquivMacroCalls()) = false, want true")
+	}
+	if ast.EquivAST(astAll1, astExists, ast.EquivMacroCalls()) {
+		t.Errorf("EquivAST(astAll1, astExists, EquivMacroCalls()) = true, want false")
+	}
+	if ast.EquivAST(astAll1, astAllDiffPred, ast.EquivMacroCalls()) {
+		t.Errorf("EquivAST(astAll1, astAllDiffPred, EquivMacroCalls()) = true, want false")
+	}
+
+	// Nested macro calls
+	nested1 := mustTypeCheck(t, `[2, 3, 4].all(outer, [0, 1, 2].all(inner, outer > inner))`)
+	nested2 := mustTypeCheck(t, `[2, 3, 4].all(outer, [0, 1, 2].all(inner, outer > inner))`)
+	nestedSwapped := mustTypeCheck(t, `[2, 3, 4].all(inner, [0, 1, 2].all(outer, outer > inner))`)
+
+	if !ast.EquivAST(nested1, nested2, ast.EquivMacroCalls()) {
+		t.Errorf("EquivAST(nested1, nested2, EquivMacroCalls()) = false, want true")
+	}
+	if ast.EquivAST(nested1, nestedSwapped, ast.EquivMacroCalls()) {
+		t.Errorf("EquivAST(nested1, nestedSwapped, EquivMacroCalls()) = true, want false")
+	}
+
+	// Macro AST vs AST without macro calls (e.g. manual presence test select)
+	astPresenceNoMacro := ast.NewCheckedAST(
+		ast.NewAST(fac.NewPresenceTest(1, fac.NewIdent(2, "msg"), "single_int32"), ast.NewSourceInfo(nil)),
+		nil,
+		nil,
+	)
+	// Without EquivMacroCalls, expanded AST shapes match (ignoring types/refs)
+	if !ast.EquivAST(astHas1, astPresenceNoMacro, ast.EquivTypes(nil, nil), ast.EquivReferences(nil, nil)) {
+		t.Errorf("EquivAST(astHas1, astPresenceNoMacro) = false, want true")
+	}
+	// With EquivMacroCalls, one has a macro call and one does not, so they are not equivalent
+	if ast.EquivAST(astHas1, astPresenceNoMacro, ast.EquivMacroCalls(), ast.EquivTypes(nil, nil), ast.EquivReferences(nil, nil)) {
+		t.Errorf("EquivAST(astHas1, astPresenceNoMacro, EquivMacroCalls()) = true, want false")
+	}
+
+	// EquivMacros with EquivExpr
+	e1 := fac.NewUnspecifiedExpr(1)
+	e2 := fac.NewUnspecifiedExpr(10)
+	macros1 := map[int64]ast.Expr{1: fac.NewIdent(2, "x")}
+	macros2 := map[int64]ast.Expr{10: fac.NewIdent(20, "x")}
+	macrosDiff := map[int64]ast.Expr{10: fac.NewIdent(20, "y")}
+
+	if !ast.EquivExpr(e1, e2, ast.EquivMacros(macros1, macros2)) {
+		t.Errorf("EquivExpr with matching macros = false, want true")
+	}
+	if ast.EquivExpr(e1, e2, ast.EquivMacros(macros1, macrosDiff)) {
+		t.Errorf("EquivExpr with different macros = true, want false")
+	}
+	if ast.EquivExpr(e1, e2, ast.EquivMacros(macros1, nil)) {
+		t.Errorf("EquivExpr with missing macro on one side = true, want false")
+	}
 }

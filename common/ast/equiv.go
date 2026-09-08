@@ -16,6 +16,7 @@ package ast
 
 import (
 	"math"
+	"slices"
 
 	"cel.dev/cel-go/common/types"
 	"cel.dev/cel-go/common/types/ref"
@@ -54,13 +55,37 @@ func EquivIgnoreIdentifiers(enabled ...bool) EquivOption {
 	}
 }
 
+// EquivMacroCalls configures whether to compare expressions by their macro call metadata
+// if present, rather than their expanded AST representation.
+func EquivMacroCalls(enabled ...bool) EquivOption {
+	return func(opts *equivOptions) {
+		if len(enabled) == 0 {
+			opts.checkMacros = true
+			return
+		}
+		opts.checkMacros = enabled[0]
+	}
+}
+
+// EquivMacros configures the macro call maps to use for validating macro call equivalence between two expressions or ASTs.
+func EquivMacros(aMacros, bMacros map[int64]Expr) EquivOption {
+	return func(opts *equivOptions) {
+		opts.aMacros = aMacros
+		opts.bMacros = bMacros
+		opts.checkMacros = aMacros != nil || bMacros != nil
+	}
+}
+
 type equivOptions struct {
 	aTypes            map[int64]*types.Type
 	bTypes            map[int64]*types.Type
 	aRefs             map[int64]*ReferenceInfo
 	bRefs             map[int64]*ReferenceInfo
+	aMacros           map[int64]Expr
+	bMacros           map[int64]Expr
 	checkTypes        bool
 	checkRefs         bool
+	checkMacros       bool
 	ignoreIdentifiers bool
 }
 
@@ -82,6 +107,8 @@ func EquivAST(a, b *AST, opts ...EquivOption) bool {
 		bTypes:     b.TypeMap(),
 		aRefs:      a.ReferenceMap(),
 		bRefs:      b.ReferenceMap(),
+		aMacros:    a.SourceInfo().MacroCalls(),
+		bMacros:    b.SourceInfo().MacroCalls(),
 		checkTypes: a.IsChecked() || b.IsChecked(),
 		checkRefs:  len(a.ReferenceMap()) > 0 || len(b.ReferenceMap()) > 0,
 	}
@@ -151,26 +178,41 @@ func (s *equivState) popIgnored(prev int) {
 }
 
 func (s *equivState) isIgnored(name1, name2 string) bool {
-	return hasIgnored(s.ignored1, name1) && hasIgnored(s.ignored2, name2)
+	idx1 := lastIgnored(s.ignored1, name1)
+	idx2 := lastIgnored(s.ignored2, name2)
+	if idx1 >= 0 || idx2 >= 0 {
+		return idx1 == idx2
+	}
+	return name1 == name2
 }
 
-func hasIgnored(stack []string, name string) bool {
-	for i := len(stack) - 1; i >= 0; i-- {
-		if stack[i] == name {
-			return true
+func lastIgnored(stack []string, name string) int {
+	for i, s := range slices.Backward(stack) {
+		if s == name {
+			return i
 		}
 	}
-	return false
+	return -1
 }
 
 func (s *equivState) exprEquiv(e1, e2 Expr) bool {
 	if e1 == nil || e2 == nil {
 		return e1 == e2
 	}
-	if e1.Kind() != e2.Kind() {
+	if !s.typeAndRefEquiv(e1.ID(), e2.ID()) {
 		return false
 	}
-	if !s.typeAndRefEquiv(e1.ID(), e2.ID()) {
+	if s.checkMacros {
+		m1, found1 := s.aMacros[e1.ID()]
+		m2, found2 := s.bMacros[e2.ID()]
+		if found1 != found2 {
+			return false
+		}
+		if found1 {
+			return s.exprEquiv(m1, m2)
+		}
+	}
+	if e1.Kind() != e2.Kind() {
 		return false
 	}
 	switch e1.Kind() {
@@ -179,8 +221,8 @@ func (s *equivState) exprEquiv(e1, e2 Expr) bool {
 	case IdentKind:
 		name1 := e1.AsIdent()
 		name2 := e2.AsIdent()
-		if s.ignoreIdentifiers && s.isIgnored(name1, name2) {
-			return true
+		if s.ignoreIdentifiers {
+			return s.isIgnored(name1, name2)
 		}
 		return name1 == name2
 	case LiteralKind:
@@ -275,6 +317,10 @@ func (s *equivState) exprEquiv(e1, e2 Expr) bool {
 		if comp1.HasIterVar2() != comp2.HasIterVar2() {
 			return false
 		}
+		if (comp1.IterVar() == "") != (comp2.IterVar() == "") ||
+			(comp1.AccuVar() == "") != (comp2.AccuVar() == "") {
+			return false
+		}
 		if !s.ignoreIdentifiers {
 			if comp1.IterVar() != comp2.IterVar() ||
 				comp1.IterVar2() != comp2.IterVar2() ||
@@ -286,13 +332,17 @@ func (s *equivState) exprEquiv(e1, e2 Expr) bool {
 			!s.exprEquiv(comp1.AccuInit(), comp2.AccuInit()) {
 			return false
 		}
+		var prev int
 		if s.ignoreIdentifiers {
-			prev := s.pushIgnored(comp1, comp2)
-			defer s.popIgnored(prev)
+			prev = s.pushIgnored(comp1, comp2)
 		}
-		return s.exprEquiv(comp1.LoopCondition(), comp2.LoopCondition()) &&
+		equiv := s.exprEquiv(comp1.LoopCondition(), comp2.LoopCondition()) &&
 			s.exprEquiv(comp1.LoopStep(), comp2.LoopStep()) &&
 			s.exprEquiv(comp1.Result(), comp2.Result())
+		if s.ignoreIdentifiers {
+			s.popIgnored(prev)
+		}
+		return equiv
 	default:
 		return false
 	}
@@ -364,7 +414,11 @@ func (s *equivState) refEquiv(r1, r2 *ReferenceInfo) bool {
 	if r1 == nil || r2 == nil {
 		return r1 == r2
 	}
-	if (!s.ignoreIdentifiers || !s.isIgnored(r1.Name, r2.Name)) && r1.Name != r2.Name {
+	if s.ignoreIdentifiers {
+		if !s.isIgnored(r1.Name, r2.Name) {
+			return false
+		}
+	} else if r1.Name != r2.Name {
 		return false
 	}
 	if len(r1.OverloadIDs) != len(r2.OverloadIDs) {
@@ -391,7 +445,7 @@ func equivLiteral(l1, l2 ref.Val) bool {
 	if l1 == nil || l2 == nil {
 		return l1 == l2
 	}
-	if l1.Type() != l2.Type() && l1.Type().TypeName() != l2.Type().TypeName() {
+	if l1.Type().TypeName() != l2.Type().TypeName() {
 		return false
 	}
 	if d1, ok := l1.(types.Double); ok {
