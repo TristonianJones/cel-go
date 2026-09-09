@@ -106,6 +106,7 @@ type prattParserWorker struct {
 	enableOptionalSyntax       bool
 	enableVariadicOperatorASTs bool
 	enableIdentEscapeSyntax    bool
+	enableCallEscapeSyntax     bool
 }
 
 // prattParser encapsulates the context necessary to perform Pratt parsing for different expressions.
@@ -147,6 +148,7 @@ func (p *prattParser) Parse(source common.Source) (*ast.AST, *common.Errors) {
 		enableOptionalSyntax:       p.enableOptionalSyntax,
 		enableVariadicOperatorASTs: p.enableVariadicOperatorASTs,
 		enableIdentEscapeSyntax:    p.enableIdentEscapeSyntax,
+		enableCallEscapeSyntax:     p.enableCallEscapeSyntax,
 	}
 	pratt.initTokenStream()
 	out := pratt.parse()
@@ -365,6 +367,9 @@ func (p *prattParserWorker) normalizeIdent(tok token, allowQuoted bool) string {
 		}
 		for _, c := range inner {
 			if !isAlpha(c) && !isDigit(c) && c != '_' && c != '.' && c != '-' && c != '/' && c != ' ' {
+				if c == '@' && p.enableCallEscapeSyntax {
+					continue
+				}
 				p.reportError(tok, "unexpected quoted identifier")
 				return ""
 			}
@@ -481,7 +486,7 @@ func (p *prattParserWorker) parseSelectorChainTail(lhs ast.Expr) ast.Expr {
 				return lhs
 			}
 			isMemberCall := p.peekTok.kind == tokLeftParen
-			field := p.normalizeIdent(fieldTok, !isMemberCall)
+			field := p.normalizeIdent(fieldTok, p.enableCallEscapeSyntax || !isMemberCall)
 			if optional {
 				opID := p.nextID(dotTok)
 				fieldID := p.nextID(fieldTok)
@@ -833,7 +838,7 @@ func (p *prattParserWorker) parseIdentOrCall() ast.Expr {
 		}
 		return p.helper.newExpr(idTok)
 	}
-	idText := p.normalizeIdent(idTok, false)
+	idText := p.normalizeIdent(idTok, p.enableCallEscapeSyntax)
 	if idTok.kind == tokReservedWord {
 		if _, ok := reservedIds[idText]; ok {
 			p.reportError(idTok, "reserved identifier: %s", idText)
