@@ -110,9 +110,6 @@ func TestUnparse(t *testing.T) {
 		{name: "list_lit_opt", in: `[?a, ?b, c]`},
 		{name: "map_lit_opt", in: `{?a: b, c: d}`},
 		{name: "msg_fields_opt", in: `v1alpha1.Expr{?id: id, call_expr: v1alpha1.Call_Expr{function: "name"}}`},
-		{name: "select_quoted", in: "a.`b-c`"},
-		{name: "opt_select_quoted", in: "a.?`b.c`"},
-		{name: "message_create_quoted", in: "MyType{`in`: false}"},
 		// A unary operator whose operand is another unary operator, or a negative numeric
 		// literal, must keep the operand parenthesized. The grammar parses a run of leading
 		// '!' or '-' tokens as a single unary expression and cancels out pairs of them, and
@@ -633,6 +630,73 @@ func TestUnparseErrors(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.err.Error()) {
 				t.Errorf("Unparse(%v) got unexpected error: %v, wanted %v", tc.in, err, tc.err)
+			}
+		})
+	}
+}
+
+func TestUnparseEscapedCalls(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		out  string
+	}{
+		{name: "select_escaped", in: "a.`b-c`.d"},
+		{name: "select_escaped_in", in: "a.`in`"},
+		{name: "select_quoted", in: "a.`b-c`"},
+		{name: "opt_select_quoted", in: "a.?`b.c`"},
+		{name: "message_create_quoted", in: "MyType{`in`: false}"},
+		{name: "call_member_escaped", in: "a.`@mapInsert`(b, c)"},
+		{name: "call_global_escaped", in: "`@mapInsert`(a, b)"},
+		{name: "call_namespaced_escaped", in: "cel.`@mapInsert`(a, b)"},
+		{name: "call_escaped_dash", in: "a.`custom-fn`(b)"},
+		{name: "ident_at", in: "`@result` + 1"},
+		{name: "ident_escaped_dash", in: "`my-ident`"},
+		{name: "ident_escaped_keyword", in: "`in`"},
+		{name: "ident_leading_dot_escaped", in: ".`my-ident`"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			prsr, err := NewParser(
+				Macros(AllMacros...),
+				EnablePrattParser(true),
+				EnableOptionalSyntax(true),
+				EnableIdentEscapeSyntax(true),
+				EnableCallEscapeSyntax(true),
+			)
+			if err != nil {
+				t.Fatalf("NewParser() failed: %v", err)
+			}
+			p, iss := prsr.Parse(common.NewTextSource(tc.in))
+			if len(iss.GetErrors()) > 0 {
+				t.Fatalf("parser.Parse(%s) failed: %v", tc.in, iss.ToDisplayString())
+			}
+			out, err := Unparse(p.Expr(), p.SourceInfo(), EscapeIdentifiers(true))
+			if err != nil {
+				t.Fatalf("Unparse(%s) failed: %v", tc.in, err)
+			}
+			want := tc.in
+			if tc.out != "" {
+				want = tc.out
+			}
+			if out != want {
+				t.Errorf("Unparse() got '%s', wanted '%s'", out, want)
+			}
+			p2, iss := prsr.Parse(common.NewTextSource(out))
+			if len(iss.GetErrors()) > 0 {
+				t.Fatalf("parser.Parse(%s) roundtrip failed: %v", out, iss.ToDisplayString())
+			}
+			before, err := ast.ExprToProto(p.Expr())
+			if err != nil {
+				t.Fatalf("ast.ExprToProto() failed: %v", err)
+			}
+			after, err := ast.ExprToProto(p2.Expr())
+			if err != nil {
+				t.Fatalf("ast.ExprToProto() failed: %v", err)
+			}
+			if !proto.Equal(before, after) {
+				t.Errorf("Roundtrip Parse() differs from original. Got '%v', wanted '%v'", before, after)
 			}
 		})
 	}

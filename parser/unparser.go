@@ -70,7 +70,42 @@ func Unparse(expr ast.Expr, info *ast.SourceInfo, opts ...UnparserOption) (strin
 
 var identifierPartPattern *regexp.Regexp = regexp.MustCompile(`^[A-Za-z_][0-9A-Za-z_]*$`)
 
-func maybeQuoteField(field string) string {
+func (un *unparser) maybeQuoteIdent(name string) string {
+	if !un.options.escapeIdentifiers {
+		return name
+	}
+	if name == "" {
+		return ""
+	}
+	if strings.HasPrefix(name, ".") {
+		return "." + un.maybeQuoteIdent(name[1:])
+	}
+	if strings.Contains(name, ".") {
+		parts := strings.Split(name, ".")
+		for i, part := range parts {
+			parts[i] = un.maybeQuoteIdent(part)
+		}
+		return strings.Join(parts, ".")
+	}
+	if !identifierPartPattern.MatchString(name) || isReservedIdent(name) {
+		return "`" + name + "`"
+	}
+	return name
+}
+
+func (un *unparser) maybeQuoteFunction(fun string) string {
+	return un.maybeQuoteIdent(fun)
+}
+
+func isReservedIdent(name string) bool {
+	_, ok := reservedIds[name]
+	return ok
+}
+
+func (un *unparser) maybeQuoteField(field string) string {
+	if !un.options.escapeIdentifiers {
+		return field
+	}
 	if !identifierPartPattern.MatchString(field) || field == "in" {
 		return "`" + field + "`"
 	}
@@ -221,8 +256,10 @@ func (un *unparser) visitCallFunc(expr ast.Expr) error {
 			return err
 		}
 		un.str.WriteString(".")
+		un.str.WriteString(un.maybeQuoteIdent(fun))
+	} else {
+		un.str.WriteString(un.maybeQuoteFunction(fun))
 	}
-	un.str.WriteString(fun)
 	un.str.WriteString("(")
 	for i, arg := range args {
 		err := un.visit(arg)
@@ -335,7 +372,7 @@ func (un *unparser) visitConst(expr ast.Expr) error {
 }
 
 func (un *unparser) visitIdent(expr ast.Expr) error {
-	un.str.WriteString(expr.AsIdent())
+	un.str.WriteString(un.maybeQuoteIdent(expr.AsIdent()))
 	return nil
 }
 
@@ -387,7 +424,7 @@ func (un *unparser) visitSelectInternal(operand ast.Expr, testOnly bool, op stri
 		return err
 	}
 	un.str.WriteString(op)
-	un.str.WriteString(maybeQuoteField(field))
+	un.str.WriteString(un.maybeQuoteField(field))
 	if testOnly {
 		un.str.WriteString(")")
 	}
@@ -397,7 +434,7 @@ func (un *unparser) visitSelectInternal(operand ast.Expr, testOnly bool, op stri
 func (un *unparser) visitStructMsg(expr ast.Expr) error {
 	m := expr.AsStruct()
 	fields := m.Fields()
-	un.str.WriteString(m.TypeName())
+	un.str.WriteString(un.maybeQuoteFunction(m.TypeName()))
 	un.str.WriteString("{")
 	for i, f := range fields {
 		field := f.AsStructField()
@@ -405,7 +442,7 @@ func (un *unparser) visitStructMsg(expr ast.Expr) error {
 		if field.IsOptional() {
 			un.str.WriteString("?")
 		}
-		un.str.WriteString(maybeQuoteField(f))
+		un.str.WriteString(un.maybeQuoteField(f))
 		un.str.WriteString(": ")
 		v := field.Value()
 		err := un.visit(v)
@@ -611,6 +648,16 @@ type unparserOption struct {
 	wrapOnColumn         int
 	operatorsToWrapOn    map[string]bool
 	wrapAfterColumnLimit bool
+	escapeIdentifiers    bool
+}
+
+// EscapeIdentifiers enables backtick (`) escaping for non-standard and reserved identifiers,
+// function names, and field names when unparsing.
+func EscapeIdentifiers(escape bool) UnparserOption {
+	return func(opt *unparserOption) (*unparserOption, error) {
+		opt.escapeIdentifiers = escape
+		return opt, nil
+	}
 }
 
 // WrapOnColumn wraps the output expression when its string length exceeds a specified limit

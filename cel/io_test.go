@@ -148,6 +148,47 @@ func TestAstToString(t *testing.T) {
 	}
 }
 
+func TestAstToStringWithOptions(t *testing.T) {
+	stdEnv, err := NewEnv(
+		OptionalTypes(),
+		EnableMacroCallTracking(),
+	)
+	if err != nil {
+		t.Fatalf("NewEnv() failed: %v", err)
+	}
+	in := "a.`b-c` && (x || y)"
+	ast, iss := stdEnv.Parse(in)
+	if iss.Err() != nil {
+		t.Fatalf("stdEnv.Parse(%q) failed: %v", in, iss.Err())
+	}
+	// Default: no backtick escaping
+	exprDefault, err := AstToString(ast)
+	if err != nil {
+		t.Fatalf("AstToString(ast) failed: %v", err)
+	}
+	if exprDefault != "a.b-c && (x || y)" {
+		t.Errorf("got %q, wanted %q", exprDefault, "a.b-c && (x || y)")
+	}
+
+	// Opt-in: backtick escaping
+	exprEscaped, err := AstToString(ast, FormatEscapeIdentifiers(true))
+	if err != nil {
+		t.Fatalf("AstToString(ast) failed: %v", err)
+	}
+	if exprEscaped != in {
+		t.Errorf("got %q, wanted %q", exprEscaped, in)
+	}
+
+	// Word wrap
+	exprWrapped, err := AstToString(ast, FormatWrapOnColumn(5))
+	if err != nil {
+		t.Fatalf("AstToString(ast) failed: %v", err)
+	}
+	if exprWrapped != "a.b-c &&\n(x ||\ny)" {
+		t.Errorf("got %q, wanted %q", exprWrapped, "a.b-c &&\n(x ||\ny)")
+	}
+}
+
 func TestExprToString(t *testing.T) {
 	stdEnv, err := NewEnv(EnableMacroCallTracking())
 	if err != nil {
