@@ -149,7 +149,6 @@ func Cost(checked *ast.AST, estimator Estimator, opts ...Option) (CostEstimate, 
 		checkedAST:         checked,
 		estimator:          estimator,
 		overloadEstimators: map[string]FunctionEstimator{},
-		sizingStrategy:     DefaultSizingStrategy(),
 		exprPaths:          map[int64][]string{},
 		localVars:          make(scopes),
 		computedSizes:      map[int64]SizeEstimate{},
@@ -163,6 +162,9 @@ func Cost(checked *ast.AST, estimator Estimator, opts ...Option) (CostEstimate, 
 	}
 	if c.sizingStrategy == nil {
 		c.sizingStrategy = DefaultSizingStrategy()
+	}
+	if c.sizingStrategy != defaultSizing {
+		c.sizingOverloadEstimators = StandardOverloadEstimatorsWithOptions(c.sizingStrategy)
 	}
 	return c.cost(checked.Expr()), nil
 }
@@ -630,13 +632,10 @@ func (c *coster) getPath(e ast.Expr) []string {
 }
 
 func (c *coster) getStandardOverloadEstimators() map[string]FunctionEstimator {
-	if c.sizingStrategy == nil || c.sizingStrategy == defaultSizing {
-		return stdOverloadEstimators
+	if c.sizingOverloadEstimators != nil {
+		return c.sizingOverloadEstimators
 	}
-	if c.sizingOverloadEstimators == nil {
-		c.sizingOverloadEstimators = StandardOverloadEstimatorsWithOptions(c.sizingStrategy)
-	}
-	return c.sizingOverloadEstimators
+	return stdOverloadEstimators
 }
 
 // addPath associates an expression ID with its path.
@@ -729,6 +728,20 @@ func (e *estimatorContext) ArgType(index int) (*types.Type, bool) {
 		return e.args[index].Type(), true
 	}
 	return nil, false
+}
+
+func (e *estimatorContext) ArgValue(index int, defaultVal uint64) uint64 {
+	if index < len(e.args) && e.args[index] != nil {
+		return NodeAsUintValue(e.args[index], defaultVal)
+	}
+	return defaultVal
+}
+
+func (e *estimatorContext) TargetValue(defaultVal uint64) uint64 {
+	if e.target != nil && (*e.target) != nil {
+		return NodeAsUintValue(*e.target, defaultVal)
+	}
+	return defaultVal
 }
 
 func (e *estimatorContext) Size(node AstNode) SizeEstimate {

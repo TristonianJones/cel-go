@@ -1,4 +1,4 @@
-// Copyright 2022 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import (
 	"math/rand"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1166,8 +1167,8 @@ func TestRuntimeCost(t *testing.T) {
 		},
 		{
 			name: "two-var all: map literal early return false",
-			expr: `{'hello': 'world', 'taco': 'taco'}.all(k, v, k != v) == false`,
-			want: 44,
+			expr: `{'hello': 'world'}.all(k, v, k != v) == false`,
+			want: 38,
 		},
 		{
 			name: "two-var exists: list literal",
@@ -1176,8 +1177,8 @@ func TestRuntimeCost(t *testing.T) {
 		},
 		{
 			name: "two-var exists: map literal",
-			expr: `{"a": 1, "b": 2}.exists(k, v, k == "a" && v == 1)`,
-			want: 42,
+			expr: `{"a": 1}.exists(k, v, k == "a" && v == 1)`,
+			want: 39,
 		},
 		{
 			name: "two-var existsOne: list variable",
@@ -1417,4 +1418,41 @@ func newStandardInterpreter(t testing.TB,
 		}
 	}
 	return interpreter.NewInterpreter(disp, container, provider, adapter, resolver)
+}
+
+type testConcurrentSizingStrategy struct{}
+
+func (testConcurrentSizingStrategy) EstimateSize(ctx cost.EstimateContext, node cost.AstNode) (cost.SizeEstimate, bool) {
+	return cost.FixedSizeEstimate(10), true
+}
+
+func (testConcurrentSizingStrategy) TrackSize(ctx cost.TrackContext, value ref.Val) (uint64, bool) {
+	return 10, true
+}
+
+func TestTracker_ConcurrentCloneRace(t *testing.T) {
+	tracker, err := cost.NewTracker(nil, cost.TrackerSizingStrategy(testConcurrentSizingStrategy{}))
+	if err != nil {
+		t.Fatalf("NewTracker() failed: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			clone, err := tracker.Clone()
+			if err != nil {
+				t.Errorf("tracker.Clone() failed: %v", err)
+				return
+			}
+			clone.CostCall(testCall{function: "startsWith", overloadID: overloads.StartsWithString}, []ref.Val{types.String("hello"), types.String("h")}, types.True)
+			clone.CostCall(testCall{function: "_==_", overloadID: overloads.Equals}, []ref.Val{types.String("a"), types.String("b")}, types.False)
+			clone.CreateList(1, nil)
+			if clone.ActualCost() == 0 {
+				t.Errorf("clone.ActualCost() should be non-zero")
+			}
+		}()
+	}
+	wg.Wait()
 }

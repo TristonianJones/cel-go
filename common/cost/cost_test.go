@@ -17,7 +17,31 @@ package cost
 import (
 	"math"
 	"testing"
+
+	"cel.dev/cel-go/common/ast"
+	"cel.dev/cel-go/common/types"
 )
+
+func TestSafeSubtract(t *testing.T) {
+	tests := []struct {
+		name string
+		x, y uint64
+		want uint64
+	}{
+		{name: "zero", x: 0, y: 0, want: 0},
+		{name: "simple", x: 5, y: 3, want: 2},
+		{name: "underflow to zero", x: 3, y: 5, want: 0},
+		{name: "max minus zero", x: math.MaxUint64, y: 0, want: math.MaxUint64},
+		{name: "max minus max", x: math.MaxUint64, y: math.MaxUint64, want: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SafeSubtract(tc.x, tc.y); got != tc.want {
+				t.Errorf("SafeSubtract(%d, %d) got %d, want %d", tc.x, tc.y, got, tc.want)
+			}
+		})
+	}
+}
 
 func TestSafeAdd(t *testing.T) {
 	tests := []struct {
@@ -144,7 +168,7 @@ func TestSizeEstimate(t *testing.T) {
 	if got := RangedSizeEstimate(3, 8); got.Min != 3 || got.Max != 8 {
 		t.Errorf("RangedSizeEstimate(3, 8) = %v, want {3, 8}", got)
 	}
-	if got := AtLeastOne(FixedSizeEstimate(0)); got.Min != 1 || got.Max != 1 {
+	if got := AtLeastOneSize(FixedSizeEstimate(0)); got.Min != 1 || got.Max != 1 {
 		t.Errorf("AtLeastOne(0) = %v, want {1, 1}", got)
 	}
 }
@@ -190,5 +214,91 @@ func TestExtCostHelpers(t *testing.T) {
 	callEst := NewCallEstimate(costEst, resSz)
 	if callEst.CostEstimate != costEst || callEst.ResultSize != resSz {
 		t.Errorf("NewCallEstimate = %v, want CostEstimate=%v ResultSize=%v", callEst, costEst, resSz)
+	}
+}
+
+func TestSizeEstimate_Subtract(t *testing.T) {
+	s1 := RangedSizeEstimate(5, 15)
+	s2 := RangedSizeEstimate(2, 4)
+	got := s1.Subtract(s2)
+	if got.Min != 1 || got.Max != 13 {
+		t.Errorf("s1.Subtract(s2) = %v, want {1, 13}", got)
+	}
+
+	// Underflow cases
+	s3 := RangedSizeEstimate(2, 4)
+	s4 := RangedSizeEstimate(5, 10)
+	got2 := s3.Subtract(s4)
+	if got2.Min != 0 || got2.Max != 0 {
+		t.Errorf("s3.Subtract(s4) = %v, want {0, 0}", got2)
+	}
+}
+
+func TestEstimateSize(t *testing.T) {
+	// Nil node
+	if sz := EstimateSize(nil, nil); sz != UnknownSizeEstimate() {
+		t.Errorf("EstimateSize(nil, nil) = %v, want unknown", sz)
+	}
+
+	// Node with computed size
+	compSz := FixedSizeEstimate(42)
+	nodeWithComp := NewAstNode(nil, nil, types.IntType, &compSz)
+	if sz := EstimateSize(nil, nodeWithComp); sz != compSz {
+		t.Errorf("EstimateSize(comp) = %v, want %v", sz, compSz)
+	}
+
+	// Node with estimator
+	nodeWithoutComp := NewAstNode(nil, []string{"foo"}, types.IntType, nil)
+	est := testHintsEstimator{hints: map[string]uint64{"foo": 100}}
+	if sz := EstimateSize(est, nodeWithoutComp); sz != FixedSizeEstimate(100) {
+		t.Errorf("EstimateSize(est) = %v, want 100", sz)
+	}
+
+	// Node with estimator returning nil
+	if sz := EstimateSize(est, NewAstNode(nil, []string{"bar"}, types.IntType, nil)); sz != UnknownSizeEstimate() {
+		t.Errorf("EstimateSize(unknown) = %v, want unknown", sz)
+	}
+}
+
+func TestNodeAsUintValue(t *testing.T) {
+	// Nil node
+	if val := NodeAsUintValue(nil, 99); val != 99 {
+		t.Errorf("NodeAsUintValue(nil) = %d, want 99", val)
+	}
+
+	// Non-literal node
+	fac := ast.NewExprFactory()
+	identExpr := fac.NewIdent(1, "x")
+	identNode := NewAstNode(identExpr, nil, types.IntType, nil)
+	if val := NodeAsUintValue(identNode, 99); val != 99 {
+		t.Errorf("NodeAsUintValue(ident) = %d, want 99", val)
+	}
+
+	// Non-int literal (string)
+	strExpr := fac.NewLiteral(2, types.String("hello"))
+	strNode := NewAstNode(strExpr, nil, types.StringType, nil)
+	if val := NodeAsUintValue(strNode, 99); val != 99 {
+		t.Errorf("NodeAsUintValue(str) = %d, want 99", val)
+	}
+
+	// Positive int literal
+	intExpr := fac.NewLiteral(3, types.Int(42))
+	intNode := NewAstNode(intExpr, nil, types.IntType, nil)
+	if val := NodeAsUintValue(intNode, 99); val != 42 {
+		t.Errorf("NodeAsUintValue(int 42) = %d, want 42", val)
+	}
+
+	// Negative int literal (saturates at 0)
+	negExpr := fac.NewLiteral(4, types.Int(-5))
+	negNode := NewAstNode(negExpr, nil, types.IntType, nil)
+	if val := NodeAsUintValue(negNode, 99); val != 0 {
+		t.Errorf("NodeAsUintValue(int -5) = %d, want 0", val)
+	}
+
+	// Uint literal
+	uintExpr := fac.NewLiteral(5, types.Uint(100))
+	uintNode := NewAstNode(uintExpr, nil, types.UintType, nil)
+	if val := NodeAsUintValue(uintNode, 99); val != 100 {
+		t.Errorf("NodeAsUintValue(uint 100) = %d, want 100", val)
 	}
 }

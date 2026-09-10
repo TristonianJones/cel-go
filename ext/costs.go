@@ -66,5 +66,5 @@ func fixedSizeEstimate(val uint64) cost.SizeEstimate {
 }
 
 func atLeastOne(size cost.SizeEstimate) cost.SizeEstimate {
-	return cost.AtLeastOne(size)
+	return cost.AtLeastOneSize(size)
 }

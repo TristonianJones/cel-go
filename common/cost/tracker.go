@@ -120,7 +120,6 @@ func NewTracker(estimator ActualCostEstimator, opts ...TrackerOption) (*Tracker,
 	tracker := &Tracker{
 		Estimator:           estimator,
 		overloadTrackers:    map[string]FunctionTracker{},
-		sizingStrategy:      DefaultSizingStrategy(),
 		presenceTestHasCost: true,
 	}
 	for _, opt := range opts {
@@ -131,6 +130,9 @@ func NewTracker(estimator ActualCostEstimator, opts ...TrackerOption) (*Tracker,
 	}
 	if tracker.sizingStrategy == nil {
 		tracker.sizingStrategy = DefaultSizingStrategy()
+	}
+	if tracker.sizingStrategy != defaultSizing {
+		tracker.sizingOverloadTrackers = StandardOverloadTrackersWithOptions(tracker.sizingStrategy)
 	}
 	return tracker, nil
 }
@@ -232,13 +234,10 @@ func (c *Tracker) checkLimit() {
 }
 
 func (c *Tracker) getStandardOverloadTrackers() map[string]FunctionTracker {
-	if c.sizingStrategy == nil || c.sizingStrategy == defaultSizing {
-		return stdOverloadTrackers
+	if c.sizingOverloadTrackers != nil {
+		return c.sizingOverloadTrackers
 	}
-	if c.sizingOverloadTrackers == nil {
-		c.sizingOverloadTrackers = StandardOverloadTrackersWithOptions(c.sizingStrategy)
-	}
-	return c.sizingOverloadTrackers
+	return stdOverloadTrackers
 }
 
 // CostCall calculates the runtime cost for a function call.
