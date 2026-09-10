@@ -690,11 +690,14 @@ func (m OverloadModel) hasTarget() bool {
 
 // FunctionEstimator returns a FunctionEstimator implementing the cost model.
 func (m OverloadModel) FunctionEstimator() FunctionEstimator {
-	return m.FunctionEstimatorWithOptions(nil)
+	return m.FunctionEstimatorWithOptions(DefaultSizingStrategy())
 }
 
 // FunctionEstimatorWithOptions returns a FunctionEstimator implementing the cost model with an optional SizingStrategy.
 func (m OverloadModel) FunctionEstimatorWithOptions(strategy SizingStrategy) FunctionEstimator {
+	if strategy == nil {
+		strategy = DefaultSizingStrategy()
+	}
 	hasTarget := m.hasTarget()
 	return func(estimator Estimator, target *AstNode, args []AstNode) *CallEstimate {
 		if hasTarget && target == nil {
@@ -719,11 +722,14 @@ func (m OverloadModel) FunctionEstimatorWithOptions(strategy SizingStrategy) Fun
 
 // FunctionTracker returns a FunctionTracker implementing the cost model.
 func (m OverloadModel) FunctionTracker() FunctionTracker {
-	return m.FunctionTrackerWithOptions(nil)
+	return m.FunctionTrackerWithOptions(DefaultSizingStrategy())
 }
 
 // FunctionTrackerWithOptions returns a FunctionTracker implementing the cost model with an optional SizingStrategy.
 func (m OverloadModel) FunctionTrackerWithOptions(strategy SizingStrategy) FunctionTracker {
+	if strategy == nil {
+		strategy = DefaultSizingStrategy()
+	}
 	isMember := m.hasTarget()
 	return func(args []ref.Val, result ref.Val) *uint64 {
 		ctx := &trackerEvalContext{

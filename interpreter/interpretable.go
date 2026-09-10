@@ -444,7 +444,7 @@ func (eq *evalEq) Exec(frame *ExecutionFrame) ref.Val {
 	if types.IsError(lVal) {
 		// To preserve legacy cost tracking behavior for ==
 		// track this cost, but it will be removed in the future.
-		trackCostEvalBinary(frame, eq.id, eq, lVal, nil, lVal)
+		trackCostEvalBinary(frame, eq.id, eq, lVal, types.UnknownType, lVal)
 		return lVal
 	}
 	rVal := eq.rhs.Exec(frame)
@@ -503,7 +503,7 @@ func (ne *evalNe) Exec(frame *ExecutionFrame) ref.Val {
 	if types.IsError(lVal) {
 		// To preserve legacy cost tracking behavior for !=,
 		// track this cost, but it will be removed in the future.
-		trackCostEvalBinary(frame, ne.id, ne, lVal, nil, lVal)
+		trackCostEvalBinary(frame, ne.id, ne, lVal, types.UnknownType, lVal)
 		return lVal
 	}
 	rVal := ne.rhs.Exec(frame)

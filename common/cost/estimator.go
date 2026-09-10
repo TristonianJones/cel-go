@@ -135,6 +135,9 @@ func OverloadCostEstimate(overloadID string, functionCoster FunctionEstimator) O
 // EstimateSizingStrategy configures a custom SizingStrategy for cost estimation.
 func EstimateSizingStrategy(strategy SizingStrategy) Option {
 	return func(c *coster) error {
+		if strategy == nil {
+			strategy = DefaultSizingStrategy()
+		}
 		c.sizingStrategy = strategy
 		return nil
 	}
@@ -146,6 +149,7 @@ func Cost(checked *ast.AST, estimator Estimator, opts ...Option) (CostEstimate, 
 		checkedAST:         checked,
 		estimator:          estimator,
 		overloadEstimators: map[string]FunctionEstimator{},
+		sizingStrategy:     DefaultSizingStrategy(),
 		exprPaths:          map[int64][]string{},
 		localVars:          make(scopes),
 		computedSizes:      map[int64]SizeEstimate{},
@@ -156,6 +160,9 @@ func Cost(checked *ast.AST, estimator Estimator, opts ...Option) (CostEstimate, 
 		if err != nil {
 			return CostEstimate{}, err
 		}
+	}
+	if c.sizingStrategy == nil {
+		c.sizingStrategy = DefaultSizingStrategy()
 	}
 	return c.cost(checked.Expr()), nil
 }
@@ -588,13 +595,7 @@ func (c *coster) functionCost(e ast.Expr, function, overloadID string, target *A
 			return CallEstimate{CostEstimate: est.Add(argCost), ResultSize: est.ResultSize}
 		}
 	}
-	if c.sizingStrategy != nil {
-		if estimator, found := c.getSizingOverloadEstimators()[overloadID]; found {
-			if est := estimator(c.estimator, target, args); est != nil {
-				return CallEstimate{CostEstimate: est.Add(argCost), ResultSize: est.ResultSize}
-			}
-		}
-	} else if estimator, found := stdOverloadEstimators[overloadID]; found {
+	if estimator, found := c.getStandardOverloadEstimators()[overloadID]; found {
 		if est := estimator(c.estimator, target, args); est != nil {
 			return CallEstimate{CostEstimate: est.Add(argCost), ResultSize: est.ResultSize}
 		}
@@ -628,7 +629,10 @@ func (c *coster) getPath(e ast.Expr) []string {
 	return nil
 }
 
-func (c *coster) getSizingOverloadEstimators() map[string]FunctionEstimator {
+func (c *coster) getStandardOverloadEstimators() map[string]FunctionEstimator {
+	if c.sizingStrategy == nil || c.sizingStrategy == defaultSizing {
+		return stdOverloadEstimators
+	}
 	if c.sizingOverloadEstimators == nil {
 		c.sizingOverloadEstimators = StandardOverloadEstimatorsWithOptions(c.sizingStrategy)
 	}

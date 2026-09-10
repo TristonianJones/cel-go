@@ -84,6 +84,9 @@ func OverloadTracker(overloadID string, fnTracker FunctionTracker) TrackerOption
 // TrackerSizingStrategy configures a SizingStrategy for runtime cost tracking.
 func TrackerSizingStrategy(strategy SizingStrategy) TrackerOption {
 	return func(tracker *Tracker) error {
+		if strategy == nil {
+			strategy = DefaultSizingStrategy()
+		}
 		tracker.sizingStrategy = strategy
 		return nil
 	}
@@ -117,6 +120,7 @@ func NewTracker(estimator ActualCostEstimator, opts ...TrackerOption) (*Tracker,
 	tracker := &Tracker{
 		Estimator:           estimator,
 		overloadTrackers:    map[string]FunctionTracker{},
+		sizingStrategy:      DefaultSizingStrategy(),
 		presenceTestHasCost: true,
 	}
 	for _, opt := range opts {
@@ -124,6 +128,9 @@ func NewTracker(estimator ActualCostEstimator, opts ...TrackerOption) (*Tracker,
 		if err != nil {
 			return nil, err
 		}
+	}
+	if tracker.sizingStrategy == nil {
+		tracker.sizingStrategy = DefaultSizingStrategy()
 	}
 	return tracker, nil
 }
@@ -224,7 +231,10 @@ func (c *Tracker) checkLimit() {
 	}
 }
 
-func (c *Tracker) getSizingOverloadTrackers() map[string]FunctionTracker {
+func (c *Tracker) getStandardOverloadTrackers() map[string]FunctionTracker {
+	if c.sizingStrategy == nil || c.sizingStrategy == defaultSizing {
+		return stdOverloadTrackers
+	}
 	if c.sizingOverloadTrackers == nil {
 		c.sizingOverloadTrackers = StandardOverloadTrackersWithOptions(c.sizingStrategy)
 	}
@@ -250,15 +260,7 @@ func (c *Tracker) CostCall(call Call, args []ref.Val, result ref.Val) uint64 {
 			return total
 		}
 	}
-	if c.sizingStrategy != nil {
-		if tracker, found := c.getSizingOverloadTrackers()[call.OverloadID()]; found {
-			callCost := tracker(args, result)
-			if callCost != nil {
-				total = SafeAdd(total, *callCost)
-				return total
-			}
-		}
-	} else if tracker, found := stdOverloadTrackers[call.OverloadID()]; found {
+	if tracker, found := c.getStandardOverloadTrackers()[call.OverloadID()]; found {
 		callCost := tracker(args, result)
 		if callCost != nil {
 			total = SafeAdd(total, *callCost)
