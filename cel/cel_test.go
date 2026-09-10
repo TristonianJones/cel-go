@@ -1374,6 +1374,23 @@ func TestEvalRecover(t *testing.T) {
 	}
 }
 
+func TestNilProgram(t *testing.T) {
+	var prg Program = (*prog)(nil)
+
+	if _, _, err := prg.Eval(NoVars()); err == nil || !strings.Contains(err.Error(), "program is nil") {
+		t.Errorf("prg.Eval() got error %v, wanted error containing 'program is nil'", err)
+	}
+
+	if _, _, err := prg.ContextEval(context.Background(), NoVars()); err == nil || !strings.Contains(err.Error(), "program is nil") {
+		t.Errorf("prg.ContextEval() got error %v, wanted error containing 'program is nil'", err)
+	}
+
+	res := <-prg.ConcurrentEval(context.Background(), NoVars())
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "program is nil") {
+		t.Errorf("prg.ConcurrentEval() got error %v, wanted error containing 'program is nil'", res.Err)
+	}
+}
+
 func TestResidualAst(t *testing.T) {
 	env := testEnv(t,
 		Variable("x", IntType),

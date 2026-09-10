@@ -399,6 +399,9 @@ func (p *prog) initInterpretable(a *ast.AST, plannerOptions []interpreter.Planne
 
 // Eval implements the Program interface method.
 func (p *prog) Eval(input any) (out ref.Val, det *EvalDetails, err error) {
+	if p == nil {
+		return nil, nil, errors.New("program is nil")
+	}
 	// Asynchronous calls cannot be resolved by a single-pass evaluation. Reject before doing any
 	// work (this also covers ContextEval, which delegates here); ConcurrentEval does not call Eval.
 	if p.hasAsync {
@@ -458,8 +461,11 @@ func (p *prog) Eval(input any) (out ref.Val, det *EvalDetails, err error) {
 
 // ContextEval implements the Program interface.
 func (p *prog) ContextEval(ctx context.Context, input any) (ref.Val, *EvalDetails, error) {
+	if p == nil {
+		return nil, nil, errors.New("program is nil")
+	}
 	if ctx == nil {
-		return nil, nil, fmt.Errorf("context can not be nil")
+		return nil, nil, errors.New("context can not be nil")
 	}
 	frame, err := p.newExecutionFrame(input)
 	if err != nil {
@@ -539,6 +545,11 @@ func (p *prog) resolveCompletionBufferSize() int {
 // ConcurrentEval implements the Program interface.
 func (p *prog) ConcurrentEval(ctx context.Context, input any) <-chan EvalResult {
 	resCh := make(chan EvalResult, 1)
+	if p == nil {
+		resCh <- EvalResult{Err: errors.New("program is nil")}
+		close(resCh)
+		return resCh
+	}
 	if ctx == nil {
 		resCh <- EvalResult{Err: errors.New("context can not be nil")}
 		close(resCh)
