@@ -436,6 +436,7 @@ func TestRuntimeCost(t *testing.T) {
 
 	allMap := types.NewMapType(types.StringType, allTypes)
 	nestedMap := types.NewMapType(types.StringType, allMap)
+	nestedMapStr := types.NewMapType(types.StringType, types.NewMapType(types.StringType, types.StringType))
 	cases := []struct {
 		name         string
 		expr         string
@@ -502,6 +503,48 @@ func TestRuntimeCost(t *testing.T) {
 			vars: []*decls.VariableDecl{decls.NewVariable("input", types.NewListType(types.StringType))},
 			want: 3,
 			in:   map[string]any{"input": []string{"v"}},
+		},
+		{
+			name: "optional select: map",
+			expr: `input.?key`,
+			vars: []*decls.VariableDecl{decls.NewVariable("input", types.NewMapType(types.StringType, types.StringType))},
+			want: 2,
+			in:   map[string]any{"input": map[string]string{"key": "v"}},
+		},
+		{
+			name: "optional index: map",
+			expr: `input[?'key']`,
+			vars: []*decls.VariableDecl{decls.NewVariable("input", types.NewMapType(types.StringType, types.StringType))},
+			want: 2,
+			in:   map[string]any{"input": map[string]string{"key": "v"}},
+		},
+		{
+			// An optional select extends the attribute chain, so the trailing selection
+			// only adds a qualifier cost rather than a second attribute resolution.
+			name: "optional select: chained",
+			expr: `input.?key.subkey`,
+			vars: []*decls.VariableDecl{decls.NewVariable("input", nestedMapStr)},
+			want: 3,
+			in:   map[string]any{"input": map[string]map[string]string{"key": {"subkey": "v"}}},
+		},
+		{
+			name: "optional index: chained",
+			expr: `input[?'key'].subkey`,
+			vars: []*decls.VariableDecl{decls.NewVariable("input", nestedMapStr)},
+			want: 3,
+			in:   map[string]any{"input": map[string]map[string]string{"key": {"subkey": "v"}}},
+		},
+		{
+			// A computed operand requires a relative attribute, which costs an extra
+			// attribute resolution on top of the qualifier.
+			name: "optional index: map literal",
+			expr: `{'key': 'v'}[?'key']`,
+			want: 32,
+		},
+		{
+			name: "optional index: list literal",
+			expr: `['v'][?0]`,
+			want: 12,
 		},
 		{
 			name:    "select: field test only no has() cost",

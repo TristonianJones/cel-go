@@ -43,6 +43,7 @@ var testCelEnv = func() *cel.Env {
 	env, err := cel.NewEnv(
 		cel.Types(&proto3pb.TestAllTypes{}),
 		cel.CrossTypeNumericComparisons(true),
+		cel.OptionalTypes(),
 		ext.Bindings(),
 		ext.TwoVarComprehensions(),
 		cel.Function("max",
@@ -676,6 +677,41 @@ func TestCost(t *testing.T) {
 			name:   "literal list access",
 			expr:   `['hello', 'hi'][0] != ['hello', 'bye'][1]`,
 			wanted: cost.CostEstimate{Min: 25, Max: 25},
+		},
+		{
+			// Optional index over a computed operand costs the same as its non-optional
+			// counterpart: the planner qualifies a relative attribute in both cases.
+			name:   "literal map optional access",
+			expr:   `{'hello': 'hi'}[?'hello']`,
+			wanted: cost.CostEstimate{Min: 32, Max: 32},
+		},
+		{
+			name:   "literal map optional select",
+			expr:   `{'hello': 'hi'}.?hello`,
+			wanted: cost.CostEstimate{Min: 32, Max: 32},
+		},
+		{
+			name:   "literal list optional access",
+			expr:   `['hello', 'hi'][?0]`,
+			wanted: cost.CostEstimate{Min: 12, Max: 12},
+		},
+		{
+			// An optional select extends the attribute chain, so the trailing selection
+			// must not be charged an extra attribute resolution.
+			name: "optional select chain",
+			expr: `self.?val1.val2`,
+			vars: []*decls.VariableDecl{
+				decls.NewVariable("self", types.NewMapType(types.StringType, types.DynType)),
+			},
+			wanted: cost.CostEstimate{Min: 3, Max: 3},
+		},
+		{
+			name: "optional index chain",
+			expr: `self[?'val1'].val2`,
+			vars: []*decls.VariableDecl{
+				decls.NewVariable("self", types.NewMapType(types.StringType, types.DynType)),
+			},
+			wanted: cost.CostEstimate{Min: 3, Max: 3},
 		},
 		{
 			name:   "type call",

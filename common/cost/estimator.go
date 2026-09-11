@@ -362,14 +362,19 @@ func (c *coster) relativeAttributeCost(operand ast.Expr) CostEstimate {
 
 // isAttributeChain reports whether an expression is resolved as part of a single attribute
 // during evaluation. A chain begins at an identifier, or at a ternary which selects between
-// attributes, and is extended by field selections and index operations.
+// attributes, and is extended by field selections and index operations, including their
+// optional variants.
+//
+// This predicate must mirror the planner's decision to wrap an operand in a relative
+// attribute: any expression which plans to an interpretable attribute extends the chain and
+// does not incur an additional attribute resolution cost.
 func isAttributeChain(e ast.Expr) bool {
 	switch e.Kind() {
 	case ast.IdentKind, ast.SelectKind:
 		return true
 	case ast.CallKind:
 		switch e.AsCall().FunctionName() {
-		case operators.Index, operators.Conditional:
+		case operators.Index, operators.OptIndex, operators.OptSelect, operators.Conditional:
 			return true
 		}
 	}
@@ -388,8 +393,13 @@ func (c *coster) costCall(e ast.Expr) CostEstimate {
 	args := call.Args()
 	var sum CostEstimate
 
-	if call.FunctionName() == operators.Index && len(args) > 0 {
-		sum = sum.Add(c.relativeAttributeCost(args[0]))
+	// Index-like operators qualify their first argument, which requires a relative attribute
+	// when the operand is a computed value rather than a named one.
+	switch call.FunctionName() {
+	case operators.Index, operators.OptIndex, operators.OptSelect:
+		if len(args) > 0 {
+			sum = sum.Add(c.relativeAttributeCost(args[0]))
+		}
 	}
 
 	argTypes := make([]AstNode, len(args))
