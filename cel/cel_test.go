@@ -1239,7 +1239,8 @@ func TestContextEval(t *testing.T) {
 	if iss.Err() != nil {
 		t.Fatalf("env.Compile(expr) failed: %v", iss.Err())
 	}
-	prg, err := env.Program(ast, EvalOptions(OptOptimize|OptTrackState), InterruptCheckFrequency(100))
+	const interruptCheckFrequency = 100
+	prg, err := env.Program(ast, EvalOptions(OptOptimize|OptTrackState), InterruptCheckFrequency(interruptCheckFrequency))
 	if err != nil {
 		t.Fatalf("env.Program() failed: %v", err)
 	}
@@ -1257,10 +1258,19 @@ func TestContextEval(t *testing.T) {
 		t.Errorf("prg.ContextEval() got %v, wanted 1975", out)
 	}
 
-	evalCtx, cancel := context.WithTimeout(ctx, time.Microsecond)
+	// Interrupt the evaluation using a deadline which has already elapsed. Relying on a short
+	// timeout is inherently racy since the evaluation may complete before the deadline timer
+	// fires, whereas an elapsed deadline closes the context's done channel immediately. The
+	// input list is sized well beyond the interrupt check frequency to ensure the interrupt is
+	// observed mid-comprehension rather than after the evaluation completes.
+	interruptItems := make([]int64, interruptCheckFrequency*100)
+	for i := 0; i < len(interruptItems); i++ {
+		interruptItems[i] = int64(i)
+	}
+	evalCtx, cancel := context.WithDeadline(ctx, time.Now().Add(-time.Minute))
 	defer cancel()
 
-	out, _, err = prg.ContextEval(evalCtx, map[string]any{"items": items})
+	out, _, err = prg.ContextEval(evalCtx, map[string]any{"items": interruptItems})
 	if err == nil {
 		t.Errorf("Got result %v, wanted timeout error", out)
 	}

@@ -2082,9 +2082,13 @@ func TestInterpreter_ExhaustiveConditionalExpr(t *testing.T) {
 }
 
 func TestInterpreter_InterruptableEval(t *testing.T) {
-	items := make([]int64, 5000)
-	for i := int64(0); i < 5000; i++ {
-		items[i] = i
+	// The interrupt is only observed once every interruptCheckFrequency iterations, so the
+	// input list is sized well beyond that threshold to ensure the check occurs while the
+	// comprehension is still iterating.
+	const interruptCheckFrequency = 100
+	items := make([]int64, interruptCheckFrequency*50)
+	for i := 0; i < len(items); i++ {
+		items[i] = int64(i)
 	}
 	tc := testCase{
 		expr: `items.map(i, i).map(i, i).size() != 0`,
@@ -2101,11 +2105,14 @@ func TestInterpreter_InterruptableEval(t *testing.T) {
 		t.Fatalf("program(%s) failed: %v", tc.expr, err)
 	}
 
+	// Use a deadline which has already elapsed rather than a short timeout. A timeout-based
+	// deadline is racy as the evaluation may finish before the deadline timer fires, whereas
+	// an elapsed deadline closes the context's done channel immediately.
 	ctx := context.TODO()
-	evalCtx, cancel := context.WithTimeout(ctx, 10*time.Microsecond)
+	evalCtx, cancel := context.WithDeadline(ctx, time.Now().Add(-time.Minute))
 	defer cancel()
 
-	frame.SetContext(evalCtx, 100)
+	frame.SetContext(evalCtx, interruptCheckFrequency)
 	out := prg.Exec(frame)
 	frame.Close()
 	if !types.IsError(out) || out.(*types.Err).String() != "operation interrupted" {
