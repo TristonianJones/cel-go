@@ -181,6 +181,23 @@ type EvalResult struct {
 	Err         error
 }
 
+// captureCostTracker records the frame's cost tracker within the evaluation details, allocating
+// the details when cost tracking is enabled and no details have been created yet.
+//
+// The details must be fully populated before they are handed off to the caller, as any mutation
+// after the hand-off would race with the caller's reads.
+func captureCostTracker(det *EvalDetails, frame *interpreter.ExecutionFrame) *EvalDetails {
+	tracker := frame.CostTracker()
+	if tracker == nil {
+		return det
+	}
+	if det == nil {
+		det = &EvalDetails{}
+	}
+	det.costTracker = tracker
+	return det
+}
+
 // prog is the internal implementation of the Program interface.
 type prog struct {
 	*Env
@@ -417,12 +434,7 @@ func (p *prog) Eval(input any) (out ref.Val, det *EvalDetails, err error) {
 	}
 	// Configure error recovery and details capture for evaluation.
 	defer func() {
-		if tracker := frame.CostTracker(); tracker != nil {
-			if det == nil {
-				det = &EvalDetails{}
-			}
-			det.costTracker = tracker
-		}
+		det = captureCostTracker(det, frame)
 		if r := recover(); r != nil {
 			switch t := r.(type) {
 			case interpreter.EvalCancelledError:
@@ -555,21 +567,23 @@ func (p *prog) ConcurrentEval(ctx context.Context, input any) <-chan EvalResult 
 		defer frame.Close()
 
 		var det *EvalDetails
-		// Ensure concurrent eval handles panic / recovery properly
+		// Ensure concurrent eval handles panic / recovery properly.
+		//
+		// The details are only captured and published here for the panic case. Every normal
+		// return path populates the details and sends them on the result channel itself, and
+		// the receiver may read them as soon as the send completes. Mutating det from this
+		// defer, which runs after the send, would race with those reads.
 		defer func() {
-			if tracker := frame.CostTracker(); tracker != nil {
-				if det == nil {
-					det = &EvalDetails{}
-				}
-				det.costTracker = tracker
+			r := recover()
+			if r == nil {
+				return
 			}
-			if r := recover(); r != nil {
-				switch t := r.(type) {
-				case interpreter.EvalCancelledError:
-					resCh <- EvalResult{EvalDetails: det, Err: t}
-				default:
-					resCh <- EvalResult{EvalDetails: det, Err: fmt.Errorf("internal error: %v", r)}
-				}
+			det = captureCostTracker(det, frame)
+			switch t := r.(type) {
+			case interpreter.EvalCancelledError:
+				resCh <- EvalResult{EvalDetails: det, Err: t}
+			default:
+				resCh <- EvalResult{EvalDetails: det, Err: fmt.Errorf("internal error: %v", r)}
 			}
 		}()
 
@@ -594,15 +608,9 @@ func (p *prog) ConcurrentEval(ctx context.Context, input any) <-chan EvalResult 
 			} else {
 				out = p.interpretable.Exec(frame)
 			}
-			// This ensures that cost tracking is present on the result passed through the channel
-			// in the positive outcome case, as opposed to the defer which captures these details
-			// in the evaluation error scenarios.
-			if tracker := frame.CostTracker(); tracker != nil {
-				if det == nil {
-					det = &EvalDetails{}
-				}
-				det.costTracker = tracker
-			}
+			// Capture the cost tracker before the result is published on the channel: once the
+			// send completes the receiver owns the details and they must not be mutated.
+			det = captureCostTracker(det, frame)
 
 			// Communicate errors quickly.
 			if types.IsError(out) {
