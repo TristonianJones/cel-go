@@ -20,6 +20,7 @@ import (
 	"math/rand"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -634,6 +635,122 @@ func TestConcurrentEvalProgramThreadSafety(t *testing.T) {
 		if err := <-errCh; err != nil {
 			t.Errorf("Concurrent thread safety evaluation failed: %v", err)
 		}
+	}
+}
+
+// TestConcurrentEvalDetailsAfterPublish is a regression test for a data race on the EvalDetails
+// returned by ConcurrentEval.
+//
+// The evaluation goroutine used to assign the cost tracker to the details from its deferred
+// cleanup, which runs *after* the EvalResult has been sent on the result channel. The send only
+// establishes a happens-before edge up to the send itself, so the caller reading the details it
+// just received raced with that trailing write. The details must therefore be fully populated
+// before they are published, and never touched afterwards.
+//
+// Cost tracking must be enabled for the racy write to occur, and the failure is only observable
+// under `go test -race`, where either ordering of the two accesses is reported.
+func TestConcurrentEvalDetailsAfterPublish(t *testing.T) {
+	tests := []struct {
+		name string
+		expr string
+		// cancelAfter, when non-zero, cancels the evaluation context mid-flight to exercise the
+		// cancellation return path.
+		cancelAfter time.Duration
+	}{
+		{
+			name: "success",
+			expr: `async_inc(1) + async_inc(2)`,
+		},
+		{
+			name: "eval_error",
+			expr: `async_fail() + 1`,
+		},
+		{
+			name: "canceled",
+			expr: `slow_async(50)`,
+			// Cancel while the async call is still in flight so the result is published from
+			// the ctx.Done() branch rather than a completed evaluation.
+			cancelAfter: 5 * time.Millisecond,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			prg := mustProgram(t, tc.expr,
+				cel.Function("async_inc",
+					cel.Overload("async_inc_int", []*cel.Type{cel.IntType}, cel.IntType,
+						cel.AsyncBinding(func(ctx context.Context, args ...ref.Val) ref.Val {
+							time.Sleep(time.Millisecond)
+							return args[0].(types.Int) + 1
+						}),
+					),
+				),
+				cel.Function("async_fail",
+					cel.Overload("async_fail_void", []*cel.Type{}, cel.IntType,
+						cel.AsyncBinding(func(ctx context.Context, args ...ref.Val) ref.Val {
+							return types.NewErr("async failure")
+						}),
+					),
+				),
+				cel.Function("slow_async",
+					cel.Overload("slow_async_int", []*cel.Type{cel.IntType}, cel.IntType,
+						cel.AsyncBinding(func(ctx context.Context, args ...ref.Val) ref.Val {
+							select {
+							case <-time.After(time.Duration(int64(args[0].(types.Int))) * time.Millisecond):
+								return args[0]
+							case <-ctx.Done():
+								return types.NewErr("canceled")
+							}
+						}),
+					),
+				),
+				cel.EvalOptions(cel.OptTrackCost),
+			)
+
+			// Several concurrent evaluations, each read repeatedly on receipt, so that the reads
+			// overlap the window in which the evaluation goroutine runs its deferred cleanup.
+			const (
+				numGoroutines = 8
+				numReads      = 64
+			)
+			var wg sync.WaitGroup
+			for range numGoroutines {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					ctx, cancel := context.WithCancel(context.Background())
+					defer cancel()
+					if tc.cancelAfter > 0 {
+						timer := time.AfterFunc(tc.cancelAfter, cancel)
+						defer timer.Stop()
+					}
+
+					resCh := prg.ConcurrentEval(ctx, cel.NoVars())
+					var res cel.EvalResult
+					select {
+					case res = <-resCh:
+					case <-time.After(5 * time.Second):
+						t.Error("ConcurrentEval() timed out")
+						return
+					}
+
+					// Read the details as soon as they are handed over. Any write by the
+					// evaluation goroutine from this point on is a race.
+					for range numReads {
+						res.EvalDetails.ActualCost()
+						res.EvalDetails.PeakMemory()
+						res.EvalDetails.State()
+					}
+
+					// Cost tracking is enabled, so a published result must always carry the
+					// tracker: capturing it after the send would be both racy and too late.
+					if res.EvalDetails == nil || res.EvalDetails.ActualCost() == nil {
+						t.Errorf("ConcurrentEval(%q) ActualCost() is nil, want non-nil with cost tracking enabled", tc.expr)
+					}
+				}()
+			}
+			wg.Wait()
+		})
 	}
 }
 
