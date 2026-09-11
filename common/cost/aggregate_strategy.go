@@ -23,8 +23,20 @@ import (
 
 // AggregateSizingStrategy returns a SizingStrategy that computes recursive size estimates
 // by following paths during cost estimation, and calculates actual runtime size using
-// AggregateSize during cost tracking. By default, stringUnitLength is configured to 1
-// so that unscaled character/byte lengths are preserved for cost modeling.
+// AggregateSize during cost tracking.
+//
+// The strategy pins stringUnitLength to 1, overriding the types package default, so that
+// raw character and byte lengths reach the cost model unscaled. This is deliberate: sizing
+// strategies report raw dimensions, and cost expressions own the conversion to cost units
+// by applying factors such as StringTraversalCostFactor.
+//
+// Callers may supply additional SizeCalculatorOption values, which are applied after the
+// pinned default.
+//
+// Warning: passing types.SizeCalculatorStringUnitLength with a value other than 1 overrides
+// the pinned default and causes string costs to be discounted twice, once by the calculator
+// and again by the cost factor in the cost expression. A unit length of 10 combined with
+// StringTraversalCostFactor yields an effective 100x discount rather than 10x.
 func AggregateSizingStrategy(opts ...types.SizeCalculatorOption) SizingStrategy {
 	if len(opts) == 0 {
 		return defaultAggregateSizing

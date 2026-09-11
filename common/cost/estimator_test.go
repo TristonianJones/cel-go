@@ -20,22 +20,55 @@ import (
 	"strings"
 	"testing"
 
-	"cel.dev/cel-go/checker"
-	"cel.dev/cel-go/common"
+	"cel.dev/cel-go/cel"
 	"cel.dev/cel-go/common/ast"
-	"cel.dev/cel-go/common/containers"
 	"cel.dev/cel-go/common/cost"
 	"cel.dev/cel-go/common/decls"
-	"cel.dev/cel-go/common/operators"
 	"cel.dev/cel-go/common/overloads"
-	"cel.dev/cel-go/common/stdlib"
 	"cel.dev/cel-go/common/types"
 	"cel.dev/cel-go/common/types/ref"
-	"cel.dev/cel-go/common/types/traits"
-	"cel.dev/cel-go/parser"
+	"cel.dev/cel-go/ext"
 
 	proto3pb "cel.dev/cel-go/test/proto3pb"
 )
+
+// testCelEnv is the CEL environment shared by the cost estimator and tracker tests.
+//
+// Beyond the standard library it supplies the ext macros and functions these tests
+// exercise: cel.bind from ext.Bindings, and the two-variable comprehensions (all, exists,
+// existsOne, transformList, transformMap, transformMapEntry) from ext.TwoVarComprehensions
+// along with the cel.@mapInsert function they expand to. These were previously hand-rolled
+// in this file.
+var testCelEnv = func() *cel.Env {
+	env, err := cel.NewEnv(
+		cel.Types(&proto3pb.TestAllTypes{}),
+		cel.CrossTypeNumericComparisons(true),
+		ext.Bindings(),
+		ext.TwoVarComprehensions(),
+		cel.Function("max",
+			cel.MemberOverload("list_bytes_max",
+				[]*cel.Type{cel.ListType(cel.BytesType)}, cel.BytesType)),
+	)
+	if err != nil {
+		panic(fmt.Sprintf("cel.NewEnv() failed: %v", err))
+	}
+	return env
+}()
+
+// compile type checks an expression against the shared test environment extended with the
+// given variable declarations, and returns the checked AST.
+func compile(t *testing.T, expr string, vars ...*decls.VariableDecl) *ast.AST {
+	t.Helper()
+	env, err := testCelEnv.Extend(cel.VariableDecls(vars...))
+	if err != nil {
+		t.Fatalf("env.Extend() failed: %v", err)
+	}
+	checked, iss := env.Compile(expr)
+	if iss.Err() != nil {
+		t.Fatalf("env.Compile(%q) failed: %v", expr, iss.Err())
+	}
+	return checked.NativeRep()
+}
 
 func TestCost(t *testing.T) {
 	allTypes := types.NewObjectType("google.expr.proto3.test.TestAllTypes")
@@ -773,29 +806,29 @@ func TestCost(t *testing.T) {
 			wanted: cost.CostEstimate{Min: 25, Max: 25},
 		},
 		{
-			name: "bind: with variable list and index",
-			expr: `cel.bind(a, input, a[0])`,
-			vars: []*decls.VariableDecl{decls.NewVariable("input", intList)},
+			name:   "bind: with variable list and index",
+			expr:   `cel.bind(a, input, a[0])`,
+			vars:   []*decls.VariableDecl{decls.NewVariable("input", intList)},
 			wanted: cost.CostEstimate{Min: 13, Max: 13},
 		},
 		{
-			name: "bind: with variable map and index",
-			expr: `cel.bind(m, input, m['key'])`,
-			vars: []*decls.VariableDecl{decls.NewVariable("input", types.NewMapType(types.StringType, types.StringType))},
+			name:   "bind: with variable map and index",
+			expr:   `cel.bind(m, input, m['key'])`,
+			vars:   []*decls.VariableDecl{decls.NewVariable("input", types.NewMapType(types.StringType, types.StringType))},
 			wanted: cost.CostEstimate{Min: 13, Max: 13},
 		},
 		{
-			name: "bind: with comprehension and size hints",
-			vars: []*decls.VariableDecl{decls.NewVariable("input", allList)},
-			hints: map[string]uint64{"input": 100},
-			expr: `cel.bind(a, input, a.all(x, true))`,
+			name:   "bind: with comprehension and size hints",
+			vars:   []*decls.VariableDecl{decls.NewVariable("input", allList)},
+			hints:  map[string]uint64{"input": 100},
+			expr:   `cel.bind(a, input, a.all(x, true))`,
 			wanted: cost.CostEstimate{Min: 13, Max: 313},
 		},
 		{
-			name: "bind: nested with list and size hints",
-			vars: []*decls.VariableDecl{decls.NewVariable("input", nestedList)},
-			hints: map[string]uint64{"input": 50, "input.@items": 10},
-			expr: `cel.bind(a, input, a.all(x, x.all(y, true)))`,
+			name:   "bind: nested with list and size hints",
+			vars:   []*decls.VariableDecl{decls.NewVariable("input", nestedList)},
+			hints:  map[string]uint64{"input": 50, "input.@items": 10},
+			expr:   `cel.bind(a, input, a.all(x, x.all(y, true)))`,
 			wanted: cost.CostEstimate{Min: 13, Max: 1763},
 		},
 		{
@@ -912,44 +945,7 @@ func TestCost(t *testing.T) {
 			if tc.hints == nil {
 				tc.hints = map[string]uint64{}
 			}
-			p, err := parser.NewParser(parser.Macros(testMacros...))
-			if err != nil {
-				t.Fatalf("parser.NewParser() failed: %v", err)
-			}
-			src := common.NewStringSource(tc.expr, "<input>")
-			pe, errs := p.Parse(src)
-			if len(errs.GetErrors()) != 0 {
-				t.Fatalf("parser.Parse(%v) failed: %v", tc.expr, errs.ToDisplayString())
-			}
-			reg, err := types.NewRegistry(types.ProtoTypeDefs(&proto3pb.TestAllTypes{}))
-			if err != nil {
-				t.Fatalf("types.NewRegistry(...) failed: %v", err)
-			}
-
-			e, err := checker.NewEnv(containers.DefaultContainer, reg)
-			if err != nil {
-				t.Fatalf("checker.NewEnv() failed: %v", err)
-			}
-			err = e.AddFunctions(stdlib.Functions()...)
-			if err != nil {
-				t.Fatalf("environment creation error: %v", err)
-			}
-			maxFunc, _ := decls.NewFunction("max",
-				decls.MemberOverload("list_bytes_max",
-					[]*types.Type{types.NewListType(types.BytesType)},
-					types.BytesType))
-			err = e.AddFunctions(maxFunc, mapInsertFunctionDecl())
-			if err != nil {
-				t.Fatalf("environment creation error: %v", err)
-			}
-			err = e.AddIdents(tc.vars...)
-			if err != nil {
-				t.Fatalf("environment creation error: %s\n", err)
-			}
-			checked, errs := checker.Check(pe, src, e)
-			if len(errs.GetErrors()) != 0 {
-				t.Fatalf("Check(%s) failed: %v", tc.expr, errs.ToDisplayString())
-			}
+			checked := compile(t, tc.expr, tc.vars...)
 			est, err := cost.Cost(checked, testCostEstimator{hints: tc.hints}, tc.options...)
 			if err != nil {
 				t.Fatalf("Cost() failed: %v", err)
@@ -1040,35 +1036,8 @@ func (testCustomSizingStrategy) TrackSize(ctx cost.TrackContext, value ref.Val) 
 }
 
 func TestCustomSizingStrategy(t *testing.T) {
-	prse, err := parser.NewParser(parser.Macros(parser.AllMacros...))
-	if err != nil {
-		t.Fatalf("parser.NewParser() failed: %v", err)
-	}
-	src := common.NewStringSource("custom_str.contains('abc')", "<input>")
-	pe, errs := prse.Parse(src)
-	if len(errs.GetErrors()) != 0 {
-		t.Fatalf("Parse() failed: %v", errs.ToDisplayString())
-	}
-	reg, err := types.NewRegistry()
-	if err != nil {
-		t.Fatalf("types.NewRegistry() failed: %v", err)
-	}
-	e, err := checker.NewEnv(containers.DefaultContainer, reg)
-	if err != nil {
-		t.Fatalf("checker.NewEnv() failed: %v", err)
-	}
-	err = e.AddFunctions(stdlib.Functions()...)
-	if err != nil {
-		t.Fatalf("AddFunctions failed: %v", err)
-	}
-	err = e.AddIdents(decls.NewVariable("custom_str", types.StringType))
-	if err != nil {
-		t.Fatalf("AddIdents failed: %v", err)
-	}
-	checked, errs := checker.Check(pe, src, e)
-	if len(errs.GetErrors()) != 0 {
-		t.Fatalf("Check() failed: %v", errs.ToDisplayString())
-	}
+	checked := compile(t, "custom_str.contains('abc')",
+		decls.NewVariable("custom_str", types.StringType))
 
 	res, err := cost.Cost(checked, nil, cost.EstimateSizingStrategy(testCustomSizingStrategy{}))
 	if err != nil {
@@ -1082,277 +1051,4 @@ func TestCustomSizingStrategy(t *testing.T) {
 	if res.Min != 2 || res.Max != 3 {
 		t.Errorf("got cost %v, wanted {Min: 2, Max: 3}", res)
 	}
-}
-
-var (
-	testMacros = append(
-		append([]parser.Macro{}, parser.AllMacros...),
-		testCelBindMacro(),
-		testTwoVarAllMacro(),
-		testTwoVarExistsMacro(),
-		testTwoVarExistsOneMacro(),
-		testTwoVarExistsOneMacroNew(),
-		testTwoVarTransformListMacro(),
-		testTwoVarTransformListFilterMacro(),
-		testTwoVarTransformMapMacro(),
-		testTwoVarTransformMapFilterMacro(),
-		testTwoVarTransformMapEntryMacro(),
-		testTwoVarTransformMapEntryFilterMacro(),
-	)
-)
-
-func testCelBindMacro() parser.Macro {
-	return parser.NewReceiverMacro("bind", 3, func(eh parser.ExprHelper, target ast.Expr, args []ast.Expr) (ast.Expr, *common.Error) {
-		if target == nil || target.Kind() != ast.IdentKind || target.AsIdent() != "cel" {
-			return nil, nil
-		}
-		varIdent := args[0]
-		if varIdent.Kind() != ast.IdentKind {
-			return nil, eh.NewError(varIdent.ID(), "cel.bind() variable names must be simple identifiers")
-		}
-		varName := varIdent.AsIdent()
-		varInit := args[1]
-		resultExpr := args[2]
-		return eh.NewComprehension(
-			eh.NewList(),
-			"#unused",
-			varName,
-			varInit,
-			eh.NewLiteral(types.False),
-			eh.NewIdent(varName),
-			resultExpr,
-		), nil
-	})
-}
-
-func testTwoVarAllMacro() parser.Macro {
-	return parser.NewReceiverMacro("all", 3, func(eh parser.ExprHelper, target ast.Expr, args []ast.Expr) (ast.Expr, *common.Error) {
-		iterVar1, iterVar2, err := extractTwoVarIterVars(eh, args[0], args[1])
-		if err != nil {
-			return nil, err
-		}
-		return eh.NewComprehensionTwoVar(
-			target,
-			iterVar1,
-			iterVar2,
-			eh.AccuIdentName(),
-			eh.NewLiteral(types.True),
-			eh.NewCall(operators.NotStrictlyFalse, eh.NewAccuIdent()),
-			eh.NewCall(operators.LogicalAnd, eh.NewAccuIdent(), args[2]),
-			eh.NewAccuIdent(),
-		), nil
-	})
-}
-
-func testTwoVarExistsMacro() parser.Macro {
-	return parser.NewReceiverMacro("exists", 3, func(eh parser.ExprHelper, target ast.Expr, args []ast.Expr) (ast.Expr, *common.Error) {
-		iterVar1, iterVar2, err := extractTwoVarIterVars(eh, args[0], args[1])
-		if err != nil {
-			return nil, err
-		}
-		return eh.NewComprehensionTwoVar(
-			target,
-			iterVar1,
-			iterVar2,
-			eh.AccuIdentName(),
-			eh.NewLiteral(types.False),
-			eh.NewCall(operators.NotStrictlyFalse, eh.NewCall(operators.LogicalNot, eh.NewAccuIdent())),
-			eh.NewCall(operators.LogicalOr, eh.NewAccuIdent(), args[2]),
-			eh.NewAccuIdent(),
-		), nil
-	})
-}
-
-func testTwoVarExistsOneMacro() parser.Macro {
-	return parser.NewReceiverMacro("exists_one", 3, testTwoVarExistsOneExpander)
-}
-
-func testTwoVarExistsOneMacroNew() parser.Macro {
-	return parser.NewReceiverMacro("existsOne", 3, testTwoVarExistsOneExpander)
-}
-
-func testTwoVarExistsOneExpander(eh parser.ExprHelper, target ast.Expr, args []ast.Expr) (ast.Expr, *common.Error) {
-	iterVar1, iterVar2, err := extractTwoVarIterVars(eh, args[0], args[1])
-	if err != nil {
-		return nil, err
-	}
-	return eh.NewComprehensionTwoVar(
-		target,
-		iterVar1,
-		iterVar2,
-		eh.AccuIdentName(),
-		eh.NewLiteral(types.Int(0)),
-		eh.NewLiteral(types.True),
-		eh.NewCall(operators.Conditional, args[2],
-			eh.NewCall(operators.Add, eh.NewAccuIdent(), eh.NewLiteral(types.Int(1))),
-			eh.NewAccuIdent()),
-		eh.NewCall(operators.Equals, eh.NewAccuIdent(), eh.NewLiteral(types.Int(1))),
-	), nil
-}
-
-func testTwoVarTransformListMacro() parser.Macro {
-	return parser.NewReceiverMacro("transformList", 3, testTwoVarTransformListExpander)
-}
-
-func testTwoVarTransformListFilterMacro() parser.Macro {
-	return parser.NewReceiverMacro("transformList", 4, testTwoVarTransformListExpander)
-}
-
-func testTwoVarTransformListExpander(eh parser.ExprHelper, target ast.Expr, args []ast.Expr) (ast.Expr, *common.Error) {
-	iterVar1, iterVar2, err := extractTwoVarIterVars(eh, args[0], args[1])
-	if err != nil {
-		return nil, err
-	}
-	var transform, filter ast.Expr
-	if len(args) == 4 {
-		filter = args[2]
-		transform = args[3]
-	} else {
-		transform = args[2]
-	}
-	step := eh.NewCall(operators.Add, eh.NewAccuIdent(), eh.NewList(transform))
-	if filter != nil {
-		step = eh.NewCall(operators.Conditional, filter, step, eh.NewAccuIdent())
-	}
-	return eh.NewComprehensionTwoVar(
-		target,
-		iterVar1,
-		iterVar2,
-		eh.AccuIdentName(),
-		eh.NewList(),
-		eh.NewLiteral(types.True),
-		step,
-		eh.NewAccuIdent(),
-	), nil
-}
-
-func testTwoVarTransformMapMacro() parser.Macro {
-	return parser.NewReceiverMacro("transformMap", 3, testTwoVarTransformMapExpander)
-}
-
-func testTwoVarTransformMapFilterMacro() parser.Macro {
-	return parser.NewReceiverMacro("transformMap", 4, testTwoVarTransformMapExpander)
-}
-
-func testTwoVarTransformMapExpander(eh parser.ExprHelper, target ast.Expr, args []ast.Expr) (ast.Expr, *common.Error) {
-	iterVar1, iterVar2, err := extractTwoVarIterVars(eh, args[0], args[1])
-	if err != nil {
-		return nil, err
-	}
-	var transform, filter ast.Expr
-	if len(args) == 4 {
-		filter = args[2]
-		transform = args[3]
-	} else {
-		transform = args[2]
-	}
-	step := eh.NewCall("cel.@mapInsert", eh.NewAccuIdent(), eh.NewIdent(iterVar1), transform)
-	if filter != nil {
-		step = eh.NewCall(operators.Conditional, filter, step, eh.NewAccuIdent())
-	}
-	return eh.NewComprehensionTwoVar(
-		target,
-		iterVar1,
-		iterVar2,
-		eh.AccuIdentName(),
-		eh.NewMap(),
-		eh.NewLiteral(types.True),
-		step,
-		eh.NewAccuIdent(),
-	), nil
-}
-
-func testTwoVarTransformMapEntryMacro() parser.Macro {
-	return parser.NewReceiverMacro("transformMapEntry", 3, testTwoVarTransformMapEntryExpander)
-}
-
-func testTwoVarTransformMapEntryFilterMacro() parser.Macro {
-	return parser.NewReceiverMacro("transformMapEntry", 4, testTwoVarTransformMapEntryExpander)
-}
-
-func testTwoVarTransformMapEntryExpander(eh parser.ExprHelper, target ast.Expr, args []ast.Expr) (ast.Expr, *common.Error) {
-	iterVar1, iterVar2, err := extractTwoVarIterVars(eh, args[0], args[1])
-	if err != nil {
-		return nil, err
-	}
-	var transform, filter ast.Expr
-	if len(args) == 4 {
-		filter = args[2]
-		transform = args[3]
-	} else {
-		transform = args[2]
-	}
-	step := eh.NewCall("cel.@mapInsert", eh.NewAccuIdent(), transform)
-	if filter != nil {
-		step = eh.NewCall(operators.Conditional, filter, step, eh.NewAccuIdent())
-	}
-	return eh.NewComprehensionTwoVar(
-		target,
-		iterVar1,
-		iterVar2,
-		eh.AccuIdentName(),
-		eh.NewMap(),
-		eh.NewLiteral(types.True),
-		step,
-		eh.NewAccuIdent(),
-	), nil
-}
-
-func extractTwoVarIterVars(eh parser.ExprHelper, arg0, arg1 ast.Expr) (string, string, *common.Error) {
-	if arg0.Kind() != ast.IdentKind {
-		return "", "", eh.NewError(arg0.ID(), "argument must be a simple name")
-	}
-	if arg1.Kind() != ast.IdentKind {
-		return "", "", eh.NewError(arg1.ID(), "argument must be a simple name")
-	}
-	iterVar1 := arg0.AsIdent()
-	iterVar2 := arg1.AsIdent()
-	if iterVar1 == iterVar2 {
-		return "", "", eh.NewError(arg1.ID(), fmt.Sprintf("duplicate variable name: %s", iterVar1))
-	}
-	if iterVar1 == eh.AccuIdentName() || iterVar1 == parser.AccumulatorName {
-		return "", "", eh.NewError(arg0.ID(), "iteration variable overwrites accumulator variable")
-	}
-	if iterVar2 == eh.AccuIdentName() || iterVar2 == parser.AccumulatorName {
-		return "", "", eh.NewError(arg1.ID(), "iteration variable overwrites accumulator variable")
-	}
-	return iterVar1, iterVar2, nil
-}
-
-func mapInsertFunctionDecl() *decls.FunctionDecl {
-	kType := types.NewTypeParamType("K")
-	vType := types.NewTypeParamType("V")
-	mapKVType := types.NewMapType(kType, vType)
-	fn, _ := decls.NewFunction("cel.@mapInsert",
-		decls.Overload("@mapInsert_map_key_value",
-			[]*types.Type{mapKVType, kType, vType},
-			mapKVType),
-		decls.Overload("@mapInsert_map_map",
-			[]*types.Type{mapKVType, mapKVType},
-			mapKVType),
-		decls.SingletonFunctionBinding(func(args ...ref.Val) ref.Val {
-			if len(args) == 3 {
-				m := args[0].(traits.Mapper)
-				k := args[1]
-				v := args[2]
-				return types.InsertMapKeyValue(m, k, v)
-			}
-			if len(args) == 2 {
-				tm := args[0].(traits.Mapper)
-				um := args[1].(traits.Mapper)
-				umIt := um.Iterator()
-				for umIt.HasNext() == types.True {
-					k := umIt.Next()
-					updateOrErr := types.InsertMapKeyValue(tm, k, um.Get(k))
-					if types.IsError(updateOrErr) {
-						return updateOrErr
-					}
-					tm = updateOrErr.(traits.Mapper)
-				}
-				return tm
-			}
-			return types.NoSuchOverloadErr()
-		}),
-	)
-	return fn
 }

@@ -8,6 +8,7 @@ package(
 go_library(
     name = "go_default_library",
     srcs = [
+        "aggregate_strategy.go",
         "cost.go",
         "default_strategy.go",
         "estimator.go",
@@ -31,6 +32,7 @@ go_test(
     name = "go_default_test",
     size = "small",
     srcs = [
+        "aggregate_strategy_test.go",
         "cost_test.go",
         "default_strategy_test.go",
         "estimator_test.go",
@@ -42,18 +44,14 @@ go_test(
         ":go_default_library",
     ],
     deps = [
-        "//checker:go_default_library",
-        "//common:go_default_library",
+        "//cel:go_default_library",
         "//common/ast:go_default_library",
-        "//common/containers:go_default_library",
         "//common/decls:go_default_library",
         "//common/operators:go_default_library",
         "//common/overloads:go_default_library",
-        "//common/stdlib:go_default_library",
         "//common/types:go_default_library",
         "//common/types/ref:go_default_library",
-        "//interpreter:go_default_library",
-        "//parser:go_default_library",
+        "//ext:go_default_library",
         "//test/proto3pb:go_default_library",
     ],
 )
