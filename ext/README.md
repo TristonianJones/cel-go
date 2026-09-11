@@ -942,6 +942,51 @@ Examples:
     'hello'.charAt(5)  // return ''
     'hello'.charAt(-1) // error
 
+### Format
+
+**Introduced in version 1**
+
+**Revised in version 4**: the formatting behavior was updated to adhere to the
+[CEL string extensions spec](https://github.com/google/cel-spec/blob/master/doc/extensions/strings.md).
+Locale support was removed in this revision: the `StringsLocale` option is
+ignored at version 4 and above.
+
+Returns a new string with substitutions being performed, printf-style.
+
+The valid formatting clauses are:
+
+- `%s` - substitutes a string. This can also be used on bools, lists, maps, bytes,
+  Duration and Timestamp, in addition to all numerical types (int, uint, and double).
+- `%d` - substitutes an integer.
+- `%f` - substitutes a double with fixed-point precision. The default precision
+  is 6, but this can be adjusted.
+- `%e` - substitutes a double in scientific notation. The default precision is
+  6, but this can be adjusted.
+- `%b` - substitutes an integer with its equivalent binary string. Can also be
+  used on bools.
+- `%x` - substitutes an integer with its equivalent in hexadecimal, or if given a
+  string or bytes, outputs each character's equivalent in hexadecimal.
+- `%X` - same as `%x`, but with A-F capitalized.
+- `%o` - substitutes an integer with its equivalent in octal.
+
+    <string>.format(<list>) -> <string>
+
+Examples:
+
+    "this is a string: %s and an integer: %d".format(["str", 42]) // returns "this is a string: str and an integer: 42"
+    "%f".format([3.14])                       // returns "3.140000"
+    "5 in binary: %b".format([5])              // returns "5 in binary: 101"
+    "26 in hex: %x".format([26])               // returns "26 in hex: 1a"
+    "26 in hex (uppercase): %X".format([26])  // returns "26 in hex (uppercase): 1A"
+    "30 in octal: %o".format([30])             // returns "30 in octal: 36"
+    "duration: %s".format([duration("1h45m47s")]) // returns "duration: 6347s"
+
+Passing an incorrect type (a string to `%b`) is an error, as is attempting to
+use more formatting clauses than there are arguments. If compile-time checking
+is enabled, and the formatting string is a constant, and the argument list is a
+literal, then letting any arguments go unused/unformatted is also considered
+an error.
+
 ### IndexOf
 
 Returns the integer index of the first occurrence of the search string. If the
