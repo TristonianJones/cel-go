@@ -691,6 +691,9 @@ func TestCompileErrors(t *testing.T) {
 		{"invalid kind call in exprKind", "_1.exprKind(call(1))"},
 		{"no-arg type", "_1.type()"},
 		{"invalid type call in type", "_1.type(fn(1))"},
+		{"unknown qualified type name", "_1.type(no.such.Type)"},
+		{"misspelled primitive type name", "_1.type(itn)"},
+		{"unregistered message type name", "_1.type(dev.cel.testing.Missing)"},
 		{"invalid struct type call in exprKind", "_1.exprKind(struct, fn(1))"},
 		{"parse syntax error", "1 + *"},
 		{"invalid slot in map key", "{_1.atLeast(-1): 'b'}"},
@@ -1762,3 +1765,162 @@ func BenchmarkPlanTimeComprehensionInsertion(b *testing.B) {
 	})
 }
 
+// testASTNoMacroCalls parses an expression without macro call tracking, forcing
+// comprehension patterns down the structural matching path.
+func testASTNoMacroCalls(t testing.TB, src string) *ast.AST {
+	t.Helper()
+	prs, err := parser.NewParser(
+		parser.Macros(parser.AllMacros...),
+		parser.EnablePrattParser(true),
+	)
+	if err != nil {
+		t.Fatalf("parser.NewParser() failed: %v", err)
+	}
+	parsed, iss := prs.Parse(common.NewTextSource(src))
+	if iss != nil && len(iss.GetErrors()) > 0 {
+		t.Fatalf("prs.Parse(%q) failed: %v", src, iss.ToDisplayString())
+	}
+	return parsed
+}
+
+func TestTypeConstraintNameResolution(t *testing.T) {
+	customReg, err := types.NewRegistry()
+	if err != nil {
+		t.Fatalf("types.NewRegistry() failed: %v", err)
+	}
+	if err := customReg.RegisterType(types.NewOpaqueType("dev.cel.Custom")); err != nil {
+		t.Fatalf("RegisterType() failed: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		pattern string
+		opts    []matcher.CompileOption
+		wantErr bool
+	}{
+		{name: "primitive type", pattern: "_1.type(int)"},
+		{name: "qualified well-known type", pattern: "_1.type(google.protobuf.Duration)"},
+		{name: "type known to the configured provider",
+			pattern: "_1.type(dev.cel.Custom)",
+			opts:    []matcher.CompileOption{matcher.TypeProvider(customReg)}},
+		{name: "misspelled primitive type", pattern: "_1.type(itn)", wantErr: true},
+		{name: "unknown qualified type", pattern: "_1.type(no.such.Type)", wantErr: true},
+		{name: "type unknown to the configured provider",
+			pattern: "_1.type(dev.cel.Other)",
+			opts:    []matcher.CompileOption{matcher.TypeProvider(customReg)},
+			wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := matcher.Compile(tc.pattern, tc.opts...)
+			if tc.wantErr && err == nil {
+				t.Fatalf("Compile(%q) succeeded, expected an unknown type error", tc.pattern)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("Compile(%q) failed: %v", tc.pattern, err)
+			}
+		})
+	}
+}
+
+func TestIgnoreIdentifiersOptionHonored(t *testing.T) {
+	strict := []ast.EquivOption{ast.EquivIgnoreIdentifiers(false)}
+
+	tests := []struct {
+		name       string
+		pattern    string
+		target     string
+		macroCalls bool
+		equivOpts  []ast.EquivOption
+		wantMatch  bool
+	}{
+		{
+			name:       "macro call path unifies iteration variables by default",
+			pattern:    "_1.all(x, x > 0)",
+			target:     "items.all(it, it > 0)",
+			macroCalls: true,
+			wantMatch:  true,
+		},
+		{
+			name:       "macro call path honors strict identifiers",
+			pattern:    "_1.all(x, x > 0)",
+			target:     "items.all(it, it > 0)",
+			macroCalls: true,
+			equivOpts:  strict,
+			wantMatch:  false,
+		},
+		{
+			name:       "macro call path matches identical iteration variables when strict",
+			pattern:    "_1.all(x, x > 0)",
+			target:     "items.all(x, x > 0)",
+			macroCalls: true,
+			equivOpts:  strict,
+			wantMatch:  true,
+		},
+		{
+			name:      "structural path unifies iteration variables by default",
+			pattern:   "_1.all(x, x > 0)",
+			target:    "items.all(it, it > 0)",
+			wantMatch: true,
+		},
+		{
+			name:      "structural path honors strict identifiers",
+			pattern:   "_1.all(x, x > 0)",
+			target:    "items.all(it, it > 0)",
+			equivOpts: strict,
+			wantMatch: false,
+		},
+		{
+			name:      "structural path matches identical iteration variables when strict",
+			pattern:   "_1.all(x, x > 0)",
+			target:    "items.all(x, x > 0)",
+			equivOpts: strict,
+			wantMatch: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pat := matcher.MustCompile(tc.pattern)
+			var tgt *ast.AST
+			if tc.macroCalls {
+				tgt = testAST(t, tc.target)
+			} else {
+				tgt = testASTNoMacroCalls(t, tc.target)
+			}
+			if _, matched := pat.Match(tgt, tc.equivOpts...); matched != tc.wantMatch {
+				t.Errorf("pat.Match(%q) = %v, want %v", tc.target, matched, tc.wantMatch)
+			}
+		})
+	}
+}
+
+func TestMatchRootMismatchIsAllocationFree(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		target  string
+	}{
+		{name: "call pattern against list", pattern: "_1 + 0", target: "[1, 2]"},
+		{name: "call pattern against ident", pattern: "_1 + 0", target: "x"},
+		{name: "list pattern against map", pattern: "[_1.star()]", target: "{'a': 1}"},
+		{name: "struct pattern against literal", pattern: "_1.exprKind(struct)", target: "1"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pat := matcher.MustCompile(tc.pattern)
+			tgt := testAST(t, tc.target)
+			if _, matched := pat.Match(tgt); matched {
+				t.Fatalf("pat.Match(%q) matched, want mismatch", tc.target)
+			}
+			allocs := testing.AllocsPerRun(100, func() {
+				pat.Match(tgt)
+			})
+			if allocs != 0 {
+				t.Errorf("pat.Match(%q) allocated %v times on a root mismatch, want 0", tc.target, allocs)
+			}
+		})
+	}
+}

@@ -488,17 +488,24 @@ func (b *slotBuilder) typeConstraint(typeName string, provider types.Provider) e
 	}
 	b.slot.hasType = true
 	b.slot.typeName = typeName
-	if provider != nil {
-		if val, found := provider.FindIdent(typeName); found {
-			if t, ok := val.(*types.Type); ok {
-				b.slot.expectedType = t
-			}
+	if provider == nil {
+		return nil
+	}
+	if val, found := provider.FindIdent(typeName); found {
+		if t, ok := val.(*types.Type); ok {
+			b.slot.expectedType = t
 		}
-		if b.slot.expectedType == nil {
-			if st, found := provider.FindStructType(typeName); found {
-				b.slot.expectedType = st
-			}
+	}
+	if b.slot.expectedType == nil {
+		if st, found := provider.FindStructType(typeName); found {
+			b.slot.expectedType = st
 		}
+	}
+	// An unresolvable type name would otherwise degrade to a literal comparison
+	// against the target's type name, silently producing a pattern which can
+	// never match. Report the typo at compile time instead.
+	if b.slot.expectedType == nil {
+		return fmt.Errorf("unknown type name in type constraint: %s", typeName)
 	}
 	return nil
 }
@@ -703,8 +710,32 @@ func (p *Pattern) Match(target *ast.AST, opts ...ast.EquivOption) (MatchResult, 
 	if target == nil {
 		return nil, false
 	}
+	// Reject incompatible roots before wrapping the AST in a navigable expression,
+	// which would otherwise allocate even when the match cannot possibly succeed.
+	if p.rootKindMismatch(p.ast.Expr(), target.Expr()) {
+		return nil, false
+	}
 	navRoot := ast.NavigateAST(target)
 	return p.matchExprInternal(p.ast.Expr(), navRoot, target, opts)
+}
+
+// rootKindMismatch indicates whether the pattern root can be rejected based solely
+// on its expression kind, without traversing or navigating the target.
+//
+// Unconstrained slots and macro calls match across expression kinds, so they are
+// never rejected here. Slot type constraints require type metadata from a
+// navigated or checked AST and are deferred to the match itself.
+func (p *Pattern) rootKindMismatch(patExpr, targetExpr ast.Expr) bool {
+	if patExpr == nil || targetExpr == nil {
+		return false
+	}
+	if slot := p.slot(patExpr.ID()); slot != nil {
+		return !slotKindMatches(slot, targetExpr)
+	}
+	if p.hasMacroCalls && p.macroCalls[patExpr.ID()] != nil {
+		return false
+	}
+	return patExpr.Kind() != targetExpr.Kind()
 }
 
 // MatchExpr checks if the target expression matches the pattern root.
@@ -942,12 +973,8 @@ func (p *Pattern) matchExprInternal(patExpr, targetExpr ast.Expr, targetAST *ast
 
 	// Fast-path root check: if patExpr is not a slot and not a macro recorded in MacroCalls(),
 	// its Kind must match targetExpr.Kind().
-	if isSlot := p.slot(patExpr.ID()) != nil; !isSlot {
-		if !p.hasMacroCalls || p.macroCalls[patExpr.ID()] == nil {
-			if patExpr.Kind() != targetExpr.Kind() {
-				return nil, false
-			}
-		}
+	if p.rootKindMismatch(patExpr, targetExpr) {
+		return nil, false
 	}
 
 	ctx := matchContextPool.Get().(*matchContext)
@@ -992,7 +1019,12 @@ func (ctx *matchContext) matchNode(patExpr, targetExpr ast.Expr) bool {
 				targetMacro = ctx.targetAST.SourceInfo().MacroCalls()[targetExpr.ID()]
 			}
 			if targetMacro != nil {
-				if patExpr.Kind() == ast.ComprehensionKind && targetExpr.Kind() == ast.ComprehensionKind {
+				// Comprehension variable names are only unified when the caller
+				// permits alpha-equivalence. Otherwise the iteration variables
+				// recorded in the macro call are compared by name like any other
+				// identifier.
+				if ctx.ignoreIdentifiers &&
+					patExpr.Kind() == ast.ComprehensionKind && targetExpr.Kind() == ast.ComprehensionKind {
 					prev := ctx.pushIgnored(patExpr.AsComprehension(), targetExpr.AsComprehension())
 					defer ctx.popIgnored(prev)
 				}
@@ -1205,16 +1237,25 @@ func (ctx *matchContext) countFixedElements(elements []ast.Expr) int {
 	return fixedCount
 }
 
+// slotKindMatches reports whether the expression satisfies the slot's expression
+// kind constraint. Kind constraints are decidable without type metadata, so they
+// may be evaluated before an AST is navigated.
+func slotKindMatches(slot *slotDef, targetExpr ast.Expr) bool {
+	if !slot.hasKind {
+		return true
+	}
+	if targetExpr.Kind() != slot.expectedKind {
+		return false
+	}
+	if slot.structType != "" && targetExpr.Kind() == ast.StructKind {
+		return targetExpr.AsStruct().TypeName() == slot.structType
+	}
+	return true
+}
+
 func (ctx *matchContext) checkSlotConstraints(slot *slotDef, targetExpr ast.Expr) bool {
-	if slot.hasKind {
-		if targetExpr.Kind() != slot.expectedKind {
-			return false
-		}
-		if slot.structType != "" && targetExpr.Kind() == ast.StructKind {
-			if targetExpr.AsStruct().TypeName() != slot.structType {
-				return false
-			}
-		}
+	if !slotKindMatches(slot, targetExpr) {
+		return false
 	}
 
 	if slot.hasType {
