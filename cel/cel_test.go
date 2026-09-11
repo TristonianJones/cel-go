@@ -4155,6 +4155,239 @@ func TestOptionalHasValueVersion(t *testing.T) {
 	}
 }
 
+func TestOptionalMapVersion(t *testing.T) {
+	v3Env := testEnv(t,
+		OptionalTypes(OptionalTypesVersion(3)),
+		Variable("x", OptionalType(IntType)),
+		Variable("m", MapType(StringType, MapType(StringType, StringType))),
+	)
+	v4Env := testEnv(t,
+		OptionalTypes(OptionalTypesVersion(4)),
+		Variable("x", OptionalType(IntType)),
+		Variable("m", MapType(StringType, MapType(StringType, StringType))),
+	)
+	latestEnv := testEnv(t,
+		OptionalTypes(),
+		Variable("x", OptionalType(IntType)),
+		Variable("m", MapType(StringType, MapType(StringType, StringType))),
+	)
+
+	// In v3, optMap with non-ident target generates a conditional Call.
+	v3MapAst, iss := v3Env.Compile("{0: 10}[?0].optMap(v, v + 1)")
+	if iss.Err() != nil {
+		t.Fatalf("v3Env.Compile() optMap failed: %v", iss.Err())
+	}
+	if v3MapAst.NativeRep().Expr().Kind() != celast.CallKind {
+		t.Errorf("v3 optMap expected CallKind, got %v", v3MapAst.NativeRep().Expr().Kind())
+	}
+
+	// In v4, optMap with non-ident target generates an enclosing Comprehension.
+	v4MapAst, iss := v4Env.Compile("{0: 10}[?0].optMap(v, v + 1)")
+	if iss.Err() != nil {
+		t.Fatalf("v4Env.Compile() optMap failed: %v", iss.Err())
+	}
+	if v4MapAst.NativeRep().Expr().Kind() != celast.ComprehensionKind {
+		t.Errorf("v4 optMap expected ComprehensionKind, got %v", v4MapAst.NativeRep().Expr().Kind())
+	}
+
+	latestMapAst, iss := latestEnv.Compile("{0: 10}[?0].optMap(v, v + 1)")
+	if iss.Err() != nil {
+		t.Fatalf("latestEnv.Compile() optMap failed: %v", iss.Err())
+	}
+	if latestMapAst.NativeRep().Expr().Kind() != celast.ComprehensionKind {
+		t.Errorf("latest optMap expected ComprehensionKind, got %v", latestMapAst.NativeRep().Expr().Kind())
+	}
+
+	// When target is an ident, both v3 and v4 generate a CallKind (no enclosing comprehension).
+	for _, env := range []*Env{v3Env, v4Env, latestEnv} {
+		identAst, iss := env.Compile("x.optMap(v, v + 1)")
+		if iss.Err() != nil {
+			t.Fatalf("Compile() ident optMap failed: %v", iss.Err())
+		}
+		if identAst.NativeRep().Expr().Kind() != celast.CallKind {
+			t.Errorf("ident optMap expected CallKind, got %v", identAst.NativeRep().Expr().Kind())
+		}
+	}
+
+	// In v3, optFlatMap with non-ident target generates a CallKind.
+	v3FlatAst, iss := v3Env.Compile("m.?key.optFlatMap(k, k.?subkey)")
+	if iss.Err() != nil {
+		t.Fatalf("v3Env.Compile() optFlatMap failed: %v", iss.Err())
+	}
+	if v3FlatAst.NativeRep().Expr().Kind() != celast.CallKind {
+		t.Errorf("v3 optFlatMap expected CallKind, got %v", v3FlatAst.NativeRep().Expr().Kind())
+	}
+
+	// In v4, optFlatMap with non-ident target generates a ComprehensionKind.
+	v4FlatAst, iss := v4Env.Compile("m.?key.optFlatMap(k, k.?subkey)")
+	if iss.Err() != nil {
+		t.Fatalf("v4Env.Compile() optFlatMap failed: %v", iss.Err())
+	}
+	if v4FlatAst.NativeRep().Expr().Kind() != celast.ComprehensionKind {
+		t.Errorf("v4 optFlatMap expected ComprehensionKind, got %v", v4FlatAst.NativeRep().Expr().Kind())
+	}
+
+	latestFlatAst, iss := latestEnv.Compile("m.?key.optFlatMap(k, k.?subkey)")
+	if iss.Err() != nil {
+		t.Fatalf("latestEnv.Compile() optFlatMap failed: %v", iss.Err())
+	}
+	if latestFlatAst.NativeRep().Expr().Kind() != celast.ComprehensionKind {
+		t.Errorf("latest optFlatMap expected ComprehensionKind, got %v", latestFlatAst.NativeRep().Expr().Kind())
+	}
+
+	// Verify both v3 and v4 eval correctly.
+	for _, tc := range []struct {
+		name    string
+		env     *Env
+		mapAst  *Ast
+		flatAst *Ast
+	}{
+		{name: "v3", env: v3Env, mapAst: v3MapAst, flatAst: v3FlatAst},
+		{name: "v4", env: v4Env, mapAst: v4MapAst, flatAst: v4FlatAst},
+		{name: "latest", env: latestEnv, mapAst: latestMapAst, flatAst: latestFlatAst},
+	} {
+		mapPrg, err := tc.env.Program(tc.mapAst)
+		if err != nil {
+			t.Fatalf("%s Program() optMap failed: %v", tc.name, err)
+		}
+		out, _, err := mapPrg.Eval(NoVars())
+		if err != nil {
+			t.Fatalf("%s Eval() optMap failed: %v", tc.name, err)
+		}
+		if !out.Equal(types.OptionalOf(types.Int(11))).(types.Bool) {
+			t.Errorf("%s optMap got %v, wanted optional(11)", tc.name, out)
+		}
+
+		flatPrg, err := tc.env.Program(tc.flatAst)
+		if err != nil {
+			t.Fatalf("%s Program() optFlatMap failed: %v", tc.name, err)
+		}
+		flatOut, _, err := flatPrg.Eval(map[string]any{
+			"m": map[string]any{
+				"key": map[string]any{
+					"subkey": "hello",
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("%s Eval() optFlatMap failed: %v", tc.name, err)
+		}
+		if !flatOut.Equal(types.OptionalOf(types.String("hello"))).(types.Bool) {
+			t.Errorf("%s optFlatMap got %v, wanted optional('hello')", tc.name, flatOut)
+		}
+	}
+}
+
+func TestOptionalMapCost(t *testing.T) {
+	v3Env := testEnv(t,
+		OptionalTypes(OptionalTypesVersion(3)),
+		Variable("self", MapType(StringType, ListType(StringType))),
+	)
+	v4Env := testEnv(t,
+		OptionalTypes(OptionalTypesVersion(4)),
+		Variable("self", MapType(StringType, ListType(StringType))),
+	)
+	latestEnv := testEnv(t,
+		OptionalTypes(),
+		Variable("self", MapType(StringType, ListType(StringType))),
+	)
+
+	tests := []struct {
+		name       string
+		expr       string
+		in         map[string]any
+		v3Est      cost.CostEstimate
+		v3Actual   uint64
+		v4Est      cost.CostEstimate
+		v4Actual   uint64
+	}{
+		{
+			name:     "string equality optMap",
+			expr:     `optional.of('a').optMap(v, v == 'value').hasValue()`,
+			v3Est:    cost.CostEstimate{Min: 4, Max: 18},
+			v3Actual: 18,
+			v4Est:    cost.CostEstimate{Min: 15, Max: 29},
+			v4Actual: 29,
+		},
+		{
+			name:     "string size optMap",
+			expr:     `optional.of('abcdefgabcdefg').optMap(v, v.size()).hasValue()`,
+			v3Est:    cost.CostEstimate{Min: 4, Max: 18},
+			v3Actual: 18,
+			v4Est:    cost.CostEstimate{Min: 15, Max: 29},
+			v4Actual: 29,
+		},
+		{
+			name:     "list size optMap",
+			expr:     `optional.of([1, 2, 3, 4, 5]).optMap(v, v.size()).hasValue()`,
+			v3Est:    cost.CostEstimate{Min: 14, Max: 38},
+			v3Actual: 38,
+			v4Est:    cost.CostEstimate{Min: 25, Max: 39},
+			v4Actual: 39,
+		},
+		{
+			name: "map index optMap",
+			expr: `self.l[?0].optMap(v, v == 'a').hasValue()`,
+			in: map[string]any{
+				"self": map[string]any{"l": []string{"a"}},
+			},
+			v3Est:    cost.CostEstimate{Min: 6, Max: 22},
+			v3Actual: 22,
+			v4Est:    cost.CostEstimate{Min: 17, Max: 31},
+			v4Actual: 31,
+		},
+	}
+
+	for _, tst := range tests {
+		tc := tst
+		t.Run(tc.name, func(t *testing.T) {
+			in := tc.in
+			if in == nil {
+				in = map[string]any{}
+			}
+			for _, ver := range []struct {
+				name       string
+				env        *Env
+				wantEst    cost.CostEstimate
+				wantActual uint64
+			}{
+				{name: "v3", env: v3Env, wantEst: tc.v3Est, wantActual: tc.v3Actual},
+				{name: "v4", env: v4Env, wantEst: tc.v4Est, wantActual: tc.v4Actual},
+				{name: "latest", env: latestEnv, wantEst: tc.v4Est, wantActual: tc.v4Actual},
+			} {
+				ast, iss := ver.env.Compile(tc.expr)
+				if iss.Err() != nil {
+					t.Fatalf("%s Compile(%q) failed: %v", ver.name, tc.expr, iss.Err())
+				}
+				est, err := ver.env.EstimateCost(ast, testCostEstimator{hints: map[string]uint64{}})
+				if err != nil {
+					t.Fatalf("%s EstimateCost(%q) failed: %v", ver.name, tc.expr, err)
+				}
+				if est.Min != ver.wantEst.Min || est.Max != ver.wantEst.Max {
+					t.Errorf("%s EstimateCost(%q) got [%d, %d], wanted [%d, %d]",
+						ver.name, tc.expr, est.Min, est.Max, ver.wantEst.Min, ver.wantEst.Max)
+				}
+				prg, err := ver.env.Program(ast, CostTracking(nil))
+				if err != nil {
+					t.Fatalf("%s Program(%q) failed: %v", ver.name, tc.expr, err)
+				}
+				_, det, err := prg.Eval(in)
+				if err != nil {
+					t.Fatalf("%s Eval(%q) failed: %v", ver.name, tc.expr, err)
+				}
+				actual := *det.ActualCost()
+				if actual != ver.wantActual {
+					t.Errorf("%s ActualCost(%q) got %d, wanted %d", ver.name, tc.expr, actual, ver.wantActual)
+				}
+				if est.Min > actual || actual > est.Max {
+					t.Errorf("%s ActualCost(%q) = %d outside of estimate range [%d, %d]",
+						ver.name, tc.expr, actual, est.Min, est.Max)
+				}
+			}
+		})
+	}
+}
+
 // TestOptionalHasValueArgType verifies that the argument type must agree with the type held by the
 // optional, including when the argument is itself an optional_type(T).
 func TestOptionalHasValueArgType(t *testing.T) {

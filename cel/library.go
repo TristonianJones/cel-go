@@ -388,6 +388,14 @@ func (*stdLibrary) ProgramOptions() []ProgramOption {
 // optional.of(optional.of(42)).hasValue(optional.of(42)) // true
 // optional.of(42).hasValue(dyn(optional.of(42)))         // false
 // optional.of(42).hasValue(dyn(42))                      // true
+//
+// # OptMap and OptFlatMap efficiency improvements
+//
+// Introduced in version: 4
+//
+// In version 4 and later, optMap and optFlatMap avoid evaluating complex target
+// expressions more than once by binding the target to a variable in an enclosing
+// comprehension when the target is not a simple identifier.
 func OptionalTypes(opts ...OptionalTypesOption) EnvOption {
 	lib := &optionalLib{version: math.MaxUint32}
 	for _, opt := range opts {
@@ -443,6 +451,11 @@ func (lib *optionalLib) CompileOptions() []EnvOption {
 	mapTypeKV := MapType(paramTypeK, paramTypeV)
 	listOptionalTypeV := ListType(optionalTypeV)
 
+	optMapMacroExpander := optMap
+	if lib.version >= 4 {
+		optMapMacroExpander = optMapV2
+	}
+
 	opts := []EnvOption{
 		// Enable the optional syntax in the parser.
 		enableOptionalSyntax(),
@@ -451,7 +464,7 @@ func (lib *optionalLib) CompileOptions() []EnvOption {
 		Types(types.OptionalType),
 
 		// Configure the optMap and optFlatMap macros.
-		Macros(ReceiverMacro(optMapMacro, 2, optMap,
+		Macros(ReceiverMacro(optMapMacro, 2, optMapMacroExpander,
 			MacroDocs(`perform computation on the value if present and return the result as an optional`),
 			MacroExamples(
 				common.MultilineDescription(
@@ -555,7 +568,11 @@ func (lib *optionalLib) CompileOptions() []EnvOption {
 			Overload("optional_map_index_value", []*Type{OptionalType(mapTypeKV), paramTypeK}, optionalTypeV)),
 	}
 	if lib.version >= 1 {
-		opts = append(opts, Macros(ReceiverMacro(optFlatMapMacro, 2, optFlatMap,
+		optFlatMapMacroExpander := optFlatMap
+		if lib.version >= 4 {
+			optFlatMapMacroExpander = optFlatMapV2
+		}
+		opts = append(opts, Macros(ReceiverMacro(optFlatMapMacro, 2, optFlatMapMacroExpander,
 			MacroDocs(`perform computation on the value if present and produce an optional value within the computation`),
 			MacroExamples(
 				common.MultilineDescription(
@@ -733,6 +750,34 @@ func optMap(meh MacroExprFactory, target ast.Expr, args []ast.Expr) (ast.Expr, *
 		return nil, meh.NewError(varIdent.ID(), "optMap() variable name must be a simple identifier")
 	}
 	mapExpr := args[1]
+	return meh.NewCall(
+		operators.Conditional,
+		meh.NewMemberCall(hasValueFunc, target),
+		meh.NewCall(optionalOfFunc,
+			meh.NewComprehension(
+				meh.NewList(),
+				unusedIterVar,
+				varName,
+				meh.NewMemberCall(valueFunc, meh.Copy(target)),
+				meh.NewLiteral(types.False),
+				meh.NewIdent(varName),
+				mapExpr,
+			),
+		),
+		meh.NewCall(optionalNoneFunc),
+	), nil
+}
+
+func optMapV2(meh MacroExprFactory, target ast.Expr, args []ast.Expr) (ast.Expr, *Error) {
+	varIdent := args[0]
+	varName := ""
+	switch varIdent.Kind() {
+	case ast.IdentKind:
+		varName = varIdent.AsIdent()
+	default:
+		return nil, meh.NewError(varIdent.ID(), "optMap() variable name must be a simple identifier")
+	}
+	mapExpr := args[1]
 	targetIdent := target
 	if target.Kind() != ast.IdentKind {
 		targetIdent = meh.NewIdent(targetVar)
@@ -768,6 +813,32 @@ func optMap(meh MacroExprFactory, target ast.Expr, args []ast.Expr) (ast.Expr, *
 }
 
 func optFlatMap(meh MacroExprFactory, target ast.Expr, args []ast.Expr) (ast.Expr, *Error) {
+	varIdent := args[0]
+	varName := ""
+	switch varIdent.Kind() {
+	case ast.IdentKind:
+		varName = varIdent.AsIdent()
+	default:
+		return nil, meh.NewError(varIdent.ID(), "optFlatMap() variable name must be a simple identifier")
+	}
+	mapExpr := args[1]
+	return meh.NewCall(
+		operators.Conditional,
+		meh.NewMemberCall(hasValueFunc, target),
+		meh.NewComprehension(
+			meh.NewList(),
+			unusedIterVar,
+			varName,
+			meh.NewMemberCall(valueFunc, meh.Copy(target)),
+			meh.NewLiteral(types.False),
+			meh.NewIdent(varName),
+			mapExpr,
+		),
+		meh.NewCall(optionalNoneFunc),
+	), nil
+}
+
+func optFlatMapV2(meh MacroExprFactory, target ast.Expr, args []ast.Expr) (ast.Expr, *Error) {
 	varIdent := args[0]
 	varName := ""
 	switch varIdent.Kind() {
