@@ -835,6 +835,19 @@ func ConcurrentDrainStrategy(strategy async.DrainStrategy) ProgramOption {
 	}
 }
 
+// BypassAsyncProtection allows for the bypass of hasAsync protection in Eval and ContextEval if present.
+//
+// By default, expressions in an environment with asynchronous functions will reject calls to
+// Eval and ContextEval, requiring ConcurrentEval instead. This option bypasses that check, allowing
+// synchronous evaluation of expressions that do not actually call asynchronous functions (such as
+// constant validations).
+func BypassAsyncProtection() ProgramOption {
+	return func(p *prog) (*prog, error) {
+		p.hasAsync = false
+		return p, nil
+	}
+}
+
 // CostEstimatorOptions configure type-check time options for estimating expression cost.
 func CostEstimatorOptions(costOpts ...cost.CostOption) EnvOption {
 	return func(e *Env) (*Env, error) {

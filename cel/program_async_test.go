@@ -821,6 +821,46 @@ func TestSyncEvalRejectedInAsyncEnv(t *testing.T) {
 	}
 }
 
+func TestBypassAsyncProtection(t *testing.T) {
+	// An environment that declares an async function allows synchronous Eval and ContextEval
+	// when BypassAsyncProtection is specified.
+	prg := mustProgram(t, `x + 1`,
+		cel.Variable("x", cel.IntType),
+		cel.Function("rpc",
+			cel.Overload("rpc_string", []*cel.Type{cel.StringType}, cel.StringType,
+				cel.AsyncBinding(func(ctx context.Context, args ...ref.Val) ref.Val { return args[0] }))),
+		cel.BypassAsyncProtection(),
+	)
+	out, _, err := prg.Eval(map[string]any{"x": 1})
+	if err != nil {
+		t.Fatalf("Eval() with BypassAsyncProtection failed: %v", err)
+	}
+	if out.Equal(types.Int(2)) != types.True {
+		t.Errorf("Eval() = %v, want 2", out)
+	}
+
+	out, _, err = prg.ContextEval(context.Background(), map[string]any{"x": 2})
+	if err != nil {
+		t.Fatalf("ContextEval() with BypassAsyncProtection failed: %v", err)
+	}
+	if out.Equal(types.Int(3)) != types.True {
+		t.Errorf("ContextEval() = %v, want 3", out)
+	}
+
+	// An expression that actually calls an asynchronous function still fails at runtime
+	// when evaluated synchronously, even with BypassAsyncProtection.
+	asyncPrg := mustProgram(t, `rpc("a")`,
+		cel.Function("rpc",
+			cel.Overload("rpc_string", []*cel.Type{cel.StringType}, cel.StringType,
+				cel.AsyncBinding(func(ctx context.Context, args ...ref.Val) ref.Val { return args[0] }))),
+		cel.BypassAsyncProtection(),
+	)
+	_, _, err = asyncPrg.Eval(cel.NoVars())
+	if err == nil || !strings.Contains(err.Error(), "asynchronous function calls require concurrent evaluation") {
+		t.Errorf("Eval() on actual async call with BypassAsyncProtection = %v, want error mentioning concurrent evaluation", err)
+	}
+}
+
 func TestConcurrentEvalDrainReady(t *testing.T) {
 	cases := []struct {
 		name       string

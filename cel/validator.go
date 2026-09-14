@@ -15,7 +15,6 @@
 package cel
 
 import (
-	"context"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -308,13 +307,12 @@ func (v formatValidator) Validate(e *Env, _ ValidatorConfig, a *ast.AST, iss *Is
 
 func evalCall(env *Env, call, arg ast.Expr) error {
 	ast := &Ast{impl: ast.NewAST(call, ast.NewSourceInfo(nil))}
-	prg, err := env.Program(ast)
+	prg, err := env.Program(ast, BypassAsyncProtection())
 	if err != nil {
 		return err
 	}
-	resCh := prg.ConcurrentEval(context.Background(), NoVars())
-	res := <-resCh
-	return res.Err
+	_, _, err = prg.Eval(NoVars())
+	return err
 }
 
 func compileRegex(_ *Env, _, arg ast.Expr) error {

@@ -15,6 +15,7 @@
 package cel
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -594,5 +595,34 @@ func TestOverrideValidatorPreservesOrder(t *testing.T) {
 	}
 	if val, ok := validators[1].(nestingLimitValidator); !ok || val.limit != 5 {
 		t.Fatalf("expected overridden nesting limit validator with limit 5, got %v", validators[1])
+	}
+}
+
+func TestValidateLiteralsInAsyncEnv(t *testing.T) {
+	env, err := NewEnv(
+		ExtendedValidations(),
+		Function("async_call",
+			Overload("async_call_string", []*Type{StringType}, StringType,
+				AsyncBinding(func(ctx context.Context, args ...ref.Val) ref.Val { return args[0] }))),
+	)
+	if err != nil {
+		t.Fatalf("NewEnv() failed: %v", err)
+	}
+
+	// Duration and timestamp literal validations should succeed even in an async env.
+	_, iss := env.Compile(`duration('1h') < duration('2h') && timestamp('2023-01-01T00:00:00Z') < timestamp('2023-01-02T00:00:00Z')`)
+	if iss.Err() != nil {
+		t.Fatalf("env.Compile() valid literals failed: %v", iss.Err())
+	}
+
+	// Invalid literals should still report validation errors.
+	_, iss = env.Compile(`duration('invalid_duration')`)
+	if iss.Err() == nil {
+		t.Fatal("env.Compile() invalid duration expected error, got nil")
+	}
+
+	_, iss = env.Compile(`timestamp('invalid_timestamp')`)
+	if iss.Err() == nil {
+		t.Fatal("env.Compile() invalid timestamp expected error, got nil")
 	}
 }
