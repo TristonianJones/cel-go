@@ -1163,11 +1163,15 @@ func (o *evalObj) Exec(frame *ExecutionFrame) ref.Val {
 		fieldVals[field] = val
 	}
 	if unk != nil {
-		trackCostCreateStruct(frame, o.id, unk)
+		if costs := frame.CostTracker(); costs != nil {
+			costs.CreateStruct(o.id, unk)
+		}
 		return unk
 	}
 	res := labelErrNode(o.id, o.provider.NewValue(o.typeName, fieldVals))
-	trackCostCreateStruct(frame, o.id, res)
+	if costs := frame.CostTracker(); costs != nil {
+		costs.CreateStruct(o.id, res)
+	}
 	return res
 }
 

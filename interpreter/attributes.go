@@ -1455,7 +1455,9 @@ func applyQualifiers(vars Activation, obj any, qualifiers []Qualifier) (any, boo
 			var present bool
 			qualObj, present, err = qual.QualifyIfPresent(vars, obj, false)
 			if hasFrame {
-				trackCostQualify(frame, qual.ID())
+				if costs := frame.CostTracker(); costs != nil {
+					costs.Qualify(qual.ID())
+				}
 			}
 			if err != nil {
 				return nil, false, err
@@ -1469,7 +1471,9 @@ func applyQualifiers(vars Activation, obj any, qualifiers []Qualifier) (any, boo
 		} else {
 			qualObj, err = qual.Qualify(vars, obj)
 			if hasFrame {
-				trackCostQualify(frame, qual.ID())
+				if costs := frame.CostTracker(); costs != nil {
+					costs.Qualify(qual.ID())
+				}
 			}
 			if err != nil {
 				return nil, false, err
