@@ -262,7 +262,9 @@ func (test *evalTestOnly) Exec(frame *ExecutionFrame) ref.Val {
 	} else {
 		res = test.Adapter().NativeToValue(val)
 	}
-	trackCostEvalAttribute(frame, test.id, true, res)
+	if costs := frame.CostTracker(); costs != nil {
+		costs.EvalAttribute(test.id, true, res)
+	}
 	return res
 }
 
@@ -462,22 +464,30 @@ func (eq *evalEq) Exec(frame *ExecutionFrame) ref.Val {
 	if isError(lVal) {
 		// To preserve legacy cost tracking behavior for ==
 		// track this cost, but it will be removed in the future.
-		trackCostEvalBinary(frame, eq.id, eq, lVal, types.UnknownType, lVal)
+		if costs := frame.CostTracker(); costs != nil {
+			costs.EvalBinary(frame, eq.id, eq, lVal, types.UnknownType, lVal)
+		}
 		return lVal
 	}
 	rVal := eq.rhs.Exec(frame)
 	if isError(rVal) {
 		// To preserve legacy cost tracking behavior for ==,
 		// track this cost, but it will be removed in the future.
-		trackCostEvalBinary(frame, eq.id, eq, lVal, rVal, rVal)
+		if costs := frame.CostTracker(); costs != nil {
+			costs.EvalBinary(frame, eq.id, eq, lVal, rVal, rVal)
+		}
 		return rVal
 	}
 	if unk := mergeBinaryUnknowns(lVal, rVal); unk != nil {
-		trackCostEvalBinary(frame, eq.id, eq, lVal, rVal, unk)
+		if costs := frame.CostTracker(); costs != nil {
+			costs.EvalBinary(frame, eq.id, eq, lVal, rVal, unk)
+		}
 		return unk
 	}
 	res := types.Equal(lVal, rVal)
-	trackCostEvalBinary(frame, eq.id, eq, lVal, rVal, res)
+	if costs := frame.CostTracker(); costs != nil {
+		costs.EvalBinary(frame, eq.id, eq, lVal, rVal, res)
+	}
 	return res
 }
 
@@ -518,22 +528,30 @@ func (ne *evalNe) Exec(frame *ExecutionFrame) ref.Val {
 	if isError(lVal) {
 		// To preserve legacy cost tracking behavior for !=,
 		// track this cost, but it will be removed in the future.
-		trackCostEvalBinary(frame, ne.id, ne, lVal, types.UnknownType, lVal)
+		if costs := frame.CostTracker(); costs != nil {
+			costs.EvalBinary(frame, ne.id, ne, lVal, types.UnknownType, lVal)
+		}
 		return lVal
 	}
 	rVal := ne.rhs.Exec(frame)
 	if isError(rVal) {
 		// To preserve legacy cost tracking behavior for !=,
 		// track this cost, but it will be removed in the future.
-		trackCostEvalBinary(frame, ne.id, ne, lVal, rVal, rVal)
+		if costs := frame.CostTracker(); costs != nil {
+			costs.EvalBinary(frame, ne.id, ne, lVal, rVal, rVal)
+		}
 		return rVal
 	}
 	if unk := mergeBinaryUnknowns(lVal, rVal); unk != nil {
-		trackCostEvalBinary(frame, ne.id, ne, lVal, rVal, unk)
+		if costs := frame.CostTracker(); costs != nil {
+			costs.EvalBinary(frame, ne.id, ne, lVal, rVal, unk)
+		}
 		return unk
 	}
 	res := types.Bool(types.Equal(lVal, rVal) != types.True)
-	trackCostEvalBinary(frame, ne.id, ne, lVal, rVal, res)
+	if costs := frame.CostTracker(); costs != nil {
+		costs.EvalBinary(frame, ne.id, ne, lVal, rVal, res)
+	}
 	return res
 }
 
@@ -572,7 +590,9 @@ func (zero *evalZeroArity) ID() int64 {
 // Exec implements the InterpretableV2 interface method.
 func (zero *evalZeroArity) Exec(frame *ExecutionFrame) ref.Val {
 	res := labelErrNode(zero.id, zero.impl())
-	trackCostEvalZeroArity(frame, zero.id, zero, res)
+	if costs := frame.CostTracker(); costs != nil {
+		costs.EvalZeroArity(frame, zero.id, zero, res)
+	}
 	return res
 }
 
@@ -622,11 +642,15 @@ func (un *evalUnary) Exec(frame *ExecutionFrame) ref.Val {
 			// To preserve legacy cost tracking behavior for logical not,
 			// this cost is tracked, but will be removed in the future.
 			if un.function == operators.LogicalNot {
-				trackCostEvalUnary(frame, un.id, un, argVal, argVal)
+				if costs := frame.CostTracker(); costs != nil {
+					costs.EvalUnary(frame, un.id, un, argVal, argVal)
+				}
 			}
 			return v
 		case *types.Unknown:
-			trackCostEvalUnary(frame, un.id, un, argVal, argVal)
+			if costs := frame.CostTracker(); costs != nil {
+				costs.EvalUnary(frame, un.id, un, argVal, argVal)
+			}
 			return v
 		}
 	}
@@ -642,7 +666,9 @@ func (un *evalUnary) Exec(frame *ExecutionFrame) ref.Val {
 	} else {
 		res = types.NewErrWithNodeID(un.id, "no such overload: %s", un.function)
 	}
-	trackCostEvalUnary(frame, un.id, un, argVal, res)
+	if costs := frame.CostTracker(); costs != nil {
+		costs.EvalUnary(frame, un.id, un, argVal, res)
+	}
 	return res
 }
 
@@ -695,7 +721,9 @@ func (bin *evalBinary) Exec(frame *ExecutionFrame) ref.Val {
 	}
 	if strict {
 		if unk := mergeBinaryUnknowns(lVal, rVal); unk != nil {
-			trackCostEvalBinary(frame, bin.id, bin, lVal, rVal, unk)
+			if costs := frame.CostTracker(); costs != nil {
+				costs.EvalBinary(frame, bin.id, bin, lVal, rVal, unk)
+			}
 			return unk
 		}
 	}
@@ -711,7 +739,9 @@ func (bin *evalBinary) Exec(frame *ExecutionFrame) ref.Val {
 	} else {
 		res = types.NewErrWithNodeID(bin.id, "no such overload: %s", bin.function)
 	}
-	trackCostEvalBinary(frame, bin.id, bin, lVal, rVal, res)
+	if costs := frame.CostTracker(); costs != nil {
+		costs.EvalBinary(frame, bin.id, bin, lVal, rVal, res)
+	}
 	return res
 }
 
@@ -783,7 +813,9 @@ func (fn *evalVarArgs) Exec(frame *ExecutionFrame) ref.Val {
 		argVals[i] = argVal
 	}
 	if strict && unk != nil {
-		trackCostEvalVarArgs(frame, fn.id, fn, argVals, unk)
+		if costs := frame.CostTracker(); costs != nil {
+			costs.EvalVarArgs(frame, fn.id, fn, argVals, unk)
+		}
 		return unk
 	}
 	if len(argVals) == 0 {
@@ -793,7 +825,9 @@ func (fn *evalVarArgs) Exec(frame *ExecutionFrame) ref.Val {
 		} else {
 			res = types.NewErrWithNodeID(fn.id, "no such overload: %s %d", fn.function, fn.id)
 		}
-		trackCostEvalZeroArity(frame, fn.id, fn, res)
+		if costs := frame.CostTracker(); costs != nil {
+			costs.EvalZeroArity(frame, fn.id, fn, res)
+		}
 		return res
 	}
 	var res ref.Val
@@ -809,7 +843,9 @@ func (fn *evalVarArgs) Exec(frame *ExecutionFrame) ref.Val {
 	} else {
 		res = types.NewErrWithNodeID(fn.id, "no such overload: %s %d", fn.function, fn.id)
 	}
-	trackCostEvalVarArgs(frame, fn.id, fn, argVals, res)
+	if costs := frame.CostTracker(); costs != nil {
+		costs.EvalVarArgs(frame, fn.id, fn, argVals, res)
+	}
 	return res
 }
 
@@ -902,11 +938,15 @@ func (l *evalList) Exec(frame *ExecutionFrame) ref.Val {
 		elemVals = append(elemVals, elemVal)
 	}
 	if unk != nil {
-		trackCostCreateList(frame, l.id, unk)
+		if costs := frame.CostTracker(); costs != nil {
+			costs.CreateList(l.id, unk)
+		}
 		return unk
 	}
 	res := types.NewRefValList(l.adapter, elemVals)
-	trackCostCreateList(frame, l.id, res)
+	if costs := frame.CostTracker(); costs != nil {
+		costs.CreateList(l.id, res)
+	}
 	return res
 }
 
@@ -1016,11 +1056,15 @@ func (m *evalMap) Exec(frame *ExecutionFrame) ref.Val {
 		entries[keyVal] = valVal
 	}
 	if unk != nil {
-		trackCostCreateMap(frame, m.id, unk)
+		if costs := frame.CostTracker(); costs != nil {
+			costs.CreateMap(m.id, unk)
+		}
 		return unk
 	}
 	res := types.NewRefValMap(m.adapter, entries)
-	trackCostCreateMap(frame, m.id, res)
+	if costs := frame.CostTracker(); costs != nil {
+		costs.CreateMap(m.id, res)
+	}
 	return res
 }
 
@@ -1663,7 +1707,9 @@ func (a *evalAttr) Exec(frame *ExecutionFrame) ref.Val {
 		res = a.adapter.NativeToValue(v)
 	}
 	if _, isCond := a.attr.(*conditionalAttribute); !isCond {
-		trackCostEvalAttribute(frame, a.ID(), false, res)
+		if costs := frame.CostTracker(); costs != nil {
+			costs.EvalAttribute(a.ID(), false, res)
+		}
 	}
 	return res
 }
@@ -1962,36 +2008,6 @@ var (
 		},
 	}
 )
-
-func trackCostEvalAttribute(frame *ExecutionFrame, id int64, isOpt bool, res ref.Val) {
-	if costs := frame.CostTracker(); costs != nil {
-		costs.EvalAttribute(id, isOpt, res)
-	}
-}
-
-func trackCostEvalBinary(frame *ExecutionFrame, id int64, inst InterpretableCall, lVal, rVal, res ref.Val) {
-	if costs := frame.CostTracker(); costs != nil {
-		costs.EvalBinary(frame, id, inst, lVal, rVal, res)
-	}
-}
-
-func trackCostEvalZeroArity(frame *ExecutionFrame, id int64, inst InterpretableCall, res ref.Val) {
-	if costs := frame.CostTracker(); costs != nil {
-		costs.EvalZeroArity(frame, id, inst, res)
-	}
-}
-
-func trackCostEvalUnary(frame *ExecutionFrame, id int64, inst InterpretableCall, val, res ref.Val) {
-	if costs := frame.CostTracker(); costs != nil {
-		costs.EvalUnary(frame, id, inst, val, res)
-	}
-}
-
-func trackCostEvalVarArgs(frame *ExecutionFrame, id int64, inst InterpretableCall, args []ref.Val, res ref.Val) {
-	if costs := frame.CostTracker(); costs != nil {
-		costs.EvalVarArgs(frame, id, inst, args, res)
-	}
-}
 
 func trackCostCreateList(frame *ExecutionFrame, id int64, res ref.Val) {
 	if costs := frame.CostTracker(); costs != nil {
