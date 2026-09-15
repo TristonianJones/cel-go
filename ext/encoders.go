@@ -17,6 +17,7 @@ package ext
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -44,6 +45,11 @@ const (
 
 // Encoders returns a cel.EnvOption to configure extended functions for string, byte, and object
 // encodings.
+//
+// Note: all functions use the 'base64', 'json', and 'yaml' namespaces.
+//
+// Version 2 of this library depends on the CEL optional type. Please ensure that the
+// cel.OptionalTypes() is enabled when using encoder extensions at version 2 or greater.
 //
 // # Base64.Decode
 //
@@ -111,7 +117,7 @@ const (
 //
 // # JSON.Parse
 //
-// Introduced at version: 1
+// Introduced at version: 2
 //
 // Parses a JSON string to a CEL value or a specific type.
 //
@@ -125,7 +131,7 @@ const (
 //
 // # YAML.Encode
 //
-// Introduced at version: 1
+// Introduced at version: 2
 //
 // Encodes a CEL value to a YAML string.
 //
@@ -137,7 +143,7 @@ const (
 //
 // # YAML.Parse
 //
-// Introduced at version: 1
+// Introduced at version: 2
 //
 // Parses a YAML string to a CEL value or a specific type.
 //
@@ -216,11 +222,17 @@ func (lib *encoderLib) CompileOptions() []cel.EnvOption {
 			cost.OverloadCostEstimate("yaml_parse_string_type", estimateYAMLParse),
 		}
 
+		optionalTypesEnabled := func(env *cel.Env) (*cel.Env, error) {
+			if !env.HasLibrary("cel.lib.optional") {
+				return nil, errors.New("encoders library requires the optional library")
+			}
+			return env, nil
+		}
 		var adapt types.Adapter = types.DefaultTypeAdapter
 		var prov types.Provider
 		opts = append(opts, cel.CostEstimatorOptions(estimators...))
 		opts = append(opts,
-			cel.OptionalTypes(),
+			cel.EnvOption(optionalTypesEnabled),
 			func(e *cel.Env) (*cel.Env, error) {
 				adapt = e.CELTypeAdapter()
 				prov = e.CELTypeProvider()

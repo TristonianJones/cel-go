@@ -360,7 +360,7 @@ func TestEncoders(t *testing.T) {
 		{expr: "yaml.parse('- 1\\n- 2', type({'': 1})) == optional.none()"},
 	}
 
-	env, err := cel.NewEnv(Encoders())
+	env, err := cel.NewEnv(cel.OptionalTypes(), Encoders())
 	if err != nil {
 		t.Fatalf("cel.NewEnv(Encoders()) failed: %v", err)
 	}
@@ -438,8 +438,17 @@ func TestEncodersVersion(t *testing.T) {
 	if _, iss := env.Compile("base64.encodeUrl(b'hello')"); iss.Err() == nil {
 		t.Fatal("base64.encodeUrl() got no error, wanted version-gated function to be unavailable")
 	}
+	if _, iss := env.Compile("json.parse('\"hello\"')"); iss.Err() == nil {
+		t.Fatal("json.parse() got no error, wanted version-gated function to be unavailable")
+	}
+	if _, iss := env.Compile("yaml.encode('hello')"); iss.Err() == nil {
+		t.Fatal("yaml.encode() got no error, wanted version-gated function to be unavailable")
+	}
+	if _, iss := env.Compile("yaml.parse('hello')"); iss.Err() == nil {
+		t.Fatal("yaml.parse() got no error, wanted version-gated function to be unavailable")
+	}
 
-	env, err = cel.NewEnv(Encoders(EncodersVersion(2)))
+	env, err = cel.NewEnv(cel.OptionalTypes(), Encoders(EncodersVersion(2)))
 	if err != nil {
 		t.Fatalf("EncodersVersion(2) failed: %v", err)
 	}
@@ -466,9 +475,38 @@ func TestEncodersVersion(t *testing.T) {
 	}
 }
 
+func TestEncodersEnvCreationErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		opts []cel.EnvOption
+	}{
+		{
+			name: "no optional types",
+			opts: []cel.EnvOption{Encoders()},
+		},
+		{
+			name: "no optional types v2",
+			opts: []cel.EnvOption{Encoders(EncodersVersion(2))},
+		},
+		{
+			name: "optional types after encoders",
+			opts: []cel.EnvOption{Encoders(), cel.OptionalTypes()},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := cel.NewEnv(tc.opts...)
+			if err == nil || !strings.Contains(err.Error(), "encoders library requires the optional library") {
+				t.Fatalf("cel.NewEnv() got %v, wanted encoders library requires the optional library", err)
+			}
+		})
+	}
+}
+
 func testEncodersCostsEnv(t *testing.T, version int, opts ...cel.EnvOption) *cel.Env {
 	t.Helper()
 	baseOpts := []cel.EnvOption{
+		cel.OptionalTypes(),
 		Encoders(EncodersVersion(uint32(version))),
 		cel.EnableMacroCallTracking(),
 	}
@@ -638,22 +676,6 @@ func TestEncodersCosts(t *testing.T) {
 			version:       2,
 		},
 		{
-			name: "json_parse_string_type",
-			expr: "json.parse(x, string) == optional.of('hello')",
-			vars: []cel.EnvOption{
-				cel.Variable("x", cel.StringType),
-			},
-			in: map[string]any{
-				"x": "\"hello\"",
-			},
-			hints: map[string]uint64{
-				"x": 100,
-			},
-			estimatedCost: checker.CostEstimate{Min: 4, Max: math.MaxUint64},
-			actualCost:    math.MaxUint64,
-			version:       1,
-		},
-		{
 			name: "json_parse_string",
 			expr: "json.parse(x) == optional.of('hello')",
 			vars: []cel.EnvOption{
@@ -667,7 +689,7 @@ func TestEncodersCosts(t *testing.T) {
 			},
 			estimatedCost: checker.CostEstimate{Min: 3, Max: math.MaxUint64},
 			actualCost:    math.MaxUint64,
-			version:       1,
+			version:       2,
 		},
 		{
 			name: "json_parse_string_type",
@@ -683,7 +705,7 @@ func TestEncodersCosts(t *testing.T) {
 			},
 			estimatedCost: checker.CostEstimate{Min: 4, Max: math.MaxUint64},
 			actualCost:    math.MaxUint64,
-			version:       1,
+			version:       2,
 		},
 		{
 			name: "yaml_encode_dyn",
@@ -699,7 +721,7 @@ func TestEncodersCosts(t *testing.T) {
 			},
 			estimatedCost: checker.CostEstimate{Min: 2, Max: math.MaxUint64},
 			actualCost:    math.MaxUint64,
-			version:       1,
+			version:       2,
 		},
 		{
 			name: "yaml_parse_string",
@@ -715,7 +737,7 @@ func TestEncodersCosts(t *testing.T) {
 			},
 			estimatedCost: checker.CostEstimate{Min: 3, Max: math.MaxUint64},
 			actualCost:    math.MaxUint64,
-			version:       1,
+			version:       2,
 		},
 		{
 			name: "yaml_parse_string_type",
@@ -731,7 +753,7 @@ func TestEncodersCosts(t *testing.T) {
 			},
 			estimatedCost: checker.CostEstimate{Min: 4, Max: math.MaxUint64},
 			actualCost:    math.MaxUint64,
-			version:       1,
+			version:       2,
 		},
 	}
 	for _, tc := range tests {
@@ -844,7 +866,7 @@ func TestJSONEncodeCostUnbounded(t *testing.T) {
 }
 
 func TestJSONParseCostUnbounded(t *testing.T) {
-	env, err := cel.NewEnv(Encoders(EncodersVersion(1)))
+	env, err := cel.NewEnv(cel.OptionalTypes(), Encoders(EncodersVersion(2)))
 	if err != nil {
 		t.Fatalf("cel.NewEnv() failed: %v", err)
 	}
@@ -881,7 +903,7 @@ func TestJSONParseCostUnbounded(t *testing.T) {
 }
 
 func TestYAMLEncodeCostUnbounded(t *testing.T) {
-	env, err := cel.NewEnv(Encoders(EncodersVersion(1)))
+	env, err := cel.NewEnv(cel.OptionalTypes(), Encoders(EncodersVersion(2)))
 	if err != nil {
 		t.Fatalf("cel.NewEnv() failed: %v", err)
 	}
@@ -918,7 +940,7 @@ func TestYAMLEncodeCostUnbounded(t *testing.T) {
 }
 
 func TestYAMLParseCostUnbounded(t *testing.T) {
-	env, err := cel.NewEnv(Encoders(EncodersVersion(1)))
+	env, err := cel.NewEnv(cel.OptionalTypes(), Encoders(EncodersVersion(2)))
 	if err != nil {
 		t.Fatalf("cel.NewEnv() failed: %v", err)
 	}
@@ -956,6 +978,7 @@ func TestYAMLParseCostUnbounded(t *testing.T) {
 
 func TestYAMLParseLimits(t *testing.T) {
 	env, err := cel.NewEnv(
+		cel.OptionalTypes(),
 		Encoders(),
 		cel.Variable("largeYaml", cel.StringType),
 	)
@@ -994,6 +1017,7 @@ func TestYAMLParseNativeTypes(t *testing.T) {
 		t.Fatalf("types.NewNativeType failed: %v", err)
 	}
 	env, err := cel.NewEnv(
+		cel.OptionalTypes(),
 		Encoders(),
 		cel.Types(nativeType),
 		cel.Variable("userYaml", cel.StringType),
@@ -1057,6 +1081,7 @@ func TestJSONParseNativeTypes(t *testing.T) {
 		t.Fatalf("types.NewNativeType failed: %v", err)
 	}
 	env, err := cel.NewEnv(
+		cel.OptionalTypes(),
 		Encoders(),
 		cel.Types(nativeType),
 		cel.Variable("userJson", cel.StringType),
@@ -1116,6 +1141,7 @@ func TestJSONParseNativeTypes(t *testing.T) {
 
 func TestJSONParseLimits(t *testing.T) {
 	env, err := cel.NewEnv(
+		cel.OptionalTypes(),
 		Encoders(),
 		cel.Variable("largeJson", cel.StringType),
 	)
@@ -1144,6 +1170,7 @@ func TestJSONParseLimits(t *testing.T) {
 
 func TestJSONParseProtobufTypes(t *testing.T) {
 	envProto3, err := cel.NewEnv(
+		cel.OptionalTypes(),
 		Encoders(),
 		cel.Container("google.expr.proto3.test"),
 		cel.Types(
@@ -1191,6 +1218,7 @@ func TestJSONParseProtobufTypes(t *testing.T) {
 	}
 
 	envProto2, err := cel.NewEnv(
+		cel.OptionalTypes(),
 		Encoders(),
 		cel.Container("google.expr.proto2.test"),
 		cel.Types(
@@ -1232,6 +1260,7 @@ func TestJSONParseProtobufTypes(t *testing.T) {
 
 func TestYAMLParseProtobufTypes(t *testing.T) {
 	envProto3, err := cel.NewEnv(
+		cel.OptionalTypes(),
 		Encoders(),
 		cel.Container("google.expr.proto3.test"),
 		cel.Types(
@@ -1277,6 +1306,7 @@ func TestYAMLParseProtobufTypes(t *testing.T) {
 	}
 
 	envProto2, err := cel.NewEnv(
+		cel.OptionalTypes(),
 		Encoders(),
 		cel.Container("google.expr.proto2.test"),
 		cel.Types(
@@ -1321,6 +1351,7 @@ func TestEncodersRoundtrip(t *testing.T) {
 		t.Fatalf("types.NewNativeType failed: %v", err)
 	}
 	env, err := cel.NewEnv(
+		cel.OptionalTypes(),
 		Encoders(),
 		cel.Container("google.expr.proto3.test"),
 		cel.Types(
@@ -1417,6 +1448,7 @@ func TestEncodersRoundtrip(t *testing.T) {
 func BenchmarkJSONEncode(b *testing.B) {
 	nativeType, _ := types.NewNativeType(reflect.TypeFor[testNativeUser](), types.ParseStructTag("cel"))
 	env, err := cel.NewEnv(
+		cel.OptionalTypes(),
 		Encoders(),
 		cel.Types(
 			nativeType,
@@ -1466,6 +1498,7 @@ func BenchmarkJSONEncode(b *testing.B) {
 func BenchmarkJSONParse(b *testing.B) {
 	nativeType, _ := types.NewNativeType(reflect.TypeFor[testNativeUser](), types.ParseStructTag("cel"))
 	env, err := cel.NewEnv(
+		cel.OptionalTypes(),
 		Encoders(),
 		cel.Types(
 			nativeType,
@@ -1516,7 +1549,10 @@ func BenchmarkJSONParse(b *testing.B) {
 }
 
 func BenchmarkBase64(b *testing.B) {
-	env, err := cel.NewEnv(Encoders())
+	env, err := cel.NewEnv(
+		cel.OptionalTypes(),
+		Encoders(),
+	)
 	if err != nil {
 		b.Fatalf("cel.NewEnv failed: %v", err)
 	}
@@ -1554,7 +1590,10 @@ func BenchmarkBase64(b *testing.B) {
 }
 
 func TestEncodersStringConformance(t *testing.T) {
-	env, err := cel.NewEnv(Encoders())
+	env, err := cel.NewEnv(
+		cel.OptionalTypes(),
+		Encoders(),
+	)
 	if err != nil {
 		t.Fatalf("cel.NewEnv failed: %v", err)
 	}
@@ -2039,12 +2078,12 @@ func TestEncodersEstimatorsAndEdgeCases(t *testing.T) {
 	}
 
 	// Test CompileOptions defaults and binary overload invalid typeVal
-	lib := &encoderLib{version: 1}
+	lib := &encoderLib{version: 2}
 	opts := lib.CompileOptions()
 	if len(opts) == 0 {
 		t.Errorf("expected CompileOptions to return options")
 	}
-	env, _ := cel.NewEnv(opts...)
+	env, _ := cel.NewEnv(append([]cel.EnvOption{cel.OptionalTypes()}, opts...)...)
 	ast, _ := env.Compile(`json.parse("123")`)
 	prg, _ := env.Program(ast)
 	if _, _, err := prg.Eval(cel.NoVars()); err != nil {

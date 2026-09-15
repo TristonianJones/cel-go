@@ -31,6 +31,9 @@ Local bindings are not guaranteed to be evaluated before use.
 
 Encoding utilities for marshalling data into standardized representations.
 
+Note: Version 2 of this library depends on the CEL optional type. Please ensure that
+cel.OptionalTypes() is enabled when using encoder extensions at version 2 or greater.
+
 ### Base64.Decode
 
 **Introduced in version 0 (cost support in version 1)**
@@ -106,7 +109,7 @@ Examples:
 
 ### JSON.Parse
 
-Introduced at version: 1
+Introduced at version: 2
 
 Parses a JSON string to a CEL value or a specific type.
 
@@ -120,7 +123,7 @@ Examples:
 
 ### YAML.Encode
 
-Introduced at version: 1
+Introduced at version: 2
 
 Encodes a CEL value to a YAML string.
 
@@ -134,7 +137,7 @@ Examples:
 
 ### YAML.Parse
 
-Introduced at version: 1
+Introduced at version: 2
 
 Parses a YAML string to a CEL value or a specific type.
 
