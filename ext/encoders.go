@@ -17,7 +17,6 @@ package ext
 import (
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -222,17 +221,10 @@ func (lib *encoderLib) CompileOptions() []cel.EnvOption {
 			cost.OverloadCostEstimate("yaml_parse_string_type", estimateYAMLParse),
 		}
 
-		optionalTypesEnabled := func(env *cel.Env) (*cel.Env, error) {
-			if !env.HasLibrary("cel.lib.optional") {
-				return nil, errors.New("encoders library requires the optional library")
-			}
-			return env, nil
-		}
 		var adapt types.Adapter = types.DefaultTypeAdapter
 		var prov types.Provider
 		opts = append(opts, cel.CostEstimatorOptions(estimators...))
 		opts = append(opts,
-			cel.EnvOption(optionalTypesEnabled),
 			func(e *cel.Env) (*cel.Env, error) {
 				adapt = e.CELTypeAdapter()
 				prov = e.CELTypeProvider()

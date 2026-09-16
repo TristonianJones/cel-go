@@ -475,34 +475,6 @@ func TestEncodersVersion(t *testing.T) {
 	}
 }
 
-func TestEncodersEnvCreationErrors(t *testing.T) {
-	tests := []struct {
-		name string
-		opts []cel.EnvOption
-	}{
-		{
-			name: "no optional types",
-			opts: []cel.EnvOption{Encoders()},
-		},
-		{
-			name: "no optional types v2",
-			opts: []cel.EnvOption{Encoders(EncodersVersion(2))},
-		},
-		{
-			name: "optional types after encoders",
-			opts: []cel.EnvOption{Encoders(), cel.OptionalTypes()},
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := cel.NewEnv(tc.opts...)
-			if err == nil || !strings.Contains(err.Error(), "encoders library requires the optional library") {
-				t.Fatalf("cel.NewEnv() got %v, wanted encoders library requires the optional library", err)
-			}
-		})
-	}
-}
-
 func testEncodersCostsEnv(t *testing.T, version int, opts ...cel.EnvOption) *cel.Env {
 	t.Helper()
 	baseOpts := []cel.EnvOption{
