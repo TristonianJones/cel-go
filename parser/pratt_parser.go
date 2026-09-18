@@ -444,14 +444,15 @@ func (p *prattParserWorker) parseTernary(lhs ast.Expr) ast.Expr {
 		return lhs
 	}
 	p.recursionDepth++
-	defer func() { p.recursionDepth-- }()
 	qTok := p.nextToken()
 	opID := p.nextID(qTok)
 	trueExpr := p.parseBinaryAndTernary(1)
 	if !p.expect(tokColon, "expected ':' in conditional expression") {
+		p.recursionDepth--
 		return lhs
 	}
 	falseExpr := p.parseBinaryAndTernary(0)
+	p.recursionDepth--
 	return p.helper.newGlobalCall(opID, operators.Conditional, lhs, trueExpr, falseExpr)
 }
 
