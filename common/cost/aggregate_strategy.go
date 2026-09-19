@@ -15,6 +15,7 @@
 package cost
 
 import (
+	"math"
 	"slices"
 
 	"cel.dev/cel-go/common/ast"
@@ -133,7 +134,7 @@ func estimateAggregateListSize(ctx EstimateContext, node AstNode) (SizeEstimate,
 		return SizeEstimate{}, false
 	}
 	minElem := uint64(1)
-	maxElem := uint64(1)
+	maxElem := uint64(math.MaxUint64)
 	if elemSize != nil {
 		minElem = elemSize.Min
 		maxElem = elemSize.Max
@@ -205,11 +206,11 @@ func estimateAggregateMapSize(ctx EstimateContext, node AstNode) (SizeEstimate, 
 		}
 		return SizeEstimate{}, false
 	}
-	minKey, maxKey := uint64(1), uint64(1)
+	minKey, maxKey := uint64(1), uint64(math.MaxUint64)
 	if keySize != nil {
 		minKey, maxKey = keySize.Min, keySize.Max
 	}
-	minVal, maxVal := uint64(1), uint64(1)
+	minVal, maxVal := uint64(1), uint64(math.MaxUint64)
 	if valSize != nil {
 		minVal, maxVal = valSize.Min, valSize.Max
 	}
