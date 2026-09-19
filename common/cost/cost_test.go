@@ -45,7 +45,8 @@ func TestSafeSubtract(t *testing.T) {
 		{name: "simple", x: 5, y: 3, want: 2},
 		{name: "underflow to zero", x: 3, y: 5, want: 0},
 		{name: "max minus zero", x: math.MaxUint64, y: 0, want: math.MaxUint64},
-		{name: "max minus max", x: math.MaxUint64, y: math.MaxUint64, want: 0},
+		{name: "max minus one", x: math.MaxUint64, y: 1, want: math.MaxUint64},
+		{name: "max minus max", x: math.MaxUint64, y: math.MaxUint64, want: math.MaxUint64},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -235,6 +236,7 @@ func TestSizeEstimate(t *testing.T) {
 func TestCostEstimate(t *testing.T) {
 	c1 := cost.FixedCostEstimate(5)
 	c2 := cost.FixedCostEstimate(10)
+	cr := cost.RangedCostEstimate(5, 10)
 
 	tests := []struct {
 		name string
@@ -244,27 +246,32 @@ func TestCostEstimate(t *testing.T) {
 		{
 			name: "add",
 			got:  c1.Add(c2),
-			want: cost.CostEstimate{Min: 15, Max: 15},
+			want: cost.FixedCostEstimate(15),
 		},
 		{
 			name: "multiply",
 			got:  c1.Multiply(c2),
-			want: cost.CostEstimate{Min: 50, Max: 50},
+			want: cost.FixedCostEstimate(50),
 		},
 		{
 			name: "union",
 			got:  c1.Union(c2),
-			want: cost.CostEstimate{Min: 5, Max: 10},
+			want: cost.RangedCostEstimate(5, 10),
+		},
+		{
+			name: "ranged_cost_estimate",
+			got:  cr,
+			want: cost.RangedCostEstimate(5, 10),
 		},
 		{
 			name: "multiply_by_cost_factor",
 			got:  c1.MultiplyByCostFactor(0.5),
-			want: cost.CostEstimate{Min: 3, Max: 3},
+			want: cost.FixedCostEstimate(3),
 		},
 		{
 			name: "unknown_cost_estimate",
 			got:  cost.UnknownCostEstimate(),
-			want: cost.CostEstimate{Min: 0, Max: math.MaxUint64},
+			want: cost.RangedCostEstimate(0, math.MaxUint64),
 		},
 	}
 	for _, tc := range tests {
@@ -814,7 +821,7 @@ func TestCostEstimateAndTracking(t *testing.T) {
 			in: map[string]any{
 				"input": []*proto3pb.TestAllTypes{},
 			},
-			wantEst:   estPtr(cost.CostEstimate{Min: 2, Max: 302}),
+			wantEst:   estPtr(cost.RangedCostEstimate(2, 302)),
 			wantTrack: trackPtr(2),
 		},
 		{
@@ -825,13 +832,13 @@ func TestCostEstimateAndTracking(t *testing.T) {
 			in: map[string]any{
 				"input": []*proto3pb.TestAllTypes{},
 			},
-			wantEst:   estPtr(cost.CostEstimate{Min: 2, Max: 1752}),
+			wantEst:   estPtr(cost.RangedCostEstimate(2, 1752)),
 			wantTrack: trackPtr(2),
 		},
 		{
 			name:      "all comprehension on literal",
 			expr:      `[1, 2, 3].all(x, true)`,
-			wantEst:   estPtr(cost.CostEstimate{Min: 20, Max: 20}),
+			wantEst:   estPtr(cost.FixedCostEstimate(20)),
 			wantTrack: trackPtr(20),
 		},
 		{
@@ -840,13 +847,13 @@ func TestCostEstimateAndTracking(t *testing.T) {
 			vars:      []*decls.VariableDecl{decls.NewVariable("input", types.StringType)},
 			hints:     map[string]uint64{"input": 500},
 			in:        map[string]any{"input": string(randSeq(500))},
-			wantEst:   estPtr(cost.CostEstimate{Min: 3, Max: 103}),
+			wantEst:   estPtr(cost.RangedCostEstimate(3, 103)),
 			wantTrack: trackPtr(103),
 		},
 		{
 			name:      "variable cost function with constant",
 			expr:      `'123'.matches('[0-9]')`,
-			wantEst:   estPtr(cost.CostEstimate{Min: 2, Max: 2}),
+			wantEst:   estPtr(cost.FixedCostEstimate(2)),
 			wantTrack: trackPtr(2),
 		},
 		{
@@ -870,7 +877,7 @@ func TestCostEstimateAndTracking(t *testing.T) {
 				"c": false,
 				"d": false,
 			},
-			wantEst:   estPtr(cost.CostEstimate{Min: 1, Max: 4}),
+			wantEst:   estPtr(cost.RangedCostEstimate(1, 4)),
 			wantTrack: trackPtr(4),
 		},
 		{
@@ -894,7 +901,7 @@ func TestCostEstimateAndTracking(t *testing.T) {
 				"c": true,
 				"d": true,
 			},
-			wantEst:   estPtr(cost.CostEstimate{Min: 1, Max: 4}),
+			wantEst:   estPtr(cost.RangedCostEstimate(1, 4)),
 			wantTrack: trackPtr(4),
 		},
 		{
@@ -930,7 +937,7 @@ func TestCostEstimateAndTracking(t *testing.T) {
 		{
 			name:      "in",
 			expr:      `2 in [1, 2, 3]`,
-			wantEst:   estPtr(cost.CostEstimate{Min: 13, Max: 13}),
+			wantEst:   estPtr(cost.FixedCostEstimate(13)),
 			wantTrack: trackPtr(13),
 		},
 		{

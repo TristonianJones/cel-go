@@ -15,6 +15,7 @@
 package cost
 
 import (
+	"math"
 	"slices"
 
 	"cel.dev/cel-go/common/ast"
@@ -51,6 +52,7 @@ type aggregateSizingStrategy struct {
 	calc *types.SizeCalculator
 }
 
+// TrackSize calculates the actual runtime aggregate size of a value during cost tracking.
 func (a *aggregateSizingStrategy) TrackSize(ctx TrackContext, value ref.Val) (uint64, bool) {
 	if value == nil {
 		return 0, false
@@ -58,6 +60,7 @@ func (a *aggregateSizingStrategy) TrackSize(ctx TrackContext, value ref.Val) (ui
 	return uint64(a.calc.AggregateSize(value)), true
 }
 
+// EstimateSize computes recursive aggregate size estimates for an AST node during cost estimation.
 func (a *aggregateSizingStrategy) EstimateSize(ctx EstimateContext, node AstNode) (SizeEstimate, bool) {
 	if node == nil {
 		return SizeEstimate{}, false
@@ -78,13 +81,21 @@ func (a *aggregateSizingStrategy) EstimateSize(ctx EstimateContext, node AstNode
 	}
 }
 
+// estimateAggregateListSize computes list aggregate size: 1 (header) + listSize * elemSize.
+//
+// Calls (e.g. `+` or `? :`) already hold aggregate sub-expression sizes. For `+`, 1 is
+// deducted to deduplicate headers: (1+L) + (1+R) - 1 = 1+L+R.
+// Unhinted variable-width elements default to [1, math.MaxUint64].
 func estimateAggregateListSize(ctx EstimateContext, node AstNode) (SizeEstimate, bool) {
 	elemType := listElemType(node.Type())
 	listSize, elemSize := estimateListExpr(ctx, node, elemType)
 
+	// When node is a call expression, estimateListExpr already evaluated aggregate sizes of sub-expressions.
 	if node.Expr() != nil && node.Expr().Kind() == ast.CallKind && listSize != nil {
 		call := node.Expr().AsCall()
 		if call.FunctionName() == operators.Add && len(call.Args()) == 2 {
+			// Concatenation of two lists: (1 + left) + (1 + right) = 2 + left + right.
+			// Subtract 1 to correct for the single resulting list container header.
 			minVal := SafeSubtract(listSize.Min, 1)
 			if minVal == 0 {
 				minVal = 1
@@ -97,6 +108,7 @@ func estimateAggregateListSize(ctx EstimateContext, node AstNode) (SizeEstimate,
 			res.Elem = elemSize
 			return res, true
 		}
+		// For other calls (e.g. conditional branches), listSize is already the branch aggregate size.
 		return *listSize, true
 	}
 
@@ -106,6 +118,7 @@ func estimateAggregateListSize(ctx EstimateContext, node AstNode) (SizeEstimate,
 	if elemSize == nil && listSize != nil && listSize.Elem != nil {
 		elemSize = listSize.Elem
 	}
+	// If element size is missing or incomplete for nested containers, query child path @items.
 	if elemSize == nil || (elemSize.Elem == nil && isContainerKind(elemType.Kind())) {
 		if len(node.Path()) > 0 && ctx != nil {
 			elemPath := append(slices.Clone(node.Path()), "@items")
@@ -132,8 +145,10 @@ func estimateAggregateListSize(ctx EstimateContext, node AstNode) (SizeEstimate,
 		}
 		return SizeEstimate{}, false
 	}
+	// For variable-width elements with no hint (elemSize == nil), lower bound is 1 unit and
+	// upper bound is math.MaxUint64 to ensure upper-bound safety.
 	minElem := uint64(1)
-	maxElem := uint64(1)
+	maxElem := uint64(math.MaxUint64)
 	if elemSize != nil {
 		minElem = elemSize.Min
 		maxElem = elemSize.Max
@@ -147,10 +162,15 @@ func estimateAggregateListSize(ctx EstimateContext, node AstNode) (SizeEstimate,
 	}, true
 }
 
+// estimateAggregateMapSize computes map aggregate size: 1 (header) + mapSize * (keySize + valSize).
+//
+// Calls (e.g. `? :`) already hold aggregate sub-expression sizes.
+// Unhinted variable-width keys/values default to [1, math.MaxUint64].
 func estimateAggregateMapSize(ctx EstimateContext, node AstNode) (SizeEstimate, bool) {
 	keyType, valType := mapKeyValueTypes(node.Type())
 	mapSize, keySize, valSize := estimateMapExpr(ctx, node, keyType, valType)
 
+	// For call expressions (e.g. conditional branches), mapSize is already the branch aggregate size.
 	if node.Expr() != nil && node.Expr().Kind() == ast.CallKind && mapSize != nil {
 		return *mapSize, true
 	}
@@ -164,6 +184,7 @@ func estimateAggregateMapSize(ctx EstimateContext, node AstNode) (SizeEstimate, 
 	if valSize == nil && mapSize != nil && mapSize.Elem != nil {
 		valSize = mapSize.Elem
 	}
+	// Query subpaths @keys and @values if hints were not provided on the parent map node.
 	if len(node.Path()) > 0 && ctx != nil {
 		if keySize == nil || (keySize.Elem == nil && isContainerKind(keyType.Kind())) {
 			kPath := append(slices.Clone(node.Path()), "@keys")
@@ -205,11 +226,12 @@ func estimateAggregateMapSize(ctx EstimateContext, node AstNode) (SizeEstimate, 
 		}
 		return SizeEstimate{}, false
 	}
-	minKey, maxKey := uint64(1), uint64(1)
+	// For variable-width keys/values with no hint, lower bound is 1 unit and upper bound is math.MaxUint64.
+	minKey, maxKey := uint64(1), uint64(math.MaxUint64)
 	if keySize != nil {
 		minKey, maxKey = keySize.Min, keySize.Max
 	}
-	minVal, maxVal := uint64(1), uint64(1)
+	minVal, maxVal := uint64(1), uint64(math.MaxUint64)
 	if valSize != nil {
 		minVal, maxVal = valSize.Min, valSize.Max
 	}
@@ -225,10 +247,13 @@ func estimateAggregateMapSize(ctx EstimateContext, node AstNode) (SizeEstimate, 
 	}, true
 }
 
+// isContainerKind reports whether kind is a list or map container type.
 func isContainerKind(kind types.Kind) bool {
 	return kind == types.ListKind || kind == types.MapKind
 }
 
+// fallbackElemSize resolves fixed-width primitive type sizes via computeTypeSize,
+// or queries the estimator with an untyped/pathless node for type-level hints.
 func fallbackElemSize(ctx EstimateContext, elemType *types.Type) *SizeEstimate {
 	if sz := computeTypeSize(elemType); sz != nil {
 		return sz

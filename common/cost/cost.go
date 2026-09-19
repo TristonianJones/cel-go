@@ -91,7 +91,11 @@ func SafeAdd(x, y uint64, rest ...uint64) uint64 {
 }
 
 // SafeSubtract returns the difference of x - y, saturating at zero.
+// If x is saturated (math.MaxUint64), it remains saturated.
 func SafeSubtract(x, y uint64) uint64 {
+	if x == math.MaxUint64 {
+		return math.MaxUint64
+	}
 	if x > y {
 		return x - y
 	}
@@ -280,6 +284,11 @@ func UnknownCostEstimate() CostEstimate {
 // FixedCostEstimate returns a cost with a fixed min and max range.
 func FixedCostEstimate(fixedCost uint64) CostEstimate {
 	return CostEstimate{Min: fixedCost, Max: fixedCost}
+}
+
+// RangedCostEstimate returns a cost estimate bounded by min and max.
+func RangedCostEstimate(min, max uint64) CostEstimate {
+	return CostEstimate{Min: min, Max: max}
 }
 
 // Add adds the costs and returns the sum.

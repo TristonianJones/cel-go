@@ -174,10 +174,10 @@ func TestCostSizingStrategyComparison(t *testing.T) {
 			hints: map[string]uint64{"list": 2, "list.@items": 5},
 			in:    map[string]any{"list": []string{"hello", "world"}},
 			// Default sizing: list item count = 2 -> actual: 1 (ident) + 2 = 3
-			wantDefaultEst:  cost.CostEstimate{Min: 1, Max: 3},
+			wantDefaultEst:  cost.RangedCostEstimate(1, 3),
 			wantDefaultCost: 3,
 			// Aggregate sizing: container(1) + "hello"(5) + "world"(5) = 11 -> actual: 1 (ident) + 11 = 12
-			wantAggregateEst:  cost.CostEstimate{Min: 2, Max: 12},
+			wantAggregateEst:  cost.RangedCostEstimate(2, 12),
 			wantAggregateCost: 12,
 		},
 		{
@@ -201,10 +201,10 @@ func TestCostSizingStrategyComparison(t *testing.T) {
 			hints: map[string]uint64{"map_val": 2, "map_val.@keys": 2, "map_val.@values": 2},
 			in:    map[string]any{"map_val": map[string]string{"k1": "v1", "k2": "v2"}},
 			// Default sizing: map entries count = 2 -> actual: 1 (ident) + 2 = 3
-			wantDefaultEst:  cost.CostEstimate{Min: 1, Max: 3},
+			wantDefaultEst:  cost.RangedCostEstimate(1, 3),
 			wantDefaultCost: 3,
 			// Aggregate sizing: container(1) + 2 keys(2+2) + 2 values(2+2) = 9 -> actual: 1 + 9 = 10
-			wantAggregateEst:  cost.CostEstimate{Min: 2, Max: 10},
+			wantAggregateEst:  cost.RangedCostEstimate(2, 10),
 			wantAggregateCost: 10,
 		},
 		{
@@ -228,10 +228,10 @@ func TestCostSizingStrategyComparison(t *testing.T) {
 			hints: map[string]uint64{"nested_list": 2, "nested_list.@items": 3},
 			in:    map[string]any{"nested_list": [][]int{{1, 2}, {3, 4, 5}}},
 			// Default sizing: outer list count = 2 -> actual: 1 + 2 = 3
-			wantDefaultEst:  cost.CostEstimate{Min: 1, Max: 3},
+			wantDefaultEst:  cost.RangedCostEstimate(1, 3),
 			wantDefaultCost: 3,
 			// Aggregate sizing: container(1) + inner1(1+2) + inner2(1+3) = 8 -> actual: 1 + 8 = 9
-			wantAggregateEst:  cost.CostEstimate{Min: 2, Max: 10},
+			wantAggregateEst:  cost.RangedCostEstimate(2, 10),
 			wantAggregateCost: 9,
 		},
 		{
@@ -259,10 +259,10 @@ func TestCostSizingStrategyComparison(t *testing.T) {
 			},
 			in: map[string]any{"nested_list": [][]string{{"ab", "cd"}, {"efg", "hijk"}}},
 			// Default sizing: outer list count = 2 -> actual: 1 + 2 = 3
-			wantDefaultEst:  cost.CostEstimate{Min: 1, Max: 3},
+			wantDefaultEst:  cost.RangedCostEstimate(1, 3),
 			wantDefaultCost: 3,
 			// Aggregate sizing: container(1) + inner1(1+2+2) + inner2(1+3+4) = 14 -> actual: 1 + 14 = 15
-			wantAggregateEst:  cost.CostEstimate{Min: 2, Max: 20},
+			wantAggregateEst:  cost.RangedCostEstimate(2, 20),
 			wantAggregateCost: 15,
 		},
 		{
@@ -291,10 +291,10 @@ func TestCostSizingStrategyComparison(t *testing.T) {
 			},
 			in: map[string]any{"map_val": map[string][]string{"k1": {"a", "bc"}, "key2": {"def", "ghij"}}},
 			// Default sizing: map entries count = 2 -> actual: 1 + 2 = 3
-			wantDefaultEst:  cost.CostEstimate{Min: 1, Max: 3},
+			wantDefaultEst:  cost.RangedCostEstimate(1, 3),
 			wantDefaultCost: 3,
 			// Aggregate sizing: container(1) + k1(2) + val1(1+1+2) + k2(4) + val2(1+3+4) = 19 -> actual: 1 + 19 = 20
-			wantAggregateEst:  cost.CostEstimate{Min: 2, Max: 26},
+			wantAggregateEst:  cost.RangedCostEstimate(2, 26),
 			wantAggregateCost: 20,
 		},
 		{
@@ -324,10 +324,10 @@ func TestCostSizingStrategyComparison(t *testing.T) {
 			},
 			in: map[string]any{"map_val": map[string]map[string]string{"k1": {"a": "bc"}, "k2": {"d": "efg"}}},
 			// Default sizing: map entries count = 2 -> actual: 1 + 2 = 3
-			wantDefaultEst:  cost.CostEstimate{Min: 1, Max: 3},
+			wantDefaultEst:  cost.RangedCostEstimate(1, 3),
 			wantDefaultCost: 3,
 			// Aggregate sizing: container(1) + k1(2) + val1(1+1+2) + k2(2) + val2(1+1+3) = 14 -> actual: 1 + 14 = 15
-			wantAggregateEst:  cost.CostEstimate{Min: 2, Max: 28},
+			wantAggregateEst:  cost.RangedCostEstimate(2, 28),
 			wantAggregateCost: 15,
 		},
 		{
@@ -344,9 +344,9 @@ func TestCostSizingStrategyComparison(t *testing.T) {
 			hints: map[string]uint64{"str": 12},
 			in:    map[string]any{"str": "prefix_hello"},
 			// Flat strings: both strategies evaluate character length identically (12)
-			wantDefaultEst:    cost.CostEstimate{Min: 1, Max: 13},
+			wantDefaultEst:    cost.RangedCostEstimate(1, 13),
 			wantDefaultCost:   13,
-			wantAggregateEst:  cost.CostEstimate{Min: 1, Max: 13},
+			wantAggregateEst:  cost.RangedCostEstimate(1, 13),
 			wantAggregateCost: 13,
 		},
 	}
@@ -579,7 +579,7 @@ func TestCostModelEstimateAndTrackingAlignment(t *testing.T) {
 			},
 			hints:    map[string]uint64{"str": 10},
 			in:       map[string]any{"str": "prefix_hello"},
-			wantEst:  cost.CostEstimate{Min: 7, Max: 7},
+			wantEst:  cost.FixedCostEstimate(7),
 			wantCost: 7,
 		},
 		{
@@ -591,7 +591,7 @@ func TestCostModelEstimateAndTrackingAlignment(t *testing.T) {
 			},
 			hints:    map[string]uint64{"str1": 20, "str2": 10},
 			in:       map[string]any{"str1": "hello_world_test!", "str2": "world"},
-			wantEst:  cost.CostEstimate{Min: 3, Max: 8},
+			wantEst:  cost.RangedCostEstimate(3, 8),
 			wantCost: 5,
 		},
 		{
@@ -602,7 +602,7 @@ func TestCostModelEstimateAndTrackingAlignment(t *testing.T) {
 			},
 			hints:    map[string]uint64{"list": 5},
 			in:       map[string]any{"list": []int{1, 2, 3, 4, 5}},
-			wantEst:  cost.CostEstimate{Min: 2, Max: 27},
+			wantEst:  cost.RangedCostEstimate(2, 27),
 			wantCost: 27,
 		},
 		{
@@ -615,7 +615,7 @@ func TestCostModelEstimateAndTrackingAlignment(t *testing.T) {
 			},
 			hints:    map[string]uint64{"str1": 10, "str2": 10},
 			in:       map[string]any{"cond": true, "str1": "abc", "str2": "def"},
-			wantEst:  cost.CostEstimate{Min: 3, Max: 3},
+			wantEst:  cost.FixedCostEstimate(3),
 			wantCost: 3,
 		},
 		{
@@ -626,7 +626,7 @@ func TestCostModelEstimateAndTrackingAlignment(t *testing.T) {
 			},
 			hints:    map[string]uint64{"list": 3, "list.@items": 4},
 			in:       map[string]any{"list": [][]int{{1, 2}, {3, 4, 5}, {6}}},
-			wantEst:  cost.CostEstimate{Min: 2, Max: 77},
+			wantEst:  cost.RangedCostEstimate(2, 77),
 			wantCost: 47,
 		},
 		{
@@ -637,7 +637,7 @@ func TestCostModelEstimateAndTrackingAlignment(t *testing.T) {
 			},
 			hints:    map[string]uint64{"map_val": 2, "map_val.@keys": 3, "map_val.@values": 4},
 			in:       map[string]any{"map_val": map[string][]int{"a": {1, 2}, "b": {3, 4, 5}}},
-			wantEst:  cost.CostEstimate{Min: 2, Max: 56},
+			wantEst:  cost.RangedCostEstimate(2, 56),
 			wantCost: 39,
 		},
 		{
@@ -654,7 +654,7 @@ func TestCostModelEstimateAndTrackingAlignment(t *testing.T) {
 				"map_val.@values.@values": 5,
 			},
 			in:       map[string]any{"map_val": map[string]map[string]string{"k1": {"a": "hello"}, "k2": {"b": "world"}}},
-			wantEst:  cost.CostEstimate{Min: 2, Max: 56},
+			wantEst:  cost.RangedCostEstimate(2, 56),
 			wantCost: 30,
 		},
 	}
