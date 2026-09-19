@@ -144,161 +144,298 @@ func TestSafeCeil(t *testing.T) {
 func TestSizeEstimate(t *testing.T) {
 	s1 := FixedSizeEstimate(5)
 	s2 := FixedSizeEstimate(10)
-	if got := s1.Add(s2); got.Min != 15 || got.Max != 15 {
-		t.Errorf("s1.Add(s2) = %v, want {15, 15}", got)
+
+	tests := []struct {
+		name string
+		got  SizeEstimate
+		want SizeEstimate
+	}{
+		{
+			name: "add",
+			got:  s1.Add(s2),
+			want: SizeEstimate{Min: 15, Max: 15},
+		},
+		{
+			name: "multiply",
+			got:  s1.Multiply(s2),
+			want: SizeEstimate{Min: 50, Max: 50},
+		},
+		{
+			name: "union",
+			got:  s1.Union(s2),
+			want: SizeEstimate{Min: 5, Max: 10},
+		},
+		{
+			name: "unknown_size_estimate",
+			got:  UnknownSizeEstimate(),
+			want: SizeEstimate{Min: 0, Max: math.MaxUint64},
+		},
+		{
+			name: "ranged_size_estimate",
+			got:  RangedSizeEstimate(3, 8),
+			want: SizeEstimate{Min: 3, Max: 8},
+		},
+		{
+			name: "at_least_one_size",
+			got:  AtLeastOneSize(FixedSizeEstimate(0)),
+			want: SizeEstimate{Min: 1, Max: 1},
+		},
 	}
-	if got := s1.Multiply(s2); got.Min != 50 || got.Max != 50 {
-		t.Errorf("s1.Multiply(s2) = %v, want {50, 50}", got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.got != tc.want {
+				t.Errorf("got %v, want %v", tc.got, tc.want)
+			}
+		})
 	}
-	if got := s1.Union(s2); got.Min != 5 || got.Max != 10 {
-		t.Errorf("s1.Union(s2) = %v, want {5, 10}", got)
+
+	costTests := []struct {
+		name string
+		got  CostEstimate
+		want CostEstimate
+	}{
+		{
+			name: "multiply_by_cost_factor",
+			got:  s1.MultiplyByCostFactor(0.5),
+			want: CostEstimate{Min: 3, Max: 3},
+		},
+		{
+			name: "multiply_by_cost",
+			got:  s1.MultiplyByCost(FixedCostEstimate(4)),
+			want: CostEstimate{Min: 20, Max: 20},
+		},
+		{
+			name: "as_cost",
+			got:  s1.AsCost(),
+			want: CostEstimate{Min: 5, Max: 5},
+		},
 	}
-	if got := s1.MultiplyByCostFactor(0.5); got.Min != 3 || got.Max != 3 {
-		t.Errorf("s1.MultiplyByCostFactor(0.5) = %v, want {3, 3}", got)
-	}
-	if got := s1.MultiplyByCost(FixedCostEstimate(4)); got.Min != 20 || got.Max != 20 {
-		t.Errorf("s1.MultiplyByCost(4) = %v, want {20, 20}", got)
-	}
-	if got := s1.AsCost(); got.Min != 5 || got.Max != 5 {
-		t.Errorf("s1.AsCost() = %v, want {5, 5}", got)
-	}
-	if got := UnknownSizeEstimate(); got.Min != 0 || got.Max != math.MaxUint64 {
-		t.Errorf("UnknownSizeEstimate() = %v, want {0, MaxUint64}", got)
-	}
-	if got := RangedSizeEstimate(3, 8); got.Min != 3 || got.Max != 8 {
-		t.Errorf("RangedSizeEstimate(3, 8) = %v, want {3, 8}", got)
-	}
-	if got := AtLeastOneSize(FixedSizeEstimate(0)); got.Min != 1 || got.Max != 1 {
-		t.Errorf("AtLeastOne(0) = %v, want {1, 1}", got)
+	for _, tc := range costTests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.got != tc.want {
+				t.Errorf("got %v, want %v", tc.got, tc.want)
+			}
+		})
 	}
 }
 
 func TestCostEstimate(t *testing.T) {
 	c1 := FixedCostEstimate(5)
 	c2 := FixedCostEstimate(10)
-	if got := c1.Add(c2); got.Min != 15 || got.Max != 15 {
-		t.Errorf("c1.Add(c2) = %v, want {15, 15}", got)
+
+	tests := []struct {
+		name string
+		got  CostEstimate
+		want CostEstimate
+	}{
+		{
+			name: "add",
+			got:  c1.Add(c2),
+			want: CostEstimate{Min: 15, Max: 15},
+		},
+		{
+			name: "multiply",
+			got:  c1.Multiply(c2),
+			want: CostEstimate{Min: 50, Max: 50},
+		},
+		{
+			name: "union",
+			got:  c1.Union(c2),
+			want: CostEstimate{Min: 5, Max: 10},
+		},
+		{
+			name: "multiply_by_cost_factor",
+			got:  c1.MultiplyByCostFactor(0.5),
+			want: CostEstimate{Min: 3, Max: 3},
+		},
+		{
+			name: "unknown_cost_estimate",
+			got:  UnknownCostEstimate(),
+			want: CostEstimate{Min: 0, Max: math.MaxUint64},
+		},
 	}
-	if got := c1.Multiply(c2); got.Min != 50 || got.Max != 50 {
-		t.Errorf("c1.Multiply(c2) = %v, want {50, 50}", got)
-	}
-	if got := c1.Union(c2); got.Min != 5 || got.Max != 10 {
-		t.Errorf("c1.Union(c2) = %v, want {5, 10}", got)
-	}
-	if got := c1.MultiplyByCostFactor(0.5); got.Min != 3 || got.Max != 3 {
-		t.Errorf("c1.MultiplyByCostFactor(0.5) = %v, want {3, 3}", got)
-	}
-	if got := UnknownCostEstimate(); got.Min != 0 || got.Max != math.MaxUint64 {
-		t.Errorf("UnknownCostEstimate() = %v, want {0, MaxUint64}", got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.got != tc.want {
+				t.Errorf("got %v, want %v", tc.got, tc.want)
+			}
+		})
 	}
 }
 
 func TestExtCostHelpers(t *testing.T) {
 	sz := FixedSizeEstimate(10)
-	costEst, resSz := EstimateStringScan(sz)
-	if costEst.Min != 1 || costEst.Max != 1 {
-		t.Errorf("EstimateStringScan cost = %v, want {1, 1}", costEst)
-	}
-	if resSz == nil || resSz.Min != 10 || resSz.Max != 10 {
-		t.Errorf("EstimateStringScan resSz = %v, want {10, 10}", resSz)
-	}
 
-	allocCost, allocSz := EstimateListAlloc(sz, 0.5)
-	if allocCost.Min != 15 || allocCost.Max != 15 {
-		t.Errorf("EstimateListAlloc cost = %v, want {15, 15}", allocCost)
+	tests := []struct {
+		name     string
+		callEst  *CallEstimate
+		wantCost CostEstimate
+		wantSize *SizeEstimate
+	}{
+		{
+			name: "estimate_string_scan",
+			callEst: func() *CallEstimate {
+				costEst, resSz := EstimateStringScan(sz)
+				return NewCallEstimate(costEst, resSz)
+			}(),
+			wantCost: FixedCostEstimate(1),
+			wantSize: &sz,
+		},
+		{
+			name: "estimate_list_alloc",
+			callEst: func() *CallEstimate {
+				allocCost, allocSz := EstimateListAlloc(sz, 0.5)
+				return NewCallEstimate(allocCost, allocSz)
+			}(),
+			wantCost: FixedCostEstimate(15),
+			wantSize: &sz,
+		},
 	}
-	if allocSz == nil || allocSz.Min != 10 || allocSz.Max != 10 {
-		t.Errorf("EstimateListAlloc allocSz = %v, want {10, 10}", allocSz)
-	}
-
-	callEst := NewCallEstimate(costEst, resSz)
-	if callEst.CostEstimate != costEst || callEst.ResultSize != resSz {
-		t.Errorf("NewCallEstimate = %v, want CostEstimate=%v ResultSize=%v", callEst, costEst, resSz)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.callEst.CostEstimate != tc.wantCost {
+				t.Errorf("CostEstimate = %v, want %v", tc.callEst.CostEstimate, tc.wantCost)
+			}
+			if (tc.callEst.ResultSize == nil) != (tc.wantSize == nil) ||
+				(tc.callEst.ResultSize != nil && *tc.callEst.ResultSize != *tc.wantSize) {
+				t.Errorf("ResultSize = %v, want %v", tc.callEst.ResultSize, tc.wantSize)
+			}
+		})
 	}
 }
 
 func TestSizeEstimate_Subtract(t *testing.T) {
-	s1 := RangedSizeEstimate(5, 15)
-	s2 := RangedSizeEstimate(2, 4)
-	got := s1.Subtract(s2)
-	if got.Min != 1 || got.Max != 13 {
-		t.Errorf("s1.Subtract(s2) = %v, want {1, 13}", got)
+	tests := []struct {
+		name string
+		s1   SizeEstimate
+		s2   SizeEstimate
+		want SizeEstimate
+	}{
+		{
+			name: "ranged_subtract",
+			s1:   RangedSizeEstimate(5, 15),
+			s2:   RangedSizeEstimate(2, 4),
+			want: SizeEstimate{Min: 1, Max: 13},
+		},
+		{
+			name: "underflow_subtract",
+			s1:   RangedSizeEstimate(2, 4),
+			s2:   RangedSizeEstimate(5, 10),
+			want: SizeEstimate{Min: 0, Max: 0},
+		},
 	}
-
-	// Underflow cases
-	s3 := RangedSizeEstimate(2, 4)
-	s4 := RangedSizeEstimate(5, 10)
-	got2 := s3.Subtract(s4)
-	if got2.Min != 0 || got2.Max != 0 {
-		t.Errorf("s3.Subtract(s4) = %v, want {0, 0}", got2)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.s1.Subtract(tc.s2); got != tc.want {
+				t.Errorf("%v.Subtract(%v) = %v, want %v", tc.s1, tc.s2, got, tc.want)
+			}
+		})
 	}
 }
 
 func TestEstimateSize(t *testing.T) {
-	// Nil node
-	if sz := EstimateSize(nil, nil); sz != UnknownSizeEstimate() {
-		t.Errorf("EstimateSize(nil, nil) = %v, want unknown", sz)
-	}
-
-	// Node with computed size
 	compSz := FixedSizeEstimate(42)
 	nodeWithComp := NewAstNode(nil, nil, types.IntType, &compSz)
-	if sz := EstimateSize(nil, nodeWithComp); sz != compSz {
-		t.Errorf("EstimateSize(comp) = %v, want %v", sz, compSz)
-	}
-
-	// Node with estimator
 	nodeWithoutComp := NewAstNode(nil, []string{"foo"}, types.IntType, nil)
+	nodeUnknown := NewAstNode(nil, []string{"bar"}, types.IntType, nil)
 	est := testHintsEstimator{hints: map[string]uint64{"foo": 100}}
-	if sz := EstimateSize(est, nodeWithoutComp); sz != FixedSizeEstimate(100) {
-		t.Errorf("EstimateSize(est) = %v, want 100", sz)
-	}
 
-	// Node with estimator returning nil
-	if sz := EstimateSize(est, NewAstNode(nil, []string{"bar"}, types.IntType, nil)); sz != UnknownSizeEstimate() {
-		t.Errorf("EstimateSize(unknown) = %v, want unknown", sz)
+	tests := []struct {
+		name      string
+		estimator Estimator
+		node      AstNode
+		want      SizeEstimate
+	}{
+		{
+			name:      "nil_node",
+			estimator: nil,
+			node:      nil,
+			want:      UnknownSizeEstimate(),
+		},
+		{
+			name:      "computed_size",
+			estimator: nil,
+			node:      nodeWithComp,
+			want:      compSz,
+		},
+		{
+			name:      "with_estimator",
+			estimator: est,
+			node:      nodeWithoutComp,
+			want:      FixedSizeEstimate(100),
+		},
+		{
+			name:      "estimator_returns_nil",
+			estimator: est,
+			node:      nodeUnknown,
+			want:      UnknownSizeEstimate(),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if sz := EstimateSize(tc.estimator, tc.node); sz != tc.want {
+				t.Errorf("EstimateSize() = %v, want %v", sz, tc.want)
+			}
+		})
 	}
 }
 
 func TestNodeAsUintValue(t *testing.T) {
-	// Nil node
-	if val := NodeAsUintValue(nil, 99); val != 99 {
-		t.Errorf("NodeAsUintValue(nil) = %d, want 99", val)
-	}
-
-	// Non-literal node
 	fac := ast.NewExprFactory()
-	identExpr := fac.NewIdent(1, "x")
-	identNode := NewAstNode(identExpr, nil, types.IntType, nil)
-	if val := NodeAsUintValue(identNode, 99); val != 99 {
-		t.Errorf("NodeAsUintValue(ident) = %d, want 99", val)
-	}
+	identNode := NewAstNode(fac.NewIdent(1, "x"), nil, types.IntType, nil)
+	strNode := NewAstNode(fac.NewLiteral(2, types.String("hello")), nil, types.StringType, nil)
+	posIntNode := NewAstNode(fac.NewLiteral(3, types.Int(42)), nil, types.IntType, nil)
+	negIntNode := NewAstNode(fac.NewLiteral(4, types.Int(-5)), nil, types.IntType, nil)
+	uintNode := NewAstNode(fac.NewLiteral(5, types.Uint(100)), nil, types.UintType, nil)
 
-	// Non-int literal (string)
-	strExpr := fac.NewLiteral(2, types.String("hello"))
-	strNode := NewAstNode(strExpr, nil, types.StringType, nil)
-	if val := NodeAsUintValue(strNode, 99); val != 99 {
-		t.Errorf("NodeAsUintValue(str) = %d, want 99", val)
+	tests := []struct {
+		name       string
+		node       AstNode
+		defaultVal uint64
+		want       uint64
+	}{
+		{
+			name:       "nil_node",
+			node:       nil,
+			defaultVal: 99,
+			want:       99,
+		},
+		{
+			name:       "non_literal_ident",
+			node:       identNode,
+			defaultVal: 99,
+			want:       99,
+		},
+		{
+			name:       "non_int_literal_string",
+			node:       strNode,
+			defaultVal: 99,
+			want:       99,
+		},
+		{
+			name:       "positive_int_literal",
+			node:       posIntNode,
+			defaultVal: 99,
+			want:       42,
+		},
+		{
+			name:       "negative_int_literal_saturates_zero",
+			node:       negIntNode,
+			defaultVal: 99,
+			want:       0,
+		},
+		{
+			name:       "uint_literal",
+			node:       uintNode,
+			defaultVal: 99,
+			want:       100,
+		},
 	}
-
-	// Positive int literal
-	intExpr := fac.NewLiteral(3, types.Int(42))
-	intNode := NewAstNode(intExpr, nil, types.IntType, nil)
-	if val := NodeAsUintValue(intNode, 99); val != 42 {
-		t.Errorf("NodeAsUintValue(int 42) = %d, want 42", val)
-	}
-
-	// Negative int literal (saturates at 0)
-	negExpr := fac.NewLiteral(4, types.Int(-5))
-	negNode := NewAstNode(negExpr, nil, types.IntType, nil)
-	if val := NodeAsUintValue(negNode, 99); val != 0 {
-		t.Errorf("NodeAsUintValue(int -5) = %d, want 0", val)
-	}
-
-	// Uint literal
-	uintExpr := fac.NewLiteral(5, types.Uint(100))
-	uintNode := NewAstNode(uintExpr, nil, types.UintType, nil)
-	if val := NodeAsUintValue(uintNode, 99); val != 100 {
-		t.Errorf("NodeAsUintValue(uint 100) = %d, want 100", val)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if val := NodeAsUintValue(tc.node, tc.defaultVal); val != tc.want {
+				t.Errorf("NodeAsUintValue() = %d, want %d", val, tc.want)
+			}
+		})
 	}
 }
