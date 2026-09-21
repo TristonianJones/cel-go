@@ -1196,10 +1196,6 @@ func (q *intQualifier) qualifyInternal(vars Activation, obj any, presenceTest, p
 				}
 				return v, true, nil
 			}
-			if presenceTest {
-				return nil, false, nil
-			}
-			return nil, false, missingKey(q.celValue)
 		}
 		return refQualify(q.adapter, obj, q.celValue, presenceTest, presenceOnly, q.errorOnBadPresenceTest)
 	}

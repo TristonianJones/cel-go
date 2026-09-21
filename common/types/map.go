@@ -16,6 +16,7 @@ package types
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
 	"sort"
@@ -412,9 +413,7 @@ func (m *mutableMap) Insert(k, v ref.Val) ref.Val {
 // an immutable map implementation.
 func (m *mutableMap) ToImmutableMap() traits.Mapper {
 	copyMap := make(map[ref.Val]ref.Val, len(m.mapVal))
-	for k, v := range m.mapVal {
-		copyMap[k] = v
-	}
+	maps.Copy(copyMap, m.mapVal)
 	return NewRefValMap(m.Adapter, copyMap)
 }
 
@@ -866,14 +865,23 @@ func (m *nativeMap[K, V]) valToQualifyAny(v V) any {
 }
 
 func (m *nativeMap[K, V]) FindStringKey(s string) (any, bool) {
-	if any((*K)(nil)) != (*string)(nil) {
+	switch any((*K)(nil)).(type) {
+	case *string:
+		v, found := m.mapVal[*(*K)(unsafe.Pointer(&s))]
+		if !found {
+			return nil, false
+		}
+		return m.valToQualifyAny(v), true
+	case *ref.Val:
+		var rk ref.Val = String(s)
+		v, found := m.mapVal[*(*K)(unsafe.Pointer(&rk))]
+		if !found {
+			return nil, false
+		}
+		return m.valToQualifyAny(v), true
+	default:
 		return nil, false
 	}
-	v, found := m.mapVal[*(*K)(unsafe.Pointer(&s))]
-	if !found {
-		return nil, false
-	}
-	return m.valToQualifyAny(v), true
 }
 
 func (m *nativeMap[K, V]) FindInt64Key(ik int64) (any, bool) {
@@ -904,6 +912,20 @@ func (m *nativeMap[K, V]) FindInt64Key(ik int64) (any, bool) {
 			return nil, false
 		}
 		return m.valToQualifyAny(v), true
+	case *ref.Val:
+		var rk ref.Val = Int(ik)
+		v, found := m.mapVal[*(*K)(unsafe.Pointer(&rk))]
+		if found {
+			return m.valToQualifyAny(v), true
+		}
+		if ik >= 0 {
+			rk = Uint(ik)
+			v, found = m.mapVal[*(*K)(unsafe.Pointer(&rk))]
+			if found {
+				return m.valToQualifyAny(v), true
+			}
+		}
+		return nil, false
 	default:
 		return nil, false
 	}

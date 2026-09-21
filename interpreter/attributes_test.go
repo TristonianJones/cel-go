@@ -833,6 +833,72 @@ func TestAttributesOptional(t *testing.T) {
 			vars:    map[string]any{},
 			err:     errors.New("no such attribute(s): a"),
 		},
+		{
+			// a[?0] where 'a' is a NewRefValMap with Int(0) key
+			varName:  "a",
+			optQuals: []any{int64(0)},
+			vars: map[string]any{
+				"a": types.NewRefValMap(reg, map[ref.Val]ref.Val{
+					types.Int(0): types.String("found_zero"),
+				}),
+			},
+			out: types.OptionalOf(types.String("found_zero")),
+		},
+		{
+			// a[?1] where 'a' is a NewRefValMap missing key 1
+			varName:  "a",
+			optQuals: []any{int64(1)},
+			vars: map[string]any{
+				"a": types.NewRefValMap(reg, map[ref.Val]ref.Val{
+					types.Int(0): types.String("found_zero"),
+				}),
+			},
+			out: types.OptionalNone,
+		},
+		{
+			// a[?"hello"] where 'a' is a NewRefValMap with String key
+			varName:  "a",
+			optQuals: []any{"hello"},
+			vars: map[string]any{
+				"a": types.NewRefValMap(reg, map[ref.Val]ref.Val{
+					types.String("hello"): types.Int(42),
+				}),
+			},
+			out: types.OptionalOf(types.Int(42)),
+		},
+		{
+			// a[?0] where 'a' is NewMap with map[int64]string
+			varName:  "a",
+			optQuals: []any{int64(0)},
+			vars: map[string]any{
+				"a": types.NewMap(reg, map[int64]string{
+					0: "typed_zero",
+				}),
+			},
+			out: types.OptionalOf(types.String("typed_zero")),
+		},
+		{
+			// a[?5] where 'a' is NewMap with map[int]string
+			varName:  "a",
+			optQuals: []any{int64(5)},
+			vars: map[string]any{
+				"a": types.NewMap(reg, map[int]string{
+					5: "typed_five",
+				}),
+			},
+			out: types.OptionalOf(types.String("typed_five")),
+		},
+		{
+			// a[?5] where 'a' is NewMap with map[int32]string
+			varName:  "a",
+			optQuals: []any{int64(5)},
+			vars: map[string]any{
+				"a": types.NewMap(reg, map[int32]string{
+					5: "typed_five_32",
+				}),
+			},
+			out: types.OptionalOf(types.String("typed_five_32")),
+		},
 	}
 	for i, tst := range tests {
 		tc := tst

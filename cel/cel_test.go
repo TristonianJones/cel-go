@@ -4166,174 +4166,155 @@ func TestOptionalHasValueVersion(t *testing.T) {
 }
 
 func TestOptionalMapVersion(t *testing.T) {
-	v3Env := testEnv(t,
-		OptionalTypes(OptionalTypesVersion(3)),
+	commonOpts := []EnvOption{
 		Variable("x", OptionalType(IntType)),
 		Variable("m", MapType(StringType, MapType(StringType, StringType))),
-	)
-	v4Env := testEnv(t,
-		OptionalTypes(OptionalTypesVersion(4)),
-		Variable("x", OptionalType(IntType)),
-		Variable("m", MapType(StringType, MapType(StringType, StringType))),
-	)
-	latestEnv := testEnv(t,
-		OptionalTypes(),
-		Variable("x", OptionalType(IntType)),
-		Variable("m", MapType(StringType, MapType(StringType, StringType))),
-	)
-
-	// In v3, optMap with non-ident target generates a conditional Call.
-	v3MapAst, iss := v3Env.Compile("{0: 10}[?0].optMap(v, v + 1)")
-	if iss.Err() != nil {
-		t.Fatalf("v3Env.Compile() optMap failed: %v", iss.Err())
 	}
-	if v3MapAst.NativeRep().Expr().Kind() != celast.CallKind {
-		t.Errorf("v3 optMap expected CallKind, got %v", v3MapAst.NativeRep().Expr().Kind())
-	}
-
-	// In v4, optMap with non-ident target generates an enclosing Comprehension.
-	v4MapAst, iss := v4Env.Compile("{0: 10}[?0].optMap(v, v + 1)")
-	if iss.Err() != nil {
-		t.Fatalf("v4Env.Compile() optMap failed: %v", iss.Err())
-	}
-	if v4MapAst.NativeRep().Expr().Kind() != celast.ComprehensionKind {
-		t.Errorf("v4 optMap expected ComprehensionKind, got %v", v4MapAst.NativeRep().Expr().Kind())
-	}
-
-	latestMapAst, iss := latestEnv.Compile("{0: 10}[?0].optMap(v, v + 1)")
-	if iss.Err() != nil {
-		t.Fatalf("latestEnv.Compile() optMap failed: %v", iss.Err())
-	}
-	if latestMapAst.NativeRep().Expr().Kind() != celast.ComprehensionKind {
-		t.Errorf("latest optMap expected ComprehensionKind, got %v", latestMapAst.NativeRep().Expr().Kind())
-	}
-
-	// When target is an ident, both v3 and v4 generate a CallKind (no enclosing comprehension).
-	for _, env := range []*Env{v3Env, v4Env, latestEnv} {
-		identAst, iss := env.Compile("x.optMap(v, v + 1)")
-		if iss.Err() != nil {
-			t.Fatalf("Compile() ident optMap failed: %v", iss.Err())
-		}
-		if identAst.NativeRep().Expr().Kind() != celast.CallKind {
-			t.Errorf("ident optMap expected CallKind, got %v", identAst.NativeRep().Expr().Kind())
-		}
-	}
-
-	// In v3, optFlatMap with non-ident target generates a CallKind.
-	v3FlatAst, iss := v3Env.Compile("m.?key.optFlatMap(k, k.?subkey)")
-	if iss.Err() != nil {
-		t.Fatalf("v3Env.Compile() optFlatMap failed: %v", iss.Err())
-	}
-	if v3FlatAst.NativeRep().Expr().Kind() != celast.CallKind {
-		t.Errorf("v3 optFlatMap expected CallKind, got %v", v3FlatAst.NativeRep().Expr().Kind())
-	}
-
-	// In v4, optFlatMap with non-ident target generates a ComprehensionKind.
-	v4FlatAst, iss := v4Env.Compile("m.?key.optFlatMap(k, k.?subkey)")
-	if iss.Err() != nil {
-		t.Fatalf("v4Env.Compile() optFlatMap failed: %v", iss.Err())
-	}
-	if v4FlatAst.NativeRep().Expr().Kind() != celast.ComprehensionKind {
-		t.Errorf("v4 optFlatMap expected ComprehensionKind, got %v", v4FlatAst.NativeRep().Expr().Kind())
-	}
-
-	latestFlatAst, iss := latestEnv.Compile("m.?key.optFlatMap(k, k.?subkey)")
-	if iss.Err() != nil {
-		t.Fatalf("latestEnv.Compile() optFlatMap failed: %v", iss.Err())
-	}
-	if latestFlatAst.NativeRep().Expr().Kind() != celast.ComprehensionKind {
-		t.Errorf("latest optFlatMap expected ComprehensionKind, got %v", latestFlatAst.NativeRep().Expr().Kind())
-	}
-
-	// Verify both v3 and v4 eval correctly.
-	for _, tc := range []struct {
-		name    string
-		env     *Env
-		mapAst  *Ast
-		flatAst *Ast
+	envs := []struct {
+		name string
+		env  *Env
 	}{
-		{name: "v3", env: v3Env, mapAst: v3MapAst, flatAst: v3FlatAst},
-		{name: "v4", env: v4Env, mapAst: v4MapAst, flatAst: v4FlatAst},
-		{name: "latest", env: latestEnv, mapAst: latestMapAst, flatAst: latestFlatAst},
-	} {
-		mapPrg, err := tc.env.Program(tc.mapAst)
-		if err != nil {
-			t.Fatalf("%s Program() optMap failed: %v", tc.name, err)
-		}
-		out, _, err := mapPrg.Eval(NoVars())
-		if err != nil {
-			t.Fatalf("%s Eval() optMap failed: %v", tc.name, err)
-		}
-		if !out.Equal(types.OptionalOf(types.Int(11))).(types.Bool) {
-			t.Errorf("%s optMap got %v, wanted optional(11)", tc.name, out)
-		}
+		{name: "v3", env: testEnv(t, append(commonOpts, OptionalTypes(OptionalTypesVersion(3)))...)},
+		{name: "v4", env: testEnv(t, append(commonOpts, OptionalTypes(OptionalTypesVersion(4)))...)},
+		{name: "latest", env: testEnv(t, append(commonOpts, OptionalTypes())...)},
+	}
 
-		flatPrg, err := tc.env.Program(tc.flatAst)
-		if err != nil {
-			t.Fatalf("%s Program() optFlatMap failed: %v", tc.name, err)
-		}
-		flatOut, _, err := flatPrg.Eval(map[string]any{
-			"m": map[string]any{
-				"key": map[string]any{
-					"subkey": "hello",
+	tests := []struct {
+		name      string
+		expr      string
+		in        map[string]any
+		wantOut   ref.Val
+		wantKinds map[string]celast.ExprKind
+	}{
+		{
+			name: "{0: 10}[?0].optMap(v, v + 1)",
+			expr: "{0: 10}[?0].optMap(v, v + 1)",
+			wantKinds: map[string]celast.ExprKind{
+				"v3":     celast.CallKind,
+				"v4":     celast.ComprehensionKind,
+				"latest": celast.ComprehensionKind,
+			},
+			wantOut: types.OptionalOf(types.Int(11)),
+		},
+		{
+			name: "x.optMap(v, v + 1)",
+			expr: "x.optMap(v, v + 1)",
+			in: map[string]any{
+				"x": types.OptionalOf(types.Int(10)),
+			},
+			wantKinds: map[string]celast.ExprKind{
+				"v3":     celast.CallKind,
+				"v4":     celast.CallKind,
+				"latest": celast.CallKind,
+			},
+			wantOut: types.OptionalOf(types.Int(11)),
+		},
+		{
+			name: "m.?key.optFlatMap(k, k.?subkey)",
+			expr: "m.?key.optFlatMap(k, k.?subkey)",
+			in: map[string]any{
+				"m": map[string]any{
+					"key": map[string]any{
+						"subkey": "hello",
+					},
 				},
 			},
+			wantKinds: map[string]celast.ExprKind{
+				"v3":     celast.CallKind,
+				"v4":     celast.ComprehensionKind,
+				"latest": celast.ComprehensionKind,
+			},
+			wantOut: types.OptionalOf(types.String("hello")),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, e := range envs {
+				t.Run(e.name, func(t *testing.T) {
+					ast, iss := e.env.Compile(tc.expr)
+					if iss.Err() != nil {
+						t.Fatalf("Compile() failed: %v", iss.Err())
+					}
+					if expectedKind, ok := tc.wantKinds[e.name]; ok {
+						if gotKind := ast.NativeRep().Expr().Kind(); gotKind != expectedKind {
+							t.Errorf("Expr().Kind() got %v, wanted %v", gotKind, expectedKind)
+						}
+					}
+					prg, err := e.env.Program(ast)
+					if err != nil {
+						t.Fatalf("Program() failed: %v", err)
+					}
+					in := tc.in
+					if in == nil {
+						in = map[string]any{}
+					}
+					out, _, err := prg.Eval(in)
+					if err != nil {
+						t.Fatalf("Eval() failed: %v", err)
+					}
+					if out.Equal(tc.wantOut) != types.True {
+						t.Errorf("Eval() got %v, wanted %v", out, tc.wantOut)
+					}
+				})
+			}
 		})
-		if err != nil {
-			t.Fatalf("%s Eval() optFlatMap failed: %v", tc.name, err)
-		}
-		if !flatOut.Equal(types.OptionalOf(types.String("hello"))).(types.Bool) {
-			t.Errorf("%s optFlatMap got %v, wanted optional('hello')", tc.name, flatOut)
-		}
 	}
 }
 
 func TestOptionalMapCost(t *testing.T) {
-	v3Env := testEnv(t,
-		OptionalTypes(OptionalTypesVersion(3)),
+	commonOpts := []EnvOption{
 		Variable("self", MapType(StringType, ListType(StringType))),
-	)
-	v4Env := testEnv(t,
-		OptionalTypes(OptionalTypesVersion(4)),
-		Variable("self", MapType(StringType, ListType(StringType))),
-	)
-	latestEnv := testEnv(t,
-		OptionalTypes(),
-		Variable("self", MapType(StringType, ListType(StringType))),
-	)
+	}
+	envs := []struct {
+		name string
+		env  *Env
+	}{
+		{name: "v3", env: testEnv(t, append(commonOpts, OptionalTypes(OptionalTypesVersion(3)))...)},
+		{name: "v4", env: testEnv(t, append(commonOpts, OptionalTypes(OptionalTypesVersion(4)))...)},
+		{name: "latest", env: testEnv(t, append(commonOpts, OptionalTypes())...)},
+	}
 
 	tests := []struct {
-		name     string
-		expr     string
-		in       map[string]any
-		v3Est    cost.CostEstimate
-		v3Actual uint64
-		v4Est    cost.CostEstimate
-		v4Actual uint64
+		name       string
+		expr       string
+		in         map[string]any
+		v3Est      cost.CostEstimate
+		v3Actual   uint64
+		v4Est      cost.CostEstimate
+		v4Actual   uint64
+		latestEst  cost.CostEstimate
+		latestCost uint64
 	}{
 		{
-			name:     "string equality optMap",
-			expr:     `optional.of('a').optMap(v, v == 'value').hasValue()`,
-			v3Est:    cost.CostEstimate{Min: 4, Max: 18},
-			v3Actual: 18,
-			v4Est:    cost.CostEstimate{Min: 15, Max: 29},
-			v4Actual: 29,
+			name:       "string equality optMap",
+			expr:       `optional.of('a').optMap(v, v == 'value').hasValue()`,
+			v3Est:      cost.CostEstimate{Min: 4, Max: 18},
+			v3Actual:   18,
+			v4Est:      cost.CostEstimate{Min: 15, Max: 29},
+			v4Actual:   29,
+			latestEst:  cost.CostEstimate{Min: 15, Max: 29},
+			latestCost: 29,
 		},
 		{
-			name:     "string size optMap",
-			expr:     `optional.of('abcdefgabcdefg').optMap(v, v.size()).hasValue()`,
-			v3Est:    cost.CostEstimate{Min: 4, Max: 18},
-			v3Actual: 18,
-			v4Est:    cost.CostEstimate{Min: 15, Max: 29},
-			v4Actual: 29,
+			name:       "string size optMap",
+			expr:       `optional.of('abcdefgabcdefg').optMap(v, v.size()).hasValue()`,
+			v3Est:      cost.CostEstimate{Min: 4, Max: 18},
+			v3Actual:   18,
+			v4Est:      cost.CostEstimate{Min: 15, Max: 29},
+			v4Actual:   29,
+			latestEst:  cost.CostEstimate{Min: 15, Max: 29},
+			latestCost: 29,
 		},
 		{
-			name:     "list size optMap",
-			expr:     `optional.of([1, 2, 3, 4, 5]).optMap(v, v.size()).hasValue()`,
-			v3Est:    cost.CostEstimate{Min: 14, Max: 38},
-			v3Actual: 38,
-			v4Est:    cost.CostEstimate{Min: 25, Max: 39},
-			v4Actual: 39,
+			name:       "list size optMap",
+			expr:       `optional.of([1, 2, 3, 4, 5]).optMap(v, v.size()).hasValue()`,
+			v3Est:      cost.CostEstimate{Min: 14, Max: 38},
+			v3Actual:   38,
+			v4Est:      cost.CostEstimate{Min: 25, Max: 39},
+			v4Actual:   39,
+			latestEst:  cost.CostEstimate{Min: 25, Max: 39},
+			latestCost: 39,
 		},
 		{
 			name: "map index optMap",
@@ -4341,10 +4322,12 @@ func TestOptionalMapCost(t *testing.T) {
 			in: map[string]any{
 				"self": map[string]any{"l": []string{"a"}},
 			},
-			v3Est:    cost.CostEstimate{Min: 6, Max: 22},
-			v3Actual: 22,
-			v4Est:    cost.CostEstimate{Min: 17, Max: 31},
-			v4Actual: 31,
+			v3Est:      cost.CostEstimate{Min: 6, Max: 22},
+			v3Actual:   22,
+			v4Est:      cost.CostEstimate{Min: 17, Max: 31},
+			v4Actual:   31,
+			latestEst:  cost.CostEstimate{Min: 17, Max: 31},
+			latestCost: 31,
 		},
 	}
 
@@ -4355,16 +4338,18 @@ func TestOptionalMapCost(t *testing.T) {
 			if in == nil {
 				in = map[string]any{}
 			}
-			for _, ver := range []struct {
-				name       string
-				env        *Env
-				wantEst    cost.CostEstimate
-				wantActual uint64
-			}{
-				{name: "v3", env: v3Env, wantEst: tc.v3Est, wantActual: tc.v3Actual},
-				{name: "v4", env: v4Env, wantEst: tc.v4Est, wantActual: tc.v4Actual},
-				{name: "latest", env: latestEnv, wantEst: tc.v4Est, wantActual: tc.v4Actual},
-			} {
+			for _, ver := range envs {
+				var wantEst cost.CostEstimate
+				var wantActual uint64
+				switch ver.name {
+				case "v3":
+					wantEst, wantActual = tc.v3Est, tc.v3Actual
+				case "v4":
+					wantEst, wantActual = tc.v4Est, tc.v4Actual
+				case "latest":
+					wantEst, wantActual = tc.latestEst, tc.latestCost
+				}
+
 				ast, iss := ver.env.Compile(tc.expr)
 				if iss.Err() != nil {
 					t.Fatalf("%s Compile(%q) failed: %v", ver.name, tc.expr, iss.Err())
@@ -4373,9 +4358,9 @@ func TestOptionalMapCost(t *testing.T) {
 				if err != nil {
 					t.Fatalf("%s EstimateCost(%q) failed: %v", ver.name, tc.expr, err)
 				}
-				if est.Min != ver.wantEst.Min || est.Max != ver.wantEst.Max {
+				if est.Min != wantEst.Min || est.Max != wantEst.Max {
 					t.Errorf("%s EstimateCost(%q) got [%d, %d], wanted [%d, %d]",
-						ver.name, tc.expr, est.Min, est.Max, ver.wantEst.Min, ver.wantEst.Max)
+						ver.name, tc.expr, est.Min, est.Max, wantEst.Min, wantEst.Max)
 				}
 				prg, err := ver.env.Program(ast, CostTracking(nil))
 				if err != nil {
@@ -4386,8 +4371,8 @@ func TestOptionalMapCost(t *testing.T) {
 					t.Fatalf("%s Eval(%q) failed: %v", ver.name, tc.expr, err)
 				}
 				actual := *det.ActualCost()
-				if actual != ver.wantActual {
-					t.Errorf("%s ActualCost(%q) got %d, wanted %d", ver.name, tc.expr, actual, ver.wantActual)
+				if actual != wantActual {
+					t.Errorf("%s ActualCost(%q) got %d, wanted %d", ver.name, tc.expr, actual, wantActual)
 				}
 				if est.Min > actual || actual > est.Max {
 					t.Errorf("%s ActualCost(%q) = %d outside of estimate range [%d, %d]",
@@ -4542,6 +4527,185 @@ func TestExpressionNodeLimitCheck(t *testing.T) {
 	}
 	if !strings.Contains(iss.Err().Error(), "expression node count exceeds limit") {
 		t.Errorf("Check() got error %v, expected node count limit error", iss.Err())
+	}
+}
+
+func TestOptionalMapAttributesVariablesLiteralsPartialAndTracking(t *testing.T) {
+	// 1. Literal & Variable Map optional indexing across various native and CEL map types
+	env := testEnv(t,
+		OptionalTypes(),
+		Variable("intMap", MapType(IntType, StringType)),
+		Variable("strMap", MapType(StringType, IntType)),
+		Variable("kInt", IntType),
+		Variable("kStr", StringType),
+		Variable("nested", MapType(StringType, MapType(IntType, StringType))),
+	)
+
+	adapter := env.TypeAdapter()
+
+	tests := []struct {
+		name string
+		expr string
+		in   map[string]any
+		out  ref.Val
+	}{
+		{
+			name: "literal map int key present",
+			expr: `{0: "zero", 1: "one"}[?0]`,
+			out:  types.OptionalOf(types.String("zero")),
+		},
+		{
+			name: "literal map int key missing",
+			expr: `{0: "zero", 1: "one"}[?2]`,
+			out:  types.OptionalNone,
+		},
+		{
+			name: "literal map string key present",
+			expr: `{"a": 10, "b": 20}[?"a"]`,
+			out:  types.OptionalOf(types.Int(10)),
+		},
+		{
+			name: "literal map string key missing",
+			expr: `{"a": 10, "b": 20}[?"c"]`,
+			out:  types.OptionalNone,
+		},
+		{
+			name: "var map int key present",
+			expr: `intMap[?0]`,
+			in: map[string]any{
+				"intMap": map[int64]string{0: "zero", 1: "one"},
+			},
+			out: types.OptionalOf(types.String("zero")),
+		},
+		{
+			name: "var map int key missing",
+			expr: `intMap[?99]`,
+			in: map[string]any{
+				"intMap": map[int64]string{0: "zero"},
+			},
+			out: types.OptionalNone,
+		},
+		{
+			name: "var map with var key",
+			expr: `intMap[?kInt]`,
+			in: map[string]any{
+				"intMap": map[int]string{5: "five"},
+				"kInt":   5,
+			},
+			out: types.OptionalOf(types.String("five")),
+		},
+		{
+			name: "var map string with var key missing",
+			expr: `strMap[?kStr]`,
+			in: map[string]any{
+				"strMap": map[string]int{"hello": 42},
+				"kStr":   "missing",
+			},
+			out: types.OptionalNone,
+		},
+		{
+			name: "refVal map through native adapter",
+			expr: `intMap[?kInt]`,
+			in: map[string]any{
+				"intMap": types.NewRefValMap(adapter, map[ref.Val]ref.Val{
+					types.Int(7): types.String("seven"),
+				}),
+				"kInt": 7,
+			},
+			out: types.OptionalOf(types.String("seven")),
+		},
+		{
+			name: "nested optional chaining",
+			expr: `nested[?"sub"][?42]`,
+			in: map[string]any{
+				"nested": map[string]any{
+					"sub": map[int64]string{42: "answer"},
+				},
+			},
+			out: types.OptionalOf(types.String("answer")),
+		},
+		{
+			name: "nested optional chaining missing middle",
+			expr: `nested[?"missing"][?42]`,
+			in: map[string]any{
+				"nested": map[string]any{},
+			},
+			out: types.OptionalNone,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ast, iss := env.Compile(tc.expr)
+			if iss.Err() != nil {
+				t.Fatalf("Compile(%q) failed: %v", tc.expr, iss.Err())
+			}
+			prg, err := env.Program(ast, CostTracking(nil), EvalOptions(OptTrackState))
+			if err != nil {
+				t.Fatalf("Program() failed: %v", err)
+			}
+			in := tc.in
+			if in == nil {
+				in = map[string]any{}
+			}
+			out, det, err := prg.Eval(in)
+			if err != nil {
+				t.Fatalf("Eval() failed: %v", err)
+			}
+			if out.Equal(tc.out) != types.True {
+				t.Errorf("Eval(%q) got %v, wanted %v", tc.expr, out, tc.out)
+			}
+			// Verify cost and state tracking
+			if det.ActualCost() == nil || *det.ActualCost() == 0 {
+				t.Errorf("expected non-zero tracked cost for %q", tc.expr)
+			}
+			if det.State() == nil || len(det.State().IDs()) == 0 {
+				t.Errorf("expected evaluation state to be recorded for %q", tc.expr)
+			}
+		})
+	}
+
+	// 2. Partial attribute / Unknown resolution tests
+	partialTests := []struct {
+		name string
+		expr string
+		vars map[string]any
+	}{
+		{
+			name: "partial attribute unknown key",
+			expr: `intMap[?kInt]`,
+			vars: map[string]any{
+				"intMap": map[int64]string{0: "zero"},
+			},
+		},
+		{
+			name: "partial attribute unknown map",
+			expr: `intMap[?0]`,
+			vars: map[string]any{},
+		},
+	}
+	for _, tc := range partialTests {
+		t.Run(tc.name, func(t *testing.T) {
+			ast, iss := env.Compile(tc.expr)
+			if iss.Err() != nil {
+				t.Fatalf("Compile(%q) failed: %v", tc.expr, iss.Err())
+			}
+			prg, err := env.Program(ast, EvalOptions(OptPartialEval))
+			if err != nil {
+				t.Fatalf("Program() failed: %v", err)
+			}
+			act, err := env.PartialVars(tc.vars)
+			if err != nil {
+				t.Fatalf("PartialVars() failed: %v", err)
+			}
+			out, _, err := prg.Eval(act)
+			if err != nil {
+				t.Fatalf("Eval() failed: %v", err)
+			}
+			if _, isUnk := out.(*types.Unknown); !isUnk {
+				t.Errorf("expected Unknown for %q, got %v (%T)", tc.expr, out, out)
+			}
+		})
 	}
 }
 
