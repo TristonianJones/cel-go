@@ -17,9 +17,11 @@ package checker
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"cel.dev/cel-go/common/containers"
 	"cel.dev/cel-go/common/decls"
+	"cel.dev/cel-go/common/env"
 	"cel.dev/cel-go/common/overloads"
 	"cel.dev/cel-go/common/types"
 	"cel.dev/cel-go/parser"
@@ -75,6 +77,9 @@ type Env struct {
 	aggLitElemType      aggregateLiteralElementType
 	filteredOverloadIDs map[string]struct{}
 	jsonFieldNames      bool
+	catalogSupplier     CatalogSupplier
+	catalogOnce         sync.Once
+	catalog             *env.Catalog
 }
 
 // NewEnv returns a new *Env with the given parameters.
@@ -106,7 +111,21 @@ func NewEnv(container *containers.Container, provider types.Provider, opts ...Op
 		aggLitElemType:      aggLitElemType,
 		filteredOverloadIDs: filteredOverloadIDs,
 		jsonFieldNames:      envOptions.jsonFieldNames,
+		catalogSupplier:     envOptions.catalogSupplier,
 	}, nil
+}
+
+// Catalog returns the symbol catalog configured on the environment, or nil if none is configured.
+func (e *Env) Catalog() *env.Catalog {
+	if e == nil {
+		return nil
+	}
+	e.catalogOnce.Do(func() {
+		if e.catalogSupplier != nil {
+			e.catalog = e.catalogSupplier()
+		}
+	})
+	return e.catalog
 }
 
 // AddIdents configures the checker with a list of variable declarations.

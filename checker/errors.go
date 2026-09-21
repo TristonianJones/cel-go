@@ -15,14 +15,25 @@
 package checker
 
 import (
+	"fmt"
+
 	"cel.dev/cel-go/common"
 	"cel.dev/cel-go/common/ast"
+	"cel.dev/cel-go/common/env"
 	"cel.dev/cel-go/common/types"
 )
 
 // typeErrors is a specialization of Errors.
 type typeErrors struct {
 	errs *common.Errors
+	env  *Env
+}
+
+func (e *typeErrors) getCatalog() *env.Catalog {
+	if e == nil || e.env == nil {
+		return nil
+	}
+	return e.env.Catalog()
 }
 
 func (e *typeErrors) fieldTypeMismatch(id int64, l common.Location, name string, field, value *types.Type) {
@@ -54,7 +65,11 @@ func (e *typeErrors) notAnOptionalFieldSelection(id int64, l common.Location, fi
 }
 
 func (e *typeErrors) notAType(id int64, l common.Location, typeName string) {
-	e.errs.ReportErrorAtID(id, l, "'%s' is not a type", typeName)
+	suggestion := ""
+	if cat := e.getCatalog(); cat != nil {
+		suggestion = formatSuggestionSuffix(typeName, cat.Find(typeName))
+	}
+	e.errs.ReportErrorAtID(id, l, "'%s' is not a type%s", typeName, suggestion)
 }
 
 func (e *typeErrors) notAMessageType(id int64, l common.Location, typeName string) {
@@ -80,7 +95,34 @@ func (e *typeErrors) undefinedField(id int64, l common.Location, field string) {
 }
 
 func (e *typeErrors) undeclaredReference(id int64, l common.Location, container string, name string) {
-	e.errs.ReportErrorAtID(id, l, "undeclared reference to '%s' (in container '%s')", name, container)
+	containerSuffix := ""
+	if container != "" {
+		containerSuffix = fmt.Sprintf(" (in container '%s')", container)
+	}
+	suggestion := ""
+	if cat := e.getCatalog(); cat != nil {
+		suggestion = formatSuggestionSuffix(name, cat.Find(name))
+	}
+	e.errs.ReportErrorAtID(id, l, "undeclared reference to '%s'%s%s", name, containerSuffix, suggestion)
+}
+
+func formatSuggestionSuffix(name string, syms []*env.CatalogSymbol) string {
+	if len(syms) == 0 {
+		return ""
+	}
+	if len(syms) == 1 && syms[0].Name == name {
+		if syms[0].Option != "" {
+			return fmt.Sprintf(" (enable with `%s`)", syms[0].Option)
+		}
+		return ""
+	}
+	if len(syms) == 1 {
+		if syms[0].Option != "" {
+			return fmt.Sprintf(" (did you mean '%s'?, enable with `%s`)", syms[0].Name, syms[0].Option)
+		}
+		return fmt.Sprintf(" (did you mean '%s'?)", syms[0].Name)
+	}
+	return fmt.Sprintf(" (did you mean '%s' or '%s'?)", syms[0].Name, syms[1].Name)
 }
 
 func (e *typeErrors) unexpectedFailedResolution(id int64, l common.Location, typeName string) {

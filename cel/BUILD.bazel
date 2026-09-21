@@ -66,6 +66,7 @@ go_test(
         "cel_example_test.go",
         "cel_test.go",
         "decls_test.go",
+        "env_ext_test.go",
         "env_test.go",
         "fieldpaths_test.go",
         "folding_test.go",
