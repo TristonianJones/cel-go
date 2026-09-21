@@ -475,6 +475,115 @@ func TestEncodersVersion(t *testing.T) {
 	}
 }
 
+func TestEncodersYAMLWithoutOptionalTypes(t *testing.T) {
+	env, err := cel.NewEnv(Encoders(EncodersVersion(2)))
+	if err != nil {
+		t.Fatalf("cel.NewEnv(Encoders(EncodersVersion(2))) failed: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		expr       string
+		wantType   *cel.Type
+		wantResult ref.Val
+		wantErr    string
+	}{
+		{
+			name:       "dynamic_parse",
+			expr:       "yaml.parse('hello')",
+			wantType:   cel.OptionalType(cel.DynType),
+			wantResult: types.OptionalOf(types.String("hello")),
+		},
+		{
+			name:       "typed_parse_int",
+			expr:       "yaml.parse('123', int)",
+			wantType:   cel.OptionalType(cel.IntType),
+			wantResult: types.OptionalOf(types.Int(123)),
+		},
+		{
+			name:       "typed_parse_bool",
+			expr:       "yaml.parse('true', bool)",
+			wantType:   cel.OptionalType(cel.BoolType),
+			wantResult: types.OptionalOf(types.True),
+		},
+		{
+			name:       "equality_between_parses",
+			expr:       "yaml.parse('hello') == yaml.parse('hello')",
+			wantType:   cel.BoolType,
+			wantResult: types.True,
+		},
+		{
+			name:       "inequality_between_parses",
+			expr:       "yaml.parse('hello') == yaml.parse('world')",
+			wantType:   cel.BoolType,
+			wantResult: types.False,
+		},
+		{
+			name:    "undeclared_optional_of",
+			expr:    "yaml.parse('hello') == optional.of('hello')",
+			wantErr: "undeclared reference to 'optional'",
+		},
+		{
+			name:    "undeclared_optional_none",
+			expr:    "yaml.parse(': invalid') == optional.none()",
+			wantErr: "undeclared reference to 'optional'",
+		},
+		{
+			name:    "unsupported_hasValue",
+			expr:    "yaml.parse('hello').hasValue()",
+			wantErr: "undeclared reference to 'hasValue'",
+		},
+		{
+			name:    "unsupported_value",
+			expr:    "yaml.parse('hello').value()",
+			wantErr: "undeclared reference to 'value'",
+		},
+		{
+			name:    "unsupported_orValue",
+			expr:    "yaml.parse('hello').orValue('default')",
+			wantErr: "undeclared reference to 'orValue'",
+		},
+		{
+			name:    "unsupported_field_selection",
+			expr:    "yaml.parse('123', int).field",
+			wantErr: "does not support field selection",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			ast, iss := env.Compile(tc.expr)
+			if tc.wantErr != "" {
+				if iss.Err() == nil {
+					t.Fatalf("env.Compile(%q) succeeded, wanted error containing %q", tc.expr, tc.wantErr)
+				}
+				if !strings.Contains(iss.Err().Error(), tc.wantErr) {
+					t.Errorf("env.Compile(%q) error = %v, wanted error containing %q", tc.expr, iss.Err(), tc.wantErr)
+				}
+				return
+			}
+			if iss.Err() != nil {
+				t.Fatalf("env.Compile(%q) failed: %v", tc.expr, iss.Err())
+			}
+			if tc.wantType != nil && !ast.OutputType().IsExactType(tc.wantType) {
+				t.Errorf("ast.OutputType() = %v, want %v", ast.OutputType(), tc.wantType)
+			}
+			prg, err := env.Program(ast)
+			if err != nil {
+				t.Fatalf("env.Program() failed: %v", err)
+			}
+			val, _, err := prg.Eval(cel.NoVars())
+			if err != nil {
+				t.Fatalf("prg.Eval() failed: %v", err)
+			}
+			if tc.wantResult != nil && val.Equal(tc.wantResult) != types.True {
+				t.Errorf("got %v, want %v", val, tc.wantResult)
+			}
+		})
+	}
+}
+
 func testEncodersCostsEnv(t *testing.T, version int, opts ...cel.EnvOption) *cel.Env {
 	t.Helper()
 	baseOpts := []cel.EnvOption{
