@@ -1347,3 +1347,674 @@ func TestMapCalculateSize(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeMapFindFastKeys(t *testing.T) {
+	adapter := DefaultTypeAdapter
+
+	type stringKeyFinder interface {
+		FindStringKey(string) (any, bool)
+	}
+	type int64KeyFinder interface {
+		FindInt64Key(int64) (any, bool)
+	}
+	type nativeFinder interface {
+		FindNative(any) (any, bool)
+	}
+
+	strMap := NewMap(adapter, map[string]string{"foo": "bar"})
+	refValStrMap := NewRefValMap(adapter, map[ref.Val]ref.Val{String("hello"): String("world")})
+	int64Map := NewMap(adapter, map[int64]int64{42: 100})
+	intMap := NewMap(adapter, map[int]string{10: "ten"})
+	int32Map := NewMap(adapter, map[int32]string{5: "five"})
+	refValIntMap := NewRefValMap(adapter, map[ref.Val]ref.Val{
+		Int(0):   Int(10),
+		Uint(50): String("fifty"),
+	})
+
+	stringTests := []struct {
+		name      string
+		mapper    any
+		key       string
+		wantVal   any
+		wantFound bool
+	}{
+		{name: "string map hit", mapper: strMap, key: "foo", wantVal: String("bar"), wantFound: true},
+		{name: "string map miss", mapper: strMap, key: "missing", wantVal: nil, wantFound: false},
+		{name: "ref.Val string map hit", mapper: refValStrMap, key: "hello", wantVal: String("world"), wantFound: true},
+		{name: "ref.Val string map miss", mapper: refValStrMap, key: "missing", wantVal: nil, wantFound: false},
+		{name: "int64 map wrong type", mapper: int64Map, key: "foo", wantVal: nil, wantFound: false},
+	}
+	for _, tc := range stringTests {
+		t.Run(tc.name, func(t *testing.T) {
+			finder, ok := tc.mapper.(stringKeyFinder)
+			if !ok {
+				t.Fatalf("mapper does not implement stringKeyFinder")
+			}
+			val, found := finder.FindStringKey(tc.key)
+			if found != tc.wantFound || val != tc.wantVal {
+				t.Errorf("FindStringKey(%q) got %v, %v, want %v, %v", tc.key, val, found, tc.wantVal, tc.wantFound)
+			}
+		})
+	}
+
+	int64Tests := []struct {
+		name      string
+		mapper    any
+		key       int64
+		wantVal   any
+		wantFound bool
+	}{
+		{name: "int64 map hit", mapper: int64Map, key: 42, wantVal: Int(100), wantFound: true},
+		{name: "int64 map miss", mapper: int64Map, key: 999, wantVal: nil, wantFound: false},
+		{name: "int map hit", mapper: intMap, key: 10, wantVal: String("ten"), wantFound: true},
+		{name: "int map miss", mapper: intMap, key: 99, wantVal: nil, wantFound: false},
+		{name: "int map underflow", mapper: intMap, key: math.MinInt64, wantVal: nil, wantFound: false},
+		{name: "int map overflow", mapper: intMap, key: math.MaxInt64, wantVal: nil, wantFound: false},
+		{name: "int32 map hit", mapper: int32Map, key: 5, wantVal: String("five"), wantFound: true},
+		{name: "int32 map miss", mapper: int32Map, key: 99, wantVal: nil, wantFound: false},
+		{name: "int32 map underflow", mapper: int32Map, key: math.MinInt64, wantVal: nil, wantFound: false},
+		{name: "int32 map overflow", mapper: int32Map, key: math.MaxInt64, wantVal: nil, wantFound: false},
+		{name: "ref.Val map int hit", mapper: refValIntMap, key: 0, wantVal: Int(10), wantFound: true},
+		{name: "ref.Val map uint hit", mapper: refValIntMap, key: 50, wantVal: String("fifty"), wantFound: true},
+		{name: "ref.Val map miss", mapper: refValIntMap, key: 999, wantVal: nil, wantFound: false},
+		{name: "string map wrong type", mapper: strMap, key: 42, wantVal: nil, wantFound: false},
+	}
+	for _, tc := range int64Tests {
+		t.Run(tc.name, func(t *testing.T) {
+			finder, ok := tc.mapper.(int64KeyFinder)
+			if !ok {
+				t.Fatalf("mapper does not implement int64KeyFinder")
+			}
+			val, found := finder.FindInt64Key(tc.key)
+			if found != tc.wantFound || val != tc.wantVal {
+				t.Errorf("FindInt64Key(%d) got %v, %v, want %v, %v", tc.key, val, found, tc.wantVal, tc.wantFound)
+			}
+		})
+	}
+
+	nativeTests := []struct {
+		name      string
+		mapper    any
+		key       any
+		wantVal   any
+		wantFound bool
+	}{
+		{name: "native string key", mapper: strMap, key: "foo", wantVal: String("bar"), wantFound: true},
+		{name: "native String key", mapper: strMap, key: String("foo"), wantVal: String("bar"), wantFound: true},
+		{name: "native Int key", mapper: int64Map, key: Int(42), wantVal: Int(100), wantFound: true},
+		{name: "native int64 key", mapper: int64Map, key: int64(42), wantVal: Int(100), wantFound: true},
+		{name: "native int key", mapper: intMap, key: int(10), wantVal: String("ten"), wantFound: true},
+		{name: "native ref.Val string key", mapper: refValStrMap, key: String("hello"), wantVal: String("world"), wantFound: true},
+		{name: "native ref.Val double key", mapper: int64Map, key: Double(42.0), wantVal: Int(100), wantFound: true},
+		{name: "native unsupported key type", mapper: strMap, key: true, wantVal: nil, wantFound: false},
+	}
+	for _, tc := range nativeTests {
+		t.Run(tc.name, func(t *testing.T) {
+			finder, ok := tc.mapper.(nativeFinder)
+			if !ok {
+				t.Fatalf("mapper does not implement nativeFinder")
+			}
+			val, found := finder.FindNative(tc.key)
+			if found != tc.wantFound || val != tc.wantVal {
+				t.Errorf("FindNative(%v) got %v, %v, want %v, %v", tc.key, val, found, tc.wantVal, tc.wantFound)
+			}
+		})
+	}
+}
+
+type testFoldKeyOnly struct {
+	keys []any
+}
+
+func (f *testFoldKeyOnly) FoldKeyOnly() bool {
+	return true
+}
+
+func (f *testFoldKeyOnly) FoldEntry(key, val any) bool {
+	f.keys = append(f.keys, key)
+	return true
+}
+
+type testEarlyStopFolder struct {
+	count int
+	limit int
+}
+
+func (f *testEarlyStopFolder) FoldEntry(key, val any) bool {
+	f.count++
+	return f.count < f.limit
+}
+
+func TestBaseMapFullCoverage(t *testing.T) {
+	adapter := DefaultTypeAdapter
+	st := testCreateStruct(t, map[string]any{
+		"k1": "v1",
+		"k2": "v2",
+	})
+	bm := NewJSONStruct(adapter, st)
+
+	tests := []struct {
+		name string
+		test func(t *testing.T)
+	}{
+		{
+			name: "type and value",
+			test: func(t *testing.T) {
+				if bm.Type() != MapType {
+					t.Errorf("Type() got %v, want MapType", bm.Type())
+				}
+				if bm.Value() != st {
+					t.Errorf("Value() got %v, want st", bm.Value())
+				}
+				if bm.(traits.Zeroer).IsZeroValue() {
+					t.Errorf("IsZeroValue() got true, want false")
+				}
+				if bm.Size() != Int(2) {
+					t.Errorf("Size() got %v, want 2", bm.Size())
+				}
+			},
+		},
+		{
+			name: "string representation",
+			test: func(t *testing.T) {
+				strRep := bm.(fmt.Stringer).String()
+				if !strings.Contains(strRep, "k1") || !strings.Contains(strRep, "v1") {
+					t.Errorf("String() got %v, expected k1 and v1", strRep)
+				}
+			},
+		},
+		{
+			name: "format",
+			test: func(t *testing.T) {
+				formatted := Format(bm)
+				if formatted != `{"k1": "v1", "k2": "v2"}` && formatted != `{"k2": "v2", "k1": "v1"}` {
+					t.Errorf("Format(bm) got %v", formatted)
+				}
+			},
+		},
+		{
+			name: "aggregate size uncached",
+			test: func(t *testing.T) {
+				sizer := NewSizeCalculator()
+				if sz := bm.(AggregateSizeVisitor).AggregateSize(sizer); sz == 0 {
+					t.Errorf("AggregateSize() got 0")
+				}
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, tc.test)
+	}
+}
+
+func TestNativeMapAllSpecializedTypes(t *testing.T) {
+	adapter := DefaultTypeAdapter
+	now := time.Now()
+
+	type customStruct struct {
+		Name string
+	}
+
+	tests := []struct {
+		name   string
+		mapper traits.Mapper
+	}{
+		{name: "string_uint32", mapper: NewMap(adapter, map[string]uint32{"a": 1})},
+		{name: "string_uint64", mapper: NewMap(adapter, map[string]uint64{"a": 1})},
+		{name: "string_uint", mapper: NewMap(adapter, map[string]uint{"a": 1})},
+		{name: "string_float32", mapper: NewMap(adapter, map[string]float32{"a": 1.5})},
+		{name: "string_float64", mapper: NewMap(adapter, map[string]float64{"a": 1.5})},
+		{name: "string_bool", mapper: NewMap(adapter, map[string]bool{"a": true, "b": false})},
+		{name: "string_bytes", mapper: NewMap(adapter, map[string][]byte{"a": []byte("bytes")})},
+		{name: "uint_string", mapper: NewMap(adapter, map[uint]string{1: "u"})},
+		{name: "uint32_string", mapper: NewMap(adapter, map[uint32]string{2: "u32"})},
+		{name: "uint64_string", mapper: NewMap(adapter, map[uint64]string{3: "u64"})},
+		{name: "bool_string", mapper: NewMap(adapter, map[bool]string{true: "t", false: "f"})},
+		{name: "string_customStruct", mapper: NewMap(adapter, map[string]customStruct{"s": {Name: "cel"}})},
+		{name: "time_string", mapper: NewMap(adapter, map[time.Time]string{now: "timeKey"})},
+		{name: "int64_int64", mapper: NewMap(adapter, map[int64]int64{100: 200})},
+		{name: "int_int", mapper: NewMap(adapter, map[int]int{10: 20})},
+		{name: "int32_int32", mapper: NewMap(adapter, map[int32]int32{1: 2})},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := tc.mapper
+			if m.Type() != MapType {
+				t.Errorf("Type() got %v, want MapType", m.Type())
+			}
+			if m.Value() == nil {
+				t.Errorf("Value() got nil")
+			}
+			if m.Size() == IntZero {
+				t.Errorf("Size() got 0")
+			}
+			if m.(traits.Zeroer).IsZeroValue() {
+				t.Errorf("IsZeroValue() got true")
+			}
+			if str := m.(fmt.Stringer).String(); str == "" {
+				t.Errorf("String() returned empty string")
+			}
+			if fmtStr := Format(m); fmtStr == "" {
+				t.Errorf("Format() returned empty string")
+			}
+			if sz := m.(AggregateSizeVisitor).AggregateSize(NewSizeCalculator()); sz == 0 {
+				t.Errorf("AggregateSize() returned 0")
+			}
+
+			// Iterator past end
+			it := m.Iterator()
+			for it.HasNext() == True {
+				_ = it.Next()
+			}
+			if it.HasNext() != False {
+				t.Errorf("expected HasNext == False past end")
+			}
+			if it.Next() != nil {
+				t.Errorf("expected Next == nil past end")
+			}
+
+			// FoldKeyOnly
+			fko := &testFoldKeyOnly{}
+			m.(traits.Foldable).Fold(fko)
+			if len(fko.keys) == 0 {
+				t.Errorf("FoldKeyOnly returned 0 keys")
+			}
+
+			// Fold early stop
+			fes := &testEarlyStopFolder{limit: 1}
+			m.(traits.Foldable).Fold(fes)
+		})
+	}
+}
+
+func TestNativeMapFindBranches(t *testing.T) {
+	adapter := DefaultTypeAdapter
+	now := time.Now()
+
+	mStr := NewMap(adapter, map[string]uint32{"a": 1})
+	mInt64 := NewMap(adapter, map[int64]string{10: "ten"})
+	mInt := NewMap(adapter, map[int]string{20: "twenty"})
+	mInt32 := NewMap(adapter, map[int32]string{30: "thirty"})
+	mUint64 := NewMap(adapter, map[uint64]string{40: "forty"})
+	mUint := NewMap(adapter, map[uint]string{50: "fifty"})
+	mUint32 := NewMap(adapter, map[uint32]string{60: "sixty"})
+	mBool := NewMap(adapter, map[bool]string{true: "yes", false: "no"})
+	mBoolOnlyTrue := NewMap(adapter, map[bool]string{true: "only_true"})
+	mRefVal := NewRefValMap(adapter, map[ref.Val]ref.Val{
+		Int(1):  String("one"),
+		Uint(2): String("two"),
+	})
+	mTime := NewMap(adapter, map[time.Time]string{now: "timeKey"})
+	emptyMap := NewMap(adapter, map[string]string{})
+
+	tests := []struct {
+		name      string
+		mapper    traits.Mapper
+		key       ref.Val
+		wantVal   ref.Val
+		wantFound bool
+	}{
+		{name: "empty map miss", mapper: emptyMap, key: String("a"), wantVal: nil, wantFound: false},
+		{name: "string hit", mapper: mStr, key: String("a"), wantVal: Uint(1), wantFound: true},
+		{name: "string wrong type", mapper: mStr, key: Int(1), wantVal: nil, wantFound: false},
+		{name: "string miss", mapper: mStr, key: String("missing"), wantVal: nil, wantFound: false},
+
+		{name: "int64 hit Int", mapper: mInt64, key: Int(10), wantVal: String("ten"), wantFound: true},
+		{name: "int64 hit Uint lossless", mapper: mInt64, key: Uint(10), wantVal: String("ten"), wantFound: true},
+		{name: "int64 hit Double lossless", mapper: mInt64, key: Double(10.0), wantVal: String("ten"), wantFound: true},
+		{name: "int64 wrong type", mapper: mInt64, key: String("wrong"), wantVal: nil, wantFound: false},
+		{name: "int64 miss", mapper: mInt64, key: Int(99), wantVal: nil, wantFound: false},
+
+		{name: "int hit Int", mapper: mInt, key: Int(20), wantVal: String("twenty"), wantFound: true},
+		{name: "int overflow", mapper: mInt, key: Int(math.MaxInt64), wantVal: nil, wantFound: false},
+		{name: "int underflow", mapper: mInt, key: Int(math.MinInt64), wantVal: nil, wantFound: false},
+		{name: "int miss", mapper: mInt, key: Int(99), wantVal: nil, wantFound: false},
+
+		{name: "int32 hit Int", mapper: mInt32, key: Int(30), wantVal: String("thirty"), wantFound: true},
+		{name: "int32 overflow", mapper: mInt32, key: Int(math.MaxInt64), wantVal: nil, wantFound: false},
+		{name: "int32 miss", mapper: mInt32, key: Int(99), wantVal: nil, wantFound: false},
+
+		{name: "uint64 hit Uint", mapper: mUint64, key: Uint(40), wantVal: String("forty"), wantFound: true},
+		{name: "uint64 hit Int lossless", mapper: mUint64, key: Int(40), wantVal: String("forty"), wantFound: true},
+		{name: "uint64 hit Double lossless", mapper: mUint64, key: Double(40.0), wantVal: String("forty"), wantFound: true},
+		{name: "uint64 wrong type", mapper: mUint64, key: String("wrong"), wantVal: nil, wantFound: false},
+		{name: "uint64 miss", mapper: mUint64, key: Uint(99), wantVal: nil, wantFound: false},
+
+		{name: "uint hit Uint", mapper: mUint, key: Uint(50), wantVal: String("fifty"), wantFound: true},
+		{name: "uint overflow", mapper: mUint, key: Uint(math.MaxUint64), wantVal: nil, wantFound: false},
+		{name: "uint miss", mapper: mUint, key: Uint(99), wantVal: nil, wantFound: false},
+
+		{name: "uint32 hit Uint", mapper: mUint32, key: Uint(60), wantVal: String("sixty"), wantFound: true},
+		{name: "uint32 overflow", mapper: mUint32, key: Uint(math.MaxUint64), wantVal: nil, wantFound: false},
+		{name: "uint32 miss", mapper: mUint32, key: Uint(99), wantVal: nil, wantFound: false},
+
+		{name: "bool hit True", mapper: mBool, key: True, wantVal: String("yes"), wantFound: true},
+		{name: "bool hit False", mapper: mBool, key: False, wantVal: String("no"), wantFound: true},
+		{name: "bool miss False", mapper: mBoolOnlyTrue, key: False, wantVal: nil, wantFound: false},
+		{name: "bool wrong type", mapper: mBool, key: String("wrong"), wantVal: nil, wantFound: false},
+
+		{name: "ref.Val Double to Int lossless", mapper: mRefVal, key: Double(1.0), wantVal: String("one"), wantFound: true},
+		{name: "ref.Val Double to Uint lossless", mapper: mRefVal, key: Double(2.0), wantVal: String("two"), wantFound: true},
+		{name: "ref.Val Uint to Int lossless", mapper: mRefVal, key: Uint(1), wantVal: String("one"), wantFound: true},
+		{name: "ref.Val Int to Uint lossless", mapper: mRefVal, key: Int(2), wantVal: String("two"), wantFound: true},
+		{name: "ref.Val miss", mapper: mRefVal, key: String("missing"), wantVal: nil, wantFound: false},
+
+		{name: "custom key hit", mapper: mTime, key: adapter.NativeToValue(now), wantVal: String("timeKey"), wantFound: true},
+		{name: "custom key miss", mapper: mTime, key: String("missing"), wantVal: nil, wantFound: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			val, found := tc.mapper.Find(tc.key)
+			if found != tc.wantFound || val != tc.wantVal {
+				t.Errorf("Find(%v) got %v, %v, want %v, %v", tc.key, val, found, tc.wantVal, tc.wantFound)
+			}
+		})
+	}
+}
+
+func TestProtoMapFullCoverage(t *testing.T) {
+	reg, err := NewRegistry(&proto3pb.TestAllTypes{})
+	if err != nil {
+		t.Fatalf("NewRegistry() failed: %v", err)
+	}
+	msg := &proto3pb.TestAllTypes{
+		MapStringString: map[string]string{
+			"a": "b",
+			"c": "d",
+		},
+	}
+	pbMsg := reg.NativeToValue(msg).(traits.Indexer)
+	pm := pbMsg.Get(String("map_string_string")).(traits.Mapper)
+
+	tests := []struct {
+		name string
+		test func(t *testing.T)
+	}{
+		{
+			name: "metadata and size",
+			test: func(t *testing.T) {
+				if pm.Type() != MapType {
+					t.Errorf("Type() got %v, want MapType", pm.Type())
+				}
+				if pm.Value() == nil {
+					t.Errorf("Value() got nil")
+				}
+				if pm.Size() != Int(2) {
+					t.Errorf("Size() got %v, want 2", pm.Size())
+				}
+			},
+		},
+		{
+			name: "fold early stop",
+			test: func(t *testing.T) {
+				fes := &testEarlyStopFolder{limit: 1}
+				pm.(traits.Foldable).Fold(fes)
+			},
+		},
+		{
+			name: "iterator past end",
+			test: func(t *testing.T) {
+				it := pm.Iterator()
+				for it.HasNext() == True {
+					_ = it.Next()
+				}
+				if it.HasNext() != False {
+					t.Errorf("expected HasNext == False")
+				}
+				if it.Next() != nil {
+					t.Errorf("expected Next == nil")
+				}
+			},
+		},
+		{
+			name: "convert to native error",
+			test: func(t *testing.T) {
+				if _, err := pm.ConvertToNative(reflect.TypeOf(123)); err == nil {
+					t.Errorf("ConvertToNative(int) expected error, got nil")
+				}
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, tc.test)
+	}
+}
+
+func TestProxyMapFoldVariations(t *testing.T) {
+	adapter := DefaultTypeAdapter
+	rawMap := NewMap(adapter, map[string]string{"a": "1", "b": "2"})
+	proxy := proxyLegacyMap{proxy: rawMap}
+	foldable := ToFoldableMap(proxy)
+
+	tests := []struct {
+		name string
+		test func(t *testing.T)
+	}{
+		{
+			name: "normal fold",
+			test: func(t *testing.T) {
+				fko := &testFoldKeyOnly{}
+				foldable.Fold(fko)
+				if len(fko.keys) != 2 {
+					t.Errorf("Fold got %d keys, want 2", len(fko.keys))
+				}
+			},
+		},
+		{
+			name: "early stop fold",
+			test: func(t *testing.T) {
+				fes := &testEarlyStopFolder{limit: 1}
+				foldable.Fold(fes)
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, tc.test)
+	}
+}
+
+func TestMapConvertToNativeErrorCases(t *testing.T) {
+	adapter := DefaultTypeAdapter
+	m := NewMap(adapter, map[string]string{"a": "hello"})
+	intKeyMap := NewMap(adapter, map[int]int{1: 2})
+	strValForIntField := NewMap(adapter, map[string]string{"Age": "not_an_int"})
+	mBadKey := NewRefValMap(adapter, map[ref.Val]ref.Val{
+		NewList(adapter, []int{1}): String("val"),
+	})
+
+	type testStructWithField struct {
+		Age int
+	}
+
+	tests := []struct {
+		name      string
+		mapper    traits.Mapper
+		target    reflect.Type
+		wantError bool
+	}{
+		{name: "target not a map", mapper: m, target: reflect.TypeOf("string"), wantError: true},
+		{name: "value conversion error", mapper: m, target: reflect.TypeOf(map[string]int{}), wantError: true},
+		{name: "key conversion error", mapper: m, target: reflect.TypeOf(map[int]string{}), wantError: true},
+		{name: "convert to map[any]any", mapper: m, target: reflect.TypeOf(map[any]any{}), wantError: false},
+		{name: "convert to any", mapper: m, target: reflect.TypeFor[any](), wantError: false},
+		{name: "non-string key to anyValueType", mapper: intKeyMap, target: anyValueType, wantError: true},
+		{name: "non-string key to JSONStructType", mapper: intKeyMap, target: JSONStructType, wantError: true},
+		{name: "struct field type mismatch", mapper: strValForIntField, target: reflect.TypeFor[testStructWithField](), wantError: true},
+		{name: "struct unconvertible list key", mapper: mBadKey, target: reflect.TypeFor[struct{ Val string }](), wantError: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v, err := tc.mapper.ConvertToNative(tc.target)
+			if tc.wantError && err == nil {
+				t.Errorf("ConvertToNative(%v) expected error, got nil", tc.target)
+			}
+			if !tc.wantError && (err != nil || v == nil) {
+				t.Errorf("ConvertToNative(%v) unexpected error: %v", tc.target, err)
+			}
+		})
+	}
+}
+
+func TestMapEdgeCasesRemainingCoverage(t *testing.T) {
+	adapter := DefaultTypeAdapter
+	st := testCreateStruct(t, map[string]any{"x": 1})
+	bm := NewJSONStruct(adapter, st)
+	mTwo := NewMap(adapter, map[string]string{"a": "1", "b": "2"})
+
+	reg, _ := NewRegistry(&proto3pb.TestAllTypes{})
+	msg := &proto3pb.TestAllTypes{
+		MapStringString: map[string]string{"k": "v"},
+	}
+	pbMsg := reg.NativeToValue(msg).(traits.Indexer)
+	pm := pbMsg.Get(String("map_string_string")).(traits.Mapper)
+
+	type rawStructVal struct {
+		Number int
+	}
+	mRawStruct := NewMap(adapter, map[string]rawStructVal{"key": {Number: 42}})
+
+	type keyOnlyFolder interface {
+		traits.Folder
+		FoldKeyOnly() bool
+	}
+
+	tests := []struct {
+		name string
+		test func(t *testing.T)
+	}{
+		{
+			name: "equal with different keys",
+			test: func(t *testing.T) {
+				mDiff1 := NewMap(adapter, map[string]string{"a": "1"})
+				mDiff2 := NewMap(adapter, map[string]string{"b": "1"})
+				if eq := mDiff1.Equal(mDiff2); eq != False {
+					t.Errorf("Equal on diff keys got %v, want False", eq)
+				}
+			},
+		},
+		{
+			name: "equal with non-mapper",
+			test: func(t *testing.T) {
+				if eq := mTwo.Equal(Int(123)); eq != False {
+					t.Errorf("Equal(Int) got %v, want False", eq)
+				}
+			},
+		},
+		{
+			name: "foldKeyOnly early break nativeMap",
+			test: func(t *testing.T) {
+				var kof keyOnlyFolder = &testKeyOnlyEarly{limit: 1}
+				mTwo.(traits.Foldable).Fold(kof)
+			},
+		},
+		{
+			name: "foldKeyOnly early break interopFoldableMap",
+			test: func(t *testing.T) {
+				var kof keyOnlyFolder = &testKeyOnlyEarly{limit: 1}
+				proxyTwo := ToFoldableMap(proxyLegacyMap{proxy: mTwo})
+				proxyTwo.Fold(kof)
+			},
+		},
+		{
+			name: "baseMap aggregate size caching",
+			test: func(t *testing.T) {
+				calc := NewSizeCalculator()
+				sz1 := calc.AggregateSize(bm)
+				sz2 := calc.AggregateSize(bm) // Cache hit (lines 311-313, 325-328)
+				if sz1 == 0 || sz1 != sz2 {
+					t.Errorf("calc.AggregateSize(bm) got %d, %d", sz1, sz2)
+				}
+
+				bmNilValue := &baseMap{
+					Adapter: adapter,
+					size:    0,
+					mapAccessor: &nativeMap[string, string]{
+						Adapter: adapter,
+						mapVal:  map[string]string{},
+					},
+				}
+				_ = calc.AggregateSize(bmNilValue)
+			},
+		},
+		{
+			name: "protoMap aggregate size caching",
+			test: func(t *testing.T) {
+				calc := NewSizeCalculator()
+				psz1 := calc.AggregateSize(pm)
+				psz2 := calc.AggregateSize(pm) // Cache hit (lines 1363-1365)
+				if psz1 == 0 || psz1 != psz2 {
+					t.Errorf("calc.AggregateSize(pm) got %d, %d", psz1, psz2)
+				}
+			},
+		},
+		{
+			name: "protoMap convert to native errors",
+			test: func(t *testing.T) {
+				msgIntKey := &proto3pb.TestAllTypes{
+					MapInt64NestedType: map[int64]*proto3pb.NestedTestAllTypes{1: {}},
+				}
+				pbMsgIntKey := reg.NativeToValue(msgIntKey).(traits.Indexer)
+				pmIntKey := pbMsgIntKey.Get(String("map_int64_nested_type")).(traits.Mapper)
+				if _, err := pmIntKey.ConvertToNative(anyValueType); err == nil {
+					t.Errorf("pmIntKey ConvertToNative(anyValueType) expected error")
+				}
+				if _, err := pmIntKey.ConvertToNative(JSONStructType); err == nil {
+					t.Errorf("pmIntKey ConvertToNative(JSONStructType) expected error")
+				}
+			},
+		},
+		{
+			name: "stringKeyIterator past end",
+			test: func(t *testing.T) {
+				stIter := bm.Iterator()
+				for stIter.HasNext() == True {
+					_ = stIter.Next()
+				}
+				if stIter.Next() != nil {
+					t.Errorf("stIter Next() past end expected nil")
+				}
+			},
+		},
+		{
+			name: "valToQualifyAny with qualifyRawVal == true",
+			test: func(t *testing.T) {
+				if val, found := mRawStruct.(interface{ FindStringKey(string) (any, bool) }).FindStringKey("key"); !found || val.(rawStructVal).Number != 42 {
+					t.Errorf("FindStringKey on raw struct map got %v, %v", val, found)
+				}
+			},
+		},
+		{
+			name: "non-caching sizer",
+			test: func(t *testing.T) {
+				type nonCachingSizer struct {
+					AggregateSizer
+				}
+				ncSizer := nonCachingSizer{AggregateSizer: NewSizeCalculator()}
+				bmUncached := NewJSONStruct(adapter, st)
+				_ = bmUncached.(AggregateSizeVisitor).AggregateSize(ncSizer)
+				_ = pm.(AggregateSizeVisitor).AggregateSize(ncSizer)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, tc.test)
+	}
+}
+
+type testKeyOnlyEarly struct {
+	count int
+	limit int
+}
+
+func (f *testKeyOnlyEarly) FoldKeyOnly() bool {
+	return true
+}
+
+func (f *testKeyOnlyEarly) FoldEntry(key, val any) bool {
+	f.count++
+	return f.count < f.limit
+}

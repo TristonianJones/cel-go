@@ -724,11 +724,25 @@ func (p *Registry) NativeToValue(value any) ref.Val {
 		return NewList(p, v)
 	// specializations for common map types.
 	case map[string]string:
-		return NewStringStringMap(p, v)
+		return NewMap(p, v)
 	case map[string]any:
-		return NewStringInterfaceMap(p, v)
+		return NewMap(p, v)
 	case map[ref.Val]ref.Val:
-		return NewRefValMap(p, v)
+		return NewMap(p, v)
+	case map[int64]bool:
+		return NewMap(p, v)
+	case map[string]int64:
+		return NewMap(p, v)
+	case map[string]int:
+		return NewMap(p, v)
+	case map[string]bool:
+		return NewMap(p, v)
+	case map[string]float64:
+		return NewMap(p, v)
+	case map[int64]string:
+		return NewMap(p, v)
+	case map[int]string:
+		return NewMap(p, v)
 	// additional specializations may be added upon request / need.
 	case *anypb.Any:
 		if v == nil {

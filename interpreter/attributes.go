@@ -1037,6 +1037,14 @@ func (q *stringQualifier) qualifyInternal(vars Activation, obj any, presenceTest
 			return obj, true, nil
 		}
 	default:
+		if nm, ok := obj.(interface{ FindStringKey(string) (any, bool) }); ok {
+			if v, found := nm.FindStringKey(s); found {
+				if presenceOnly {
+					return nil, true, nil
+				}
+				return v, true, nil
+			}
+		}
 		return refQualify(q.adapter, obj, q.celValue, presenceTest, presenceOnly, q.errorOnBadPresenceTest)
 	}
 	if presenceTest {
@@ -1169,6 +1177,26 @@ func (q *intQualifier) qualifyInternal(vars Activation, obj any, presenceTest, p
 			return o[i], true, nil
 		}
 	default:
+		if nl, ok := obj.(interface{ GetInt64Index(int64) (any, bool) }); ok {
+			if v, found := nl.GetInt64Index(i); found {
+				if presenceOnly {
+					return nil, true, nil
+				}
+				return v, true, nil
+			}
+			if presenceTest {
+				return nil, false, nil
+			}
+			return nil, false, missingIndex(q.celValue)
+		}
+		if nm, ok := obj.(interface{ FindInt64Key(int64) (any, bool) }); ok {
+			if v, found := nm.FindInt64Key(i); found {
+				if presenceOnly {
+					return nil, true, nil
+				}
+				return v, true, nil
+			}
+		}
 		return refQualify(q.adapter, obj, q.celValue, presenceTest, presenceOnly, q.errorOnBadPresenceTest)
 	}
 	if presenceTest {
