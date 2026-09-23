@@ -65,6 +65,7 @@ go_test(
     srcs = [
         "cel_example_test.go",
         "cel_test.go",
+        "cost_k8s_test.go",
         "decls_test.go",
         "env_test.go",
         "fieldpaths_test.go",
