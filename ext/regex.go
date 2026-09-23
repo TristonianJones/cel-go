@@ -415,8 +415,9 @@ func extractCostTracker() cost.FunctionTracker {
 		searchCost := targetCost * regexCost
 		// The total cost is the base call cost + search cost + result string allocation.
 		totalCost := float64(cost.CallCost) + searchCost + float64(cost.ActualSize(result))
-		// Round up and convert to uint64 for the final cost.
-		finalCost := uint64(math.Ceil(totalCost))
+		// Round up and convert to uint64 for the final cost, saturating rather than relying on a
+		// platform-defined out-of-range float conversion.
+		finalCost := cost.SafeCeil(totalCost)
 		return &finalCost
 	}
 }
@@ -429,8 +430,9 @@ func extractAllCostTracker() cost.FunctionTracker {
 		searchCost := targetCost * regexCost
 		// The total cost is the base call cost + search cost + result allocation + list creation cost factor.
 		totalCost := float64(cost.CallCost) + searchCost + float64(cost.ActualSize(result)) + cost.ListCreateBaseCost
-		// Round up and convert to uint64 for the final cost.
-		finalCost := uint64(math.Ceil(totalCost))
+		// Round up and convert to uint64 for the final cost, saturating rather than relying on a
+		// platform-defined out-of-range float conversion.
+		finalCost := cost.SafeCeil(totalCost)
 		return &finalCost
 	}
 }
@@ -443,8 +445,9 @@ func replaceCostTracker() cost.FunctionTracker {
 		searchCost := targetCost * regexCost
 		// The total cost is the base call cost + search cost + result string allocation.
 		totalCost := float64(cost.CallCost) + searchCost + float64(cost.ActualSize(result))
-		// Convert to uint64 for the final cost.
-		finalCost := uint64(totalCost)
+		// Convert to uint64 for the final cost. Unlike the extract trackers this truncates; the
+		// two are reconciled in a later library version to avoid raising the charged cost here.
+		finalCost := cost.SafeTrunc(totalCost)
 		return &finalCost
 	}
 }

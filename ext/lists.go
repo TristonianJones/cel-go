@@ -1064,7 +1064,9 @@ func trackAllocatingListCall(costFactor float64, size uint64) *uint64 {
 	if costFactor < 0.0 {
 		costFactor = 1.0
 	}
-	total := cost.SafeAdd(uint64(float64(size)*costFactor), cost.CallCost, cost.ListCreateBaseCost)
+	// The scaled size is truncated, matching the historical cost for in-range values, but
+	// saturates rather than relying on a platform-defined out-of-range float conversion.
+	total := cost.SafeAdd(cost.SafeMultiplyByFactorTrunc(size, costFactor), cost.CallCost, cost.ListCreateBaseCost)
 	return &total
 }
 
