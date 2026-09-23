@@ -143,6 +143,17 @@ func EstimateSizingStrategy(strategy SizingStrategy) Option {
 	}
 }
 
+// EstimateModelVersion pins cost estimation to a revision of the cost model's rules.
+//
+// Defaults to LatestModelVersion. Pin only to hold estimates stable against a previously recorded
+// baseline; see ModelVersion for why an older revision is always the less accurate choice.
+func EstimateModelVersion(version ModelVersion) Option {
+	return func(c *coster) error {
+		c.modelVersion = version
+		return nil
+	}
+}
+
 // Cost estimates the cost of the parsed and type checked CEL expression.
 func Cost(checked *ast.AST, estimator Estimator, opts ...Option) (CostEstimate, error) {
 	c := &coster{
@@ -153,6 +164,7 @@ func Cost(checked *ast.AST, estimator Estimator, opts ...Option) (CostEstimate, 
 		localVars:          make(scopes),
 		computedSizes:      map[int64]SizeEstimate{},
 		presenceTestCost:   FixedCostEstimate(1),
+		modelVersion:       LatestModelVersion,
 	}
 	for _, opt := range opts {
 		err := opt(c)
@@ -163,8 +175,12 @@ func Cost(checked *ast.AST, estimator Estimator, opts ...Option) (CostEstimate, 
 	if c.sizingStrategy == nil {
 		c.sizingStrategy = DefaultSizingStrategy()
 	}
-	if c.sizingStrategy != defaultSizing {
-		c.sizingOverloadEstimators = StandardOverloadEstimatorsWithOptions(c.sizingStrategy)
+	// The package-level estimator cache is built with the default strategy at the latest revision,
+	// so it can only be reused when both still hold.
+	if c.sizingStrategy != defaultSizing || c.modelVersion != LatestModelVersion {
+		c.sizingOverloadEstimators = StandardOverloadEstimatorsWithOptions(
+			WithSizingStrategy(c.sizingStrategy),
+			WithModelVersion(c.modelVersion))
 	}
 	return c.cost(checked.Expr()), nil
 }
@@ -185,6 +201,8 @@ type coster struct {
 	sizingOverloadEstimators map[string]FunctionEstimator
 	// presenceTestCost will either be a zero or one based on whether has() macros count against cost computations.
 	presenceTestCost CostEstimate
+	// modelVersion selects the revision of the estimation rules to apply.
+	modelVersion ModelVersion
 }
 
 // localVar captures the local variable size estimates if they exist for variables
@@ -585,6 +603,13 @@ func calculateArgCost(overloadID string, argCosts []CostEstimate) CostEstimate {
 		if len(argCosts) == 3 {
 			return argCosts[0].Add(argCosts[1].Union(argCosts[2]))
 		}
+	case overloads.OptionalOrOptional, overloads.OptionalOrValueValue:
+		// The alternative is evaluated only when the receiver is empty, so it contributes to the
+		// upper bound alone. These are member overloads, which means the receiver is costed by
+		// the caller and argCosts holds only the alternative.
+		if len(argCosts) == 1 {
+			return CostEstimate{Min: 0, Max: argCosts[0].Max}
+		}
 	}
 	var sum CostEstimate
 	for _, a := range argCosts {
@@ -706,6 +731,16 @@ type estimatorContext struct {
 
 func (e *estimatorContext) Estimator() Estimator {
 	return e.estimator
+}
+
+// modelVersion implements versionedEstimateContext, reporting the revision the enclosing coster was
+// configured with so that quantity expressions evaluated through this context follow the same rules
+// as those evaluated through an OverloadModel.
+func (e *estimatorContext) modelVersion() ModelVersion {
+	if e.coster == nil {
+		return LatestModelVersion
+	}
+	return e.coster.modelVersion
 }
 
 func (e *estimatorContext) Arg(index int) (SizeEstimate, bool) {

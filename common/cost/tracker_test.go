@@ -415,7 +415,8 @@ type testTrackerCostEstimator struct {
 
 func (tc testTrackerCostEstimator) EstimateSize(element cost.AstNode) *cost.SizeEstimate {
 	if l, ok := tc.hints[strings.Join(element.Path(), ".")]; ok {
-		return &cost.SizeEstimate{Min: 0, Max: uint64(l)}
+		est := cost.RangedSizeEstimate(0, uint64(l))
+		return &est
 	}
 	return nil
 }

@@ -311,6 +311,11 @@ func FixedCostEstimate(fixedCost uint64) CostEstimate {
 	return CostEstimate{Min: fixedCost, Max: fixedCost}
 }
 
+// RangedCostEstimate returns a cost estimate bounded by min and max.
+func RangedCostEstimate(min, max uint64) CostEstimate {
+	return CostEstimate{Min: min, Max: max}
+}
+
 // Add adds the costs and returns the sum.
 // If add would result in an uint64 overflow for the min or max, the value is set to math.MaxUint64.
 func (ce CostEstimate) Add(estimate CostEstimate) CostEstimate {

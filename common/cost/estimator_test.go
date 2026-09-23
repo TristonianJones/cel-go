@@ -17,6 +17,7 @@ package cost_test
 import (
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 
@@ -71,6 +72,14 @@ func compile(t *testing.T, expr string, vars ...*decls.VariableDecl) *ast.AST {
 	return checked.NativeRep()
 }
 
+// costV0 records the estimate a case produces under cost.ModelVersion0, for the wantedV0 field.
+// It exists because the constructors return values, and a table field of pointer type needs
+// something addressable.
+func costV0(lo, hi uint64) *cost.CostEstimate {
+	est := cost.RangedCostEstimate(lo, hi)
+	return &est
+}
+
 func TestCost(t *testing.T) {
 	allTypes := types.NewObjectType("google.expr.proto3.test.TestAllTypes")
 	allList := types.NewListType(allTypes)
@@ -80,7 +89,7 @@ func TestCost(t *testing.T) {
 	allMap := types.NewMapType(types.StringType, allTypes)
 	nestedMap := types.NewMapType(types.StringType, allMap)
 
-	zeroCost := cost.CostEstimate{}
+	zeroCost := cost.FixedCostEstimate(0)
 	oneCost := cost.FixedCostEstimate(1)
 	cases := []struct {
 		name    string
@@ -89,6 +98,8 @@ func TestCost(t *testing.T) {
 		hints   map[string]uint64
 		options []cost.Option
 		wanted  cost.CostEstimate
+		// wantedV0 is the estimate under cost.ModelVersion0, set only where the revision moved it.
+		wantedV0 *cost.CostEstimate
 	}{
 		{
 			name:   "const",
@@ -99,105 +110,105 @@ func TestCost(t *testing.T) {
 			name:   "identity",
 			expr:   `input`,
 			vars:   []*decls.VariableDecl{decls.NewVariable("input", intList)},
-			wanted: cost.CostEstimate{Min: 1, Max: 1},
+			wanted: cost.FixedCostEstimate(1),
 		},
 		{
 			name: "select: map",
 			expr: `input['key']`,
 			vars: []*decls.VariableDecl{
 				decls.NewVariable("input", types.NewMapType(types.StringType, types.StringType))},
-			wanted: cost.CostEstimate{Min: 2, Max: 2},
+			wanted: cost.FixedCostEstimate(2),
 		},
 		{
 			name:   "select: field",
 			expr:   `input.single_int32`,
 			vars:   []*decls.VariableDecl{decls.NewVariable("input", allTypes)},
-			wanted: cost.CostEstimate{Min: 2, Max: 2},
+			wanted: cost.FixedCostEstimate(2),
 		},
 		{
 			name:    "select: field test only no has() cost",
 			expr:    `has(input.single_int32)`,
 			vars:    []*decls.VariableDecl{decls.NewVariable("input", types.NewObjectType("google.expr.proto3.test.TestAllTypes"))},
-			wanted:  cost.CostEstimate{Min: 1, Max: 1},
+			wanted:  cost.FixedCostEstimate(1),
 			options: []cost.Option{cost.PresenceTestHasCost(false)},
 		},
 		{
 			name:   "select: field test only",
 			expr:   `has(input.single_int32)`,
 			vars:   []*decls.VariableDecl{decls.NewVariable("input", types.NewObjectType("google.expr.proto3.test.TestAllTypes"))},
-			wanted: cost.CostEstimate{Min: 2, Max: 2},
+			wanted: cost.FixedCostEstimate(2),
 		},
 		{
 			name:    "select: non-proto field test has() cost",
 			expr:    `has(input.testAttr.nestedAttr)`,
 			vars:    []*decls.VariableDecl{decls.NewVariable("input", nestedMap)},
-			wanted:  cost.CostEstimate{Min: 3, Max: 3},
+			wanted:  cost.FixedCostEstimate(3),
 			options: []cost.Option{cost.PresenceTestHasCost(true)},
 		},
 		{
 			name:    "select: non-proto field test no has() cost",
 			expr:    `has(input.testAttr.nestedAttr)`,
 			vars:    []*decls.VariableDecl{decls.NewVariable("input", nestedMap)},
-			wanted:  cost.CostEstimate{Min: 2, Max: 2},
+			wanted:  cost.FixedCostEstimate(2),
 			options: []cost.Option{cost.PresenceTestHasCost(false)},
 		},
 		{
 			name:   "select: non-proto field test",
 			expr:   `has(input.testAttr.nestedAttr)`,
 			vars:   []*decls.VariableDecl{decls.NewVariable("input", nestedMap)},
-			wanted: cost.CostEstimate{Min: 3, Max: 3},
+			wanted: cost.FixedCostEstimate(3),
 		},
 		{
 			name:   "estimated function call",
 			expr:   `input.getFullYear()`,
 			vars:   []*decls.VariableDecl{decls.NewVariable("input", types.TimestampType)},
-			wanted: cost.CostEstimate{Min: 8, Max: 8},
+			wanted: cost.FixedCostEstimate(8),
 		},
 		{
 			name:   "create list",
 			expr:   `[1, 2, 3]`,
-			wanted: cost.CostEstimate{Min: 10, Max: 10},
+			wanted: cost.FixedCostEstimate(10),
 		},
 		{
 			name:   "create struct",
 			expr:   `google.expr.proto3.test.TestAllTypes{single_int32: 1, single_float: 3.14, single_string: 'str'}`,
-			wanted: cost.CostEstimate{Min: 40, Max: 40},
+			wanted: cost.FixedCostEstimate(40),
 		},
 		{
 			name:   "create map",
 			expr:   `{"a": 1, "b": 2, "c": 3}`,
-			wanted: cost.CostEstimate{Min: 30, Max: 30},
+			wanted: cost.FixedCostEstimate(30),
 		},
 		{
 			name:   "all comprehension",
 			vars:   []*decls.VariableDecl{decls.NewVariable("input", allList)},
 			hints:  map[string]uint64{"input": 100},
 			expr:   `input.all(x, true)`,
-			wanted: cost.CostEstimate{Min: 2, Max: 302},
+			wanted: cost.RangedCostEstimate(2, 302),
 		},
 		{
 			name:   "nested all comprehension",
 			vars:   []*decls.VariableDecl{decls.NewVariable("input", nestedList)},
 			hints:  map[string]uint64{"input": 50, "input.@items": 10},
 			expr:   `input.all(x, x.all(y, true))`,
-			wanted: cost.CostEstimate{Min: 2, Max: 1752},
+			wanted: cost.RangedCostEstimate(2, 1752),
 		},
 		{
 			name:   "all comprehension on literal",
 			expr:   `[1, 2, 3].all(x, true)`,
-			wanted: cost.CostEstimate{Min: 20, Max: 20},
+			wanted: cost.FixedCostEstimate(20),
 		},
 		{
 			name:   "variable cost function",
 			vars:   []*decls.VariableDecl{decls.NewVariable("input", types.StringType)},
 			hints:  map[string]uint64{"input": 500},
 			expr:   `input.matches('[0-9]')`,
-			wanted: cost.CostEstimate{Min: 3, Max: 103},
+			wanted: cost.RangedCostEstimate(3, 103),
 		},
 		{
 			name:   "variable cost function with constant",
 			expr:   `'123'.matches('[0-9]')`,
-			wanted: cost.CostEstimate{Min: 2, Max: 2},
+			wanted: cost.FixedCostEstimate(2),
 		},
 		{
 			name:   "or",
@@ -213,7 +224,7 @@ func TestCost(t *testing.T) {
 				decls.NewVariable("c", types.BoolType),
 				decls.NewVariable("d", types.BoolType),
 			},
-			wanted: cost.CostEstimate{Min: 1, Max: 4},
+			wanted: cost.RangedCostEstimate(1, 4),
 		},
 		{
 			name:   "and",
@@ -229,7 +240,7 @@ func TestCost(t *testing.T) {
 				decls.NewVariable("c", types.BoolType),
 				decls.NewVariable("d", types.BoolType),
 			},
-			wanted: cost.CostEstimate{Min: 1, Max: 4},
+			wanted: cost.RangedCostEstimate(1, 4),
 		},
 		{
 			name:   "lt",
@@ -259,7 +270,7 @@ func TestCost(t *testing.T) {
 		{
 			name:   "in",
 			expr:   `2 in [1, 2, 3]`,
-			wanted: cost.CostEstimate{Min: 13, Max: 13},
+			wanted: cost.FixedCostEstimate(13),
 		},
 		{
 			name:   "plus",
@@ -306,35 +317,37 @@ func TestCost(t *testing.T) {
 			vars:   []*decls.VariableDecl{decls.NewVariable("input", types.BytesType)},
 			hints:  map[string]uint64{"input": 500},
 			expr:   `string(input)`,
-			wanted: cost.CostEstimate{Min: 1, Max: 51},
+			wanted: cost.RangedCostEstimate(1, 51),
 		},
 		{
 			name:  "bytes to string conversion equality",
 			vars:  []*decls.VariableDecl{decls.NewVariable("input", types.BytesType)},
 			hints: map[string]uint64{"input": 500},
 			// equality check ensures that the resultSize calculation is included in cost
-			expr:   `string(input) == string(input)`,
-			wanted: cost.CostEstimate{Min: 3, Max: 152},
+			expr:     `string(input) == string(input)`,
+			wanted:   cost.RangedCostEstimate(2, 152),
+			wantedV0: costV0(3, 152),
 		},
 		{
 			name:   "string to bytes conversion",
 			vars:   []*decls.VariableDecl{decls.NewVariable("input", types.StringType)},
 			hints:  map[string]uint64{"input": 500},
 			expr:   `bytes(input)`,
-			wanted: cost.CostEstimate{Min: 1, Max: 51},
+			wanted: cost.RangedCostEstimate(1, 51),
 		},
 		{
 			name:  "string to bytes conversion equality",
 			vars:  []*decls.VariableDecl{decls.NewVariable("input", types.StringType)},
 			hints: map[string]uint64{"input": 500},
 			// equality check ensures that the resultSize calculation is included in cost
-			expr:   `bytes(input) == bytes(input)`,
-			wanted: cost.CostEstimate{Min: 3, Max: 302},
+			expr:     `bytes(input) == bytes(input)`,
+			wanted:   cost.RangedCostEstimate(2, 302),
+			wantedV0: costV0(3, 302),
 		},
 		{
 			name:   "int to string conversion",
 			expr:   `string(1)`,
-			wanted: cost.CostEstimate{Min: 1, Max: 1},
+			wanted: cost.FixedCostEstimate(1),
 		},
 		{
 			name: "contains",
@@ -344,7 +357,7 @@ func TestCost(t *testing.T) {
 				decls.NewVariable("arg1", types.StringType),
 			},
 			hints:  map[string]uint64{"input": 500, "arg1": 500},
-			wanted: cost.CostEstimate{Min: 2, Max: 2502},
+			wanted: cost.RangedCostEstimate(2, 2502),
 		},
 		{
 			name: "matches",
@@ -353,7 +366,7 @@ func TestCost(t *testing.T) {
 				decls.NewVariable("input", types.StringType),
 			},
 			hints:  map[string]uint64{"input": 500},
-			wanted: cost.CostEstimate{Min: 3, Max: 103},
+			wanted: cost.RangedCostEstimate(3, 103),
 		},
 		{
 			name: "matches global",
@@ -362,7 +375,7 @@ func TestCost(t *testing.T) {
 				decls.NewVariable("input", types.StringType),
 			},
 			hints:  map[string]uint64{"input": 500},
-			wanted: cost.CostEstimate{Min: 3, Max: 103},
+			wanted: cost.RangedCostEstimate(3, 103),
 		},
 		{
 			name: "startsWith",
@@ -372,7 +385,7 @@ func TestCost(t *testing.T) {
 				decls.NewVariable("arg1", types.StringType),
 			},
 			hints:  map[string]uint64{"arg1": 500},
-			wanted: cost.CostEstimate{Min: 2, Max: 52},
+			wanted: cost.RangedCostEstimate(2, 52),
 		},
 		{
 			name: "endsWith",
@@ -382,7 +395,7 @@ func TestCost(t *testing.T) {
 				decls.NewVariable("arg1", types.StringType),
 			},
 			hints:  map[string]uint64{"arg1": 500},
-			wanted: cost.CostEstimate{Min: 2, Max: 52},
+			wanted: cost.RangedCostEstimate(2, 52),
 		},
 		{
 			name: "size receiver",
@@ -390,7 +403,7 @@ func TestCost(t *testing.T) {
 			vars: []*decls.VariableDecl{
 				decls.NewVariable("input", types.StringType),
 			},
-			wanted: cost.CostEstimate{Min: 2, Max: 2},
+			wanted: cost.FixedCostEstimate(2),
 		},
 		{
 			name: "size",
@@ -398,7 +411,7 @@ func TestCost(t *testing.T) {
 			vars: []*decls.VariableDecl{
 				decls.NewVariable("input", types.StringType),
 			},
-			wanted: cost.CostEstimate{Min: 2, Max: 2},
+			wanted: cost.FixedCostEstimate(2),
 		},
 		{
 			name: "ternary eval",
@@ -409,7 +422,7 @@ func TestCost(t *testing.T) {
 				decls.NewVariable("input2", allList),
 			},
 			hints:  map[string]uint64{"input1": 1, "input2": 1},
-			wanted: cost.CostEstimate{Min: 4, Max: 7},
+			wanted: cost.RangedCostEstimate(4, 7),
 		},
 		{
 			name: "comprehension over map",
@@ -418,7 +431,7 @@ func TestCost(t *testing.T) {
 				decls.NewVariable("input", allMap),
 			},
 			hints:  map[string]uint64{"input": 10},
-			wanted: cost.CostEstimate{Min: 2, Max: 82},
+			wanted: cost.RangedCostEstimate(2, 82),
 		},
 		{
 			name: "comprehension over nested map of maps",
@@ -427,7 +440,7 @@ func TestCost(t *testing.T) {
 				decls.NewVariable("input", nestedMap),
 			},
 			hints:  map[string]uint64{"input": 5, "input.@values": 10},
-			wanted: cost.CostEstimate{Min: 2, Max: 187},
+			wanted: cost.RangedCostEstimate(2, 187),
 		},
 		{
 			name: "string size of map keys",
@@ -436,7 +449,7 @@ func TestCost(t *testing.T) {
 				decls.NewVariable("input", nestedMap),
 			},
 			hints:  map[string]uint64{"input": 5, "input.@keys": 10},
-			wanted: cost.CostEstimate{Min: 2, Max: 32},
+			wanted: cost.RangedCostEstimate(2, 32),
 		},
 		{
 			name: "comprehension variable shadowing",
@@ -445,7 +458,7 @@ func TestCost(t *testing.T) {
 				decls.NewVariable("input", nestedMap),
 			},
 			hints:  map[string]uint64{"input": 2, "input.@values": 2, "input.@keys": 5},
-			wanted: cost.CostEstimate{Min: 2, Max: 34},
+			wanted: cost.RangedCostEstimate(2, 34),
 		},
 		{
 			name: "comprehension variable shadowing",
@@ -454,7 +467,7 @@ func TestCost(t *testing.T) {
 				decls.NewVariable("input", nestedMap),
 			},
 			hints:  map[string]uint64{"input": 2, "input.@values": 2, "input.@keys": 5},
-			wanted: cost.CostEstimate{Min: 2, Max: 34},
+			wanted: cost.RangedCostEstimate(2, 34),
 		},
 		{
 			name: "list concat",
@@ -464,7 +477,7 @@ func TestCost(t *testing.T) {
 				decls.NewVariable("list2", types.NewListType(types.IntType)),
 			},
 			hints:  map[string]uint64{"list1": 10, "list2": 10},
-			wanted: cost.CostEstimate{Min: 4, Max: 64},
+			wanted: cost.RangedCostEstimate(4, 64),
 		},
 		{
 			name: "str concat",
@@ -474,7 +487,7 @@ func TestCost(t *testing.T) {
 				decls.NewVariable("str2", types.StringType),
 			},
 			hints:  map[string]uint64{"str1": 10, "str2": 10},
-			wanted: cost.CostEstimate{Min: 2, Max: 6},
+			wanted: cost.RangedCostEstimate(2, 6),
 		},
 		{
 			name: "str concat custom cost estimate",
@@ -495,7 +508,7 @@ func TestCost(t *testing.T) {
 						return nil
 					}),
 			},
-			wanted: cost.CostEstimate{Min: 2, Max: 12},
+			wanted: cost.RangedCostEstimate(2, 12),
 		},
 		{
 			name: "list size comparison",
@@ -504,7 +517,7 @@ func TestCost(t *testing.T) {
 				decls.NewVariable("list1", types.NewListType(types.IntType)),
 				decls.NewVariable("list2", types.NewListType(types.IntType)),
 			},
-			wanted: cost.CostEstimate{Min: 5, Max: 5},
+			wanted: cost.FixedCostEstimate(5),
 		},
 		{
 			name: "list size from ternary",
@@ -515,7 +528,7 @@ func TestCost(t *testing.T) {
 				decls.NewVariable("list1", types.NewListType(types.IntType)),
 				decls.NewVariable("list2", types.NewListType(types.IntType)),
 			},
-			wanted: cost.CostEstimate{Min: 5, Max: 5},
+			wanted: cost.FixedCostEstimate(5),
 		},
 		{
 			name: "list size from concat",
@@ -530,7 +543,7 @@ func TestCost(t *testing.T) {
 				"list1": 10,
 				"list2": 20,
 			},
-			wanted: cost.CostEstimate{Min: 17, Max: 17},
+			wanted: cost.FixedCostEstimate(17),
 		},
 		{
 			name: "list cost tracking through comprehension",
@@ -545,7 +558,7 @@ func TestCost(t *testing.T) {
 				"list2":        20,
 				"list2.@items": 128,
 			},
-			wanted: cost.CostEstimate{Min: 21, Max: 265},
+			wanted: cost.RangedCostEstimate(21, 265),
 		},
 		{
 			name: "str endsWith equality",
@@ -554,12 +567,12 @@ func TestCost(t *testing.T) {
 				decls.NewVariable("str1", types.StringType),
 				decls.NewVariable("str2", types.StringType),
 			},
-			wanted: cost.CostEstimate{Min: 9, Max: 9},
+			wanted: cost.FixedCostEstimate(9),
 		},
 		{
 			name:   "nested subexpression operators",
 			expr:   `((5 != 6) == (1 == 2)) == ((3 <= 4) == (9 != 9))`,
-			wanted: cost.CostEstimate{Min: 7, Max: 7},
+			wanted: cost.FixedCostEstimate(7),
 		},
 		{
 			name: "str size estimate",
@@ -568,7 +581,8 @@ func TestCost(t *testing.T) {
 				decls.NewVariable("timestamp1", types.TimestampType),
 				decls.NewVariable("timestamp2", types.TimestampType),
 			},
-			wanted: cost.CostEstimate{Min: 5, Max: 1844674407370955268},
+			wanted:   cost.RangedCostEstimate(4, 1844674407370955268),
+			wantedV0: costV0(5, 1844674407370955268),
 		},
 		{
 			name: "timestamp equality check",
@@ -577,7 +591,7 @@ func TestCost(t *testing.T) {
 				decls.NewVariable("timestamp1", types.TimestampType),
 				decls.NewVariable("timestamp2", types.TimestampType),
 			},
-			wanted: cost.CostEstimate{Min: 3, Max: 3},
+			wanted: cost.FixedCostEstimate(3),
 		},
 		{
 			name: "duration inequality check",
@@ -586,62 +600,62 @@ func TestCost(t *testing.T) {
 				decls.NewVariable("duration1", types.DurationType),
 				decls.NewVariable("duration2", types.DurationType),
 			},
-			wanted: cost.CostEstimate{Min: 3, Max: 3},
+			wanted: cost.FixedCostEstimate(3),
 		},
 		{
 			name:   ".filter list literal",
 			expr:   `[1,2,3,4,5].filter(x, x % 2 == 0)`,
-			wanted: cost.CostEstimate{Min: 41, Max: 101},
+			wanted: cost.RangedCostEstimate(41, 101),
 		},
 		{
 			name:   ".map list literal",
 			expr:   `[1,2,3,4,5].map(x, x)`,
-			wanted: cost.CostEstimate{Min: 86, Max: 86},
+			wanted: cost.FixedCostEstimate(86),
 		},
 		{
 			name:   ".map.filter list literal",
 			expr:   `[1,2,3,4,5].map(x, x).filter(x, x % 2 == 0)`,
-			wanted: cost.CostEstimate{Min: 117, Max: 177},
+			wanted: cost.RangedCostEstimate(117, 177),
 		},
 		{
 			name:   ".map.exists list literal",
 			expr:   `[1,2,3,4,5].map(x, x).exists(x, x == 5) == true`,
-			wanted: cost.CostEstimate{Min: 108, Max: 118},
+			wanted: cost.RangedCostEstimate(108, 118),
 		},
 		{
 			name:   ".map.map list literal",
 			expr:   `[1,2,3,4,5].map(x, x).map(x, x)`,
-			wanted: cost.CostEstimate{Min: 162, Max: 162},
+			wanted: cost.FixedCostEstimate(162),
 		},
 		{
 			name:   ".map list literal selection",
 			expr:   `[1,2,3,4,5].map(x, x)[4]`,
-			wanted: cost.CostEstimate{Min: 88, Max: 88},
+			wanted: cost.FixedCostEstimate(88),
 		},
 		{
 			name:   "nested array selection",
 			expr:   `[[1,2],[1,2],[1,2],[1,2],[1,2]][4]`,
-			wanted: cost.CostEstimate{Min: 62, Max: 62},
+			wanted: cost.FixedCostEstimate(62),
 		},
 		{
 			name:   "nested map selection",
 			expr:   `{'a': [1,2], 'b': [1,2], 'c': [1,2], 'd': [1,2], 'e': [1,2]}.b`,
-			wanted: cost.CostEstimate{Min: 82, Max: 82},
+			wanted: cost.FixedCostEstimate(82),
 		},
 		{
 			name:   "comprehension on nested list",
 			expr:   `[[1, 1], [2, 2], [3, 3], [4, 4], [5, 5]].all(y, y.all(y, y == 1))`,
-			wanted: cost.CostEstimate{Min: 76, Max: 136},
+			wanted: cost.RangedCostEstimate(76, 136),
 		},
 		{
 			name:   "comprehension on transformed nested list",
 			expr:   `[1,2,3,4,5].map(x, [x, x]).all(y, y.all(y, y == 1))`,
-			wanted: cost.CostEstimate{Min: 157, Max: 217},
+			wanted: cost.RangedCostEstimate(157, 217),
 		},
 		{
 			name:   "comprehension on nested literal list",
 			expr:   `["a", "ab", "abc", "abcd", "abcde"].map(x, [x, x]).all(y, y.all(y, y.startsWith('a')))`,
-			wanted: cost.CostEstimate{Min: 157, Max: 217},
+			wanted: cost.RangedCostEstimate(157, 217),
 		},
 		{
 			name: "comprehension on nested variable list",
@@ -651,49 +665,49 @@ func TestCost(t *testing.T) {
 				"input":        5,
 				"input.@items": 10,
 			},
-			wanted: cost.CostEstimate{Min: 13, Max: 208},
+			wanted: cost.RangedCostEstimate(13, 208),
 		},
 		{
 			name:   "comprehension chaining with concat",
 			expr:   `[1,2,3,4,5].map(x, x).map(x, x) + [1]`,
-			wanted: cost.CostEstimate{Min: 173, Max: 173},
+			wanted: cost.FixedCostEstimate(173),
 		},
 		{
 			name:   "nested comprehension",
 			expr:   `[1,2,3].all(i, i in [1,2,3].map(j, j + j))`,
-			wanted: cost.CostEstimate{Min: 20, Max: 230},
+			wanted: cost.RangedCostEstimate(20, 230),
 		},
 		{
 			name:   "nested dyn comprehension",
 			expr:   `dyn([1,2,3]).all(i, i in dyn([1,2,3]).map(j, j + j))`,
-			wanted: cost.CostEstimate{Min: 21, Max: 234},
+			wanted: cost.RangedCostEstimate(21, 234),
 		},
 		{
 			name:   "literal map access",
 			expr:   `{'hello': 'hi'}['hello'] != {'hello': 'bye'}['hello']`,
-			wanted: cost.CostEstimate{Min: 65, Max: 65},
+			wanted: cost.FixedCostEstimate(65),
 		},
 		{
 			name:   "literal list access",
 			expr:   `['hello', 'hi'][0] != ['hello', 'bye'][1]`,
-			wanted: cost.CostEstimate{Min: 25, Max: 25},
+			wanted: cost.FixedCostEstimate(25),
 		},
 		{
 			// Optional index over a computed operand costs the same as its non-optional
 			// counterpart: the planner qualifies a relative attribute in both cases.
 			name:   "literal map optional access",
 			expr:   `{'hello': 'hi'}[?'hello']`,
-			wanted: cost.CostEstimate{Min: 32, Max: 32},
+			wanted: cost.FixedCostEstimate(32),
 		},
 		{
 			name:   "literal map optional select",
 			expr:   `{'hello': 'hi'}.?hello`,
-			wanted: cost.CostEstimate{Min: 32, Max: 32},
+			wanted: cost.FixedCostEstimate(32),
 		},
 		{
 			name:   "literal list optional access",
 			expr:   `['hello', 'hi'][?0]`,
-			wanted: cost.CostEstimate{Min: 12, Max: 12},
+			wanted: cost.FixedCostEstimate(12),
 		},
 		{
 			// An optional select extends the attribute chain, so the trailing selection
@@ -703,7 +717,7 @@ func TestCost(t *testing.T) {
 			vars: []*decls.VariableDecl{
 				decls.NewVariable("self", types.NewMapType(types.StringType, types.DynType)),
 			},
-			wanted: cost.CostEstimate{Min: 3, Max: 3},
+			wanted: cost.FixedCostEstimate(3),
 		},
 		{
 			name: "optional index chain",
@@ -711,12 +725,12 @@ func TestCost(t *testing.T) {
 			vars: []*decls.VariableDecl{
 				decls.NewVariable("self", types.NewMapType(types.StringType, types.DynType)),
 			},
-			wanted: cost.CostEstimate{Min: 3, Max: 3},
+			wanted: cost.FixedCostEstimate(3),
 		},
 		{
 			name:   "type call",
 			expr:   `type(1)`,
-			wanted: cost.CostEstimate{Min: 1, Max: 1},
+			wanted: cost.FixedCostEstimate(1),
 		},
 		{
 			name: "type call variable",
@@ -724,7 +738,7 @@ func TestCost(t *testing.T) {
 			vars: []*decls.VariableDecl{
 				decls.NewVariable("self", types.NewMapType(types.StringType, types.IntType)),
 			},
-			wanted: cost.CostEstimate{Min: 3, Max: 3},
+			wanted: cost.FixedCostEstimate(3),
 		},
 		{
 			name: "type call variable equality",
@@ -732,17 +746,17 @@ func TestCost(t *testing.T) {
 			vars: []*decls.VariableDecl{
 				decls.NewVariable("self", types.NewMapType(types.StringType, types.IntType)),
 			},
-			wanted: cost.CostEstimate{Min: 5, Max: 5},
+			wanted: cost.FixedCostEstimate(5),
 		},
 		{
 			name:   "type literal equality cost",
 			expr:   `type(1) == int`,
-			wanted: cost.CostEstimate{Min: 3, Max: 3},
+			wanted: cost.FixedCostEstimate(3),
 		},
 		{
 			name:   "type variable equality cost",
 			expr:   `type(1) == int`,
-			wanted: cost.CostEstimate{Min: 3, Max: 3},
+			wanted: cost.FixedCostEstimate(3),
 		},
 		{
 			name: "namespace variable equality",
@@ -750,7 +764,7 @@ func TestCost(t *testing.T) {
 			vars: []*decls.VariableDecl{
 				decls.NewVariable("self.val1", types.DoubleType),
 			},
-			wanted: cost.CostEstimate{Min: 2, Max: 2},
+			wanted: cost.FixedCostEstimate(2),
 		},
 		{
 			name: "simple map variable equality",
@@ -758,7 +772,7 @@ func TestCost(t *testing.T) {
 			vars: []*decls.VariableDecl{
 				decls.NewVariable("self", types.NewMapType(types.StringType, types.DoubleType)),
 			},
-			wanted: cost.CostEstimate{Min: 3, Max: 3},
+			wanted: cost.FixedCostEstimate(3),
 		},
 		{
 			name: "date-time math",
@@ -808,7 +822,7 @@ func TestCost(t *testing.T) {
 					func(estimator cost.Estimator, target *cost.AstNode, args []cost.AstNode) *cost.CallEstimate {
 						if target != nil {
 							// Charge 1 cost for comparing each element in the list
-							elCost := cost.CostEstimate{Min: 1, Max: 1}
+							elCost := cost.FixedCostEstimate(1)
 							// If the list contains strings or bytes, add the cost of traversing all the strings/bytes as a way
 							// of estimating the additional comparison cost.
 							if elNode := listElementNode(*target); elNode != nil {
@@ -823,155 +837,155 @@ func TestCost(t *testing.T) {
 						return nil
 					}),
 			},
-			wanted: cost.CostEstimate{Min: 25, Max: 35},
+			wanted: cost.RangedCostEstimate(25, 35),
 		},
 		// cel.bind test cases
 		{
 			name:   "bind: literal init and scalar result",
 			expr:   `cel.bind(a, 'hello', a + '!')`,
-			wanted: cost.CostEstimate{Min: 12, Max: 12},
+			wanted: cost.FixedCostEstimate(12),
 		},
 		{
 			name:   "bind: nested binds",
 			expr:   `cel.bind(a, 'hello!', cel.bind(b, 'goodbye', a + ' and, ' + b))`,
-			wanted: cost.CostEstimate{Min: 26, Max: 26},
+			wanted: cost.FixedCostEstimate(26),
 		},
 		{
 			name:   "bind: shadowed bind",
 			expr:   `cel.bind(a, cel.bind(a, 'world', a + '!'), 'hello ' + a)`,
-			wanted: cost.CostEstimate{Min: 25, Max: 25},
+			wanted: cost.FixedCostEstimate(25),
 		},
 		{
 			name:   "bind: with variable list and index",
 			expr:   `cel.bind(a, input, a[0])`,
 			vars:   []*decls.VariableDecl{decls.NewVariable("input", intList)},
-			wanted: cost.CostEstimate{Min: 13, Max: 13},
+			wanted: cost.FixedCostEstimate(13),
 		},
 		{
 			name:   "bind: with variable map and index",
 			expr:   `cel.bind(m, input, m['key'])`,
 			vars:   []*decls.VariableDecl{decls.NewVariable("input", types.NewMapType(types.StringType, types.StringType))},
-			wanted: cost.CostEstimate{Min: 13, Max: 13},
+			wanted: cost.FixedCostEstimate(13),
 		},
 		{
 			name:   "bind: with comprehension and size hints",
 			vars:   []*decls.VariableDecl{decls.NewVariable("input", allList)},
 			hints:  map[string]uint64{"input": 100},
 			expr:   `cel.bind(a, input, a.all(x, true))`,
-			wanted: cost.CostEstimate{Min: 13, Max: 313},
+			wanted: cost.RangedCostEstimate(13, 313),
 		},
 		{
 			name:   "bind: nested with list and size hints",
 			vars:   []*decls.VariableDecl{decls.NewVariable("input", nestedList)},
 			hints:  map[string]uint64{"input": 50, "input.@items": 10},
 			expr:   `cel.bind(a, input, a.all(x, x.all(y, true)))`,
-			wanted: cost.CostEstimate{Min: 13, Max: 1763},
+			wanted: cost.RangedCostEstimate(13, 1763),
 		},
 		{
 			name:   "bind: unused bind variable",
 			expr:   `cel.bind(a, [1, 2, 3], 42)`,
-			wanted: cost.CostEstimate{Min: 20, Max: 20},
+			wanted: cost.FixedCostEstimate(20),
 		},
 		{
 			name:   "bind: derived size propagation to comprehension",
 			expr:   `cel.bind(v, [1, 2, 3], v.all(x, true))`,
-			wanted: cost.CostEstimate{Min: 31, Max: 31},
+			wanted: cost.FixedCostEstimate(31),
 		},
 
 		// Two-variable comprehension test cases
 		{
 			name:   "two-var all: list literal",
 			expr:   `[1, 2, 3].all(i, v, i < v)`,
-			wanted: cost.CostEstimate{Min: 20, Max: 29},
+			wanted: cost.RangedCostEstimate(20, 29),
 		},
 		{
 			name:   "two-var all: list variable with hints",
 			vars:   []*decls.VariableDecl{decls.NewVariable("input", allList)},
 			hints:  map[string]uint64{"input": 100},
 			expr:   `input.all(i, v, true)`,
-			wanted: cost.CostEstimate{Min: 2, Max: 302},
+			wanted: cost.RangedCostEstimate(2, 302),
 		},
 		{
 			name:   "two-var all: map literal",
 			expr:   `{"a": 1, "b": 2}.all(k, v, k != "" && v > 0)`,
-			wanted: cost.CostEstimate{Min: 37, Max: 43},
+			wanted: cost.RangedCostEstimate(37, 43),
 		},
 		{
 			name:   "two-var all: map variable with hints",
 			vars:   []*decls.VariableDecl{decls.NewVariable("input", allMap)},
 			hints:  map[string]uint64{"input": 50},
 			expr:   `input.all(k, v, true)`,
-			wanted: cost.CostEstimate{Min: 2, Max: 152},
+			wanted: cost.RangedCostEstimate(2, 152),
 		},
 		{
 			name:   "two-var exists: list literal",
 			expr:   `[1, 2, 3].exists(i, v, i == 1 && v == 2)`,
-			wanted: cost.CostEstimate{Min: 23, Max: 35},
+			wanted: cost.RangedCostEstimate(23, 35),
 		},
 		{
 			name:   "two-var exists: map literal",
 			expr:   `{"a": 1, "b": 2}.exists(k, v, k == "a" && v == 1)`,
-			wanted: cost.CostEstimate{Min: 39, Max: 47},
+			wanted: cost.RangedCostEstimate(39, 47),
 		},
 		{
 			name:   "two-var existsOne: list literal",
 			expr:   `[1, 2, 3].existsOne(i, v, v == 1)`,
-			wanted: cost.CostEstimate{Min: 21, Max: 24},
+			wanted: cost.RangedCostEstimate(21, 24),
 		},
 		{
 			name:   "two-var exists_one: list literal",
 			expr:   `[1, 2, 3].exists_one(i, v, v == 1)`,
-			wanted: cost.CostEstimate{Min: 21, Max: 24},
+			wanted: cost.RangedCostEstimate(21, 24),
 		},
 		{
 			name:   "two-var transformList: 3-arg list literal",
 			expr:   `[1, 2, 3].transformList(i, v, i + v)`,
-			wanted: cost.CostEstimate{Min: 66, Max: 66},
+			wanted: cost.FixedCostEstimate(66),
 		},
 		{
 			name:   "two-var transformList: 4-arg with filter list literal",
 			expr:   `[1, 2, 3].transformList(i, v, i % 2 == 0, i + v)`,
-			wanted: cost.CostEstimate{Min: 33, Max: 75},
+			wanted: cost.RangedCostEstimate(33, 75),
 		},
 		{
 			name:   "two-var transformList: 3-arg map literal",
 			expr:   `{"a": 1, "b": 2}.transformList(k, v, k)`,
-			wanted: cost.CostEstimate{Min: 67, Max: 67},
+			wanted: cost.FixedCostEstimate(67),
 		},
 		{
 			name:   "two-var transformMap: 3-arg map literal",
 			expr:   `{"a": 1, "b": 2}.transformMap(k, v, v + 1)`,
-			wanted: cost.CostEstimate{Min: 71, Max: 71},
+			wanted: cost.FixedCostEstimate(71),
 		},
 		{
 			name:   "two-var transformMap: 4-arg with filter map literal",
 			expr:   `{"a": 1, "b": 2}.transformMap(k, v, v > 1, v + 1)`,
-			wanted: cost.CostEstimate{Min: 67, Max: 75},
+			wanted: cost.RangedCostEstimate(67, 75),
 		},
 		{
 			name:   "two-var transformMapEntry: 3-arg map literal",
 			expr:   `{"a": 1, "b": 2}.transformMapEntry(k, v, {v: k})`,
-			wanted: cost.CostEstimate{Min: 129, Max: 129},
+			wanted: cost.FixedCostEstimate(129),
 		},
 		{
 			name:   "two-var transformMapEntry: 4-arg with filter map literal",
 			expr:   `{"a": 1, "b": 2}.transformMapEntry(k, v, v > 1, {v: k})`,
-			wanted: cost.CostEstimate{Min: 67, Max: 133},
+			wanted: cost.RangedCostEstimate(67, 133),
 		},
 		{
 			name:   "two-var nested all",
 			expr:   `[1, 2].all(i, v, [1, 2].all(j, w, i + j < v + w))`,
-			wanted: cost.CostEstimate{Min: 17, Max: 79},
+			wanted: cost.RangedCostEstimate(17, 79),
 		},
 		{
 			name:   "bind with two-var comprehension",
 			expr:   `cel.bind(l, [1, 2, 3], l.all(i, v, i < v))`,
-			wanted: cost.CostEstimate{Min: 31, Max: 40},
+			wanted: cost.RangedCostEstimate(31, 40),
 		},
 		{
 			name:   "bind with two-var transformList",
 			expr:   `cel.bind(m, {"a": 1, "b": 2}, m.transformList(k, v, k))`,
-			wanted: cost.CostEstimate{Min: 78, Max: 78},
+			wanted: cost.FixedCostEstimate(78),
 		},
 	}
 
@@ -987,8 +1001,21 @@ func TestCost(t *testing.T) {
 				t.Fatalf("Cost() failed: %v", err)
 			}
 			if est.Min != tc.wanted.Min || est.Max != tc.wanted.Max {
-				t.Fatalf("Got cost interval [%v, %v], wanted [%v, %v]",
+				t.Errorf("Got cost interval [%v, %v], wanted [%v, %v]",
 					est.Min, est.Max, tc.wanted.Min, tc.wanted.Max)
+			}
+			wantLegacy := tc.wanted
+			if tc.wantedV0 != nil {
+				wantLegacy = *tc.wantedV0
+			}
+			legacyOpts := append(slices.Clone(tc.options), cost.EstimateModelVersion(cost.ModelVersion0))
+			legacyEst, err := cost.Cost(checked, testCostEstimator{hints: tc.hints}, legacyOpts...)
+			if err != nil {
+				t.Fatalf("Cost(ModelVersion0) failed: %v", err)
+			}
+			if legacyEst.Min != wantLegacy.Min || legacyEst.Max != wantLegacy.Max {
+				t.Errorf("Got ModelVersion0 cost interval [%v, %v], wanted [%v, %v]",
+					legacyEst.Min, legacyEst.Max, wantLegacy.Min, wantLegacy.Max)
 			}
 		})
 	}
@@ -1000,10 +1027,12 @@ type testCostEstimator struct {
 
 func (tc testCostEstimator) EstimateSize(element cost.AstNode) *cost.SizeEstimate {
 	if l, ok := tc.hints[strings.Join(element.Path(), ".")]; ok {
-		return &cost.SizeEstimate{Min: 0, Max: l}
+		est := cost.RangedSizeEstimate(0, l)
+		return &est
 	}
 	if element.Type() == types.BytesType {
-		return &cost.SizeEstimate{Min: 0, Max: 12}
+		est := cost.RangedSizeEstimate(0, 12)
+		return &est
 	}
 	return nil
 }
@@ -1011,7 +1040,7 @@ func (tc testCostEstimator) EstimateSize(element cost.AstNode) *cost.SizeEstimat
 func (tc testCostEstimator) EstimateCallCost(function, overloadID string, target *cost.AstNode, args []cost.AstNode) *cost.CallEstimate {
 	switch overloadID {
 	case overloads.TimestampToYear:
-		return &cost.CallEstimate{CostEstimate: cost.CostEstimate{Min: 7, Max: 7}}
+		return &cost.CallEstimate{CostEstimate: cost.FixedCostEstimate(7)}
 	}
 	return nil
 }
@@ -1023,7 +1052,7 @@ func estimateSize(estimator cost.Estimator, node cost.AstNode) cost.SizeEstimate
 	if l := estimator.EstimateSize(node); l != nil {
 		return *l
 	}
-	return cost.SizeEstimate{Min: 0, Max: math.MaxUint64}
+	return cost.RangedSizeEstimate(0, math.MaxUint64)
 }
 
 func listElementNode(list cost.AstNode) cost.AstNode {
@@ -1052,17 +1081,17 @@ func sizeEstimate(estimator cost.Estimator, t cost.AstNode) cost.SizeEstimate {
 	if sz := estimator.EstimateSize(t); sz != nil {
 		return *sz
 	}
-	return cost.SizeEstimate{Min: 0, Max: math.MaxUint64}
+	return cost.RangedSizeEstimate(0, math.MaxUint64)
 }
 
 type testCustomSizingStrategy struct{}
 
 func (testCustomSizingStrategy) EstimateSize(ctx cost.EstimateContext, node cost.AstNode) (cost.SizeEstimate, bool) {
 	if node.Path() != nil && len(node.Path()) > 0 && node.Path()[0] == "custom_str" {
-		return cost.SizeEstimate{Min: 10, Max: 20}, true
+		return cost.RangedSizeEstimate(10, 20), true
 	}
 	if node.Path() != nil && len(node.Path()) > 0 && node.Path()[0] == "custom_list" {
-		return cost.SizeEstimate{Min: 1, Max: 5, Elem: &cost.SizeEstimate{Min: 15, Max: 30}}, true
+		return cost.ListSizeEstimate(cost.RangedSizeEstimate(1, 5), cost.RangedSizeEstimate(15, 30)), true
 	}
 	return cost.SizeEstimate{}, false
 }

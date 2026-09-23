@@ -383,8 +383,10 @@ func TestEncodersCosts(t *testing.T) {
 		in            map[string]any
 		hints         map[string]uint64
 		estimatedCost cost.CostEstimate
-		actualCost    uint64
-		version       int
+		// estimatedCostV0 is the estimate under cost.ModelVersion0, set only where the revision moved it.
+		estimatedCostV0 *cost.CostEstimate
+		actualCost      uint64
+		version         int
 	}{
 		{
 			name: "encode_bytes_v0",
@@ -398,9 +400,12 @@ func TestEncodersCosts(t *testing.T) {
 			hints: map[string]uint64{
 				"x": 100,
 			},
-			estimatedCost: cost.FixedCostEstimate(3), // x lookup (1) + encode (1) + == (1) = 3
-			actualCost:    3,
-			version:       0,
+			// Max: x lookup (1) + encode (1) + == (1) = 3. The Min drops the
+			// comparison traversal, which is zero when both operands are empty.
+			estimatedCost:   cost.RangedCostEstimate(2, 3),
+			estimatedCostV0: costV0(3, 3),
+			actualCost:      3,
+			version:         0,
 		},
 		{
 			name: "encode_bytes_v1",
@@ -414,9 +419,10 @@ func TestEncodersCosts(t *testing.T) {
 			hints: map[string]uint64{
 				"x": 100,
 			},
-			estimatedCost: cost.CostEstimate{Min: 3, Max: 13}, // x lookup (1) + encode (100 * 0.1 + 1 = 11) + == (1) = 13
-			actualCost:    4,                                  // x lookup (1) + encode (ceil(5 * 0.1) + 1 = 2) + == (1) = 4
-			version:       1,
+			estimatedCost:   cost.RangedCostEstimate(2, 13), // x lookup (1) + encode (100 * 0.1 + 1 = 11) + == (1) = 13
+			estimatedCostV0: costV0(3, 13),
+			actualCost:      4, // x lookup (1) + encode (ceil(5 * 0.1) + 1 = 2) + == (1) = 4
+			version:         1,
 		},
 		{
 			name: "decode_string_v0",
@@ -430,9 +436,10 @@ func TestEncodersCosts(t *testing.T) {
 			hints: map[string]uint64{
 				"x": 100,
 			},
-			estimatedCost: cost.FixedCostEstimate(3),
-			actualCost:    3,
-			version:       0,
+			estimatedCost:   cost.RangedCostEstimate(2, 3),
+			estimatedCostV0: costV0(3, 3),
+			actualCost:      3,
+			version:         0,
 		},
 		{
 			name: "decode_string_v1",
@@ -446,9 +453,10 @@ func TestEncodersCosts(t *testing.T) {
 			hints: map[string]uint64{
 				"x": 100,
 			},
-			estimatedCost: cost.CostEstimate{Min: 3, Max: 13}, // x lookup (1) + decode (100 * 0.1 + 1 = 11) + == (1) = 13
-			actualCost:    4,                                  // x lookup (1) + decode (ceil(8 * 0.1) + 1 = 2) + == (1) = 4
-			version:       1,
+			estimatedCost:   cost.RangedCostEstimate(2, 13), // x lookup (1) + decode (100 * 0.1 + 1 = 11) + == (1) = 13
+			estimatedCostV0: costV0(3, 13),
+			actualCost:      4, // x lookup (1) + decode (ceil(8 * 0.1) + 1 = 2) + == (1) = 4
+			version:         1,
 		},
 		{
 			name:          "encode_bytes_v1_literal",
@@ -497,9 +505,10 @@ func TestEncodersCosts(t *testing.T) {
 			hints: map[string]uint64{
 				"x": 100,
 			},
-			estimatedCost: cost.CostEstimate{Min: 2, Max: math.MaxUint64},
-			actualCost:    math.MaxUint64,
-			version:       1,
+			estimatedCost:   cost.RangedCostEstimate(1, math.MaxUint64),
+			estimatedCostV0: costV0(2, math.MaxUint64),
+			actualCost:      math.MaxUint64,
+			version:         1,
 		},
 		{
 			name: "encode_url_bytes_v2",
@@ -513,9 +522,10 @@ func TestEncodersCosts(t *testing.T) {
 			hints: map[string]uint64{
 				"x": 100,
 			},
-			estimatedCost: cost.CostEstimate{Min: 3, Max: 13},
-			actualCost:    4,
-			version:       2,
+			estimatedCost:   cost.RangedCostEstimate(2, 13),
+			estimatedCostV0: costV0(3, 13),
+			actualCost:      4,
+			version:         2,
 		},
 		{
 			name: "decode_url_string_v2",
@@ -529,9 +539,10 @@ func TestEncodersCosts(t *testing.T) {
 			hints: map[string]uint64{
 				"x": 100,
 			},
-			estimatedCost: cost.CostEstimate{Min: 3, Max: 13},
-			actualCost:    4,
-			version:       2,
+			estimatedCost:   cost.RangedCostEstimate(2, 13),
+			estimatedCostV0: costV0(3, 13),
+			actualCost:      4,
+			version:         2,
 		},
 		{
 			name: "json_parse_string_type",
@@ -545,9 +556,10 @@ func TestEncodersCosts(t *testing.T) {
 			hints: map[string]uint64{
 				"x": 100,
 			},
-			estimatedCost: checker.CostEstimate{Min: 4, Max: math.MaxUint64},
-			actualCost:    math.MaxUint64,
-			version:       1,
+			estimatedCost:   cost.RangedCostEstimate(3, math.MaxUint64),
+			estimatedCostV0: costV0(4, math.MaxUint64),
+			actualCost:      math.MaxUint64,
+			version:         1,
 		},
 	}
 	for _, tc := range tests {
@@ -563,7 +575,7 @@ func TestEncodersCosts(t *testing.T) {
 			if iss.Err() != nil {
 				t.Fatalf("env.Check(%v) failed: %v", tc.expr, iss.Err())
 			}
-			testCheckCost(t, env, cAst, tc.hints, tc.estimatedCost)
+			testCheckCost(t, env, cAst, tc.hints, tc.estimatedCost, tc.estimatedCostV0)
 			asts = append(asts, cAst)
 			for _, ast := range asts {
 				testEvalWithCost(t, env, ast, tc.in, tc.actualCost)
@@ -582,7 +594,7 @@ func TestDecodeNonBase64Error(t *testing.T) {
 	if iss.Err() != nil {
 		t.Fatalf("env.Check() failed: %v", iss.Err())
 	}
-	testCheckCost(t, env, cAst, nil, cost.FixedCostEstimate(2))
+	testCheckCost(t, env, cAst, nil, cost.FixedCostEstimate(2), nil)
 	prgOpts := []cel.ProgramOption{}
 	if cAst.IsChecked() {
 		prgOpts = append(prgOpts, cel.CostTracking(nil))
@@ -607,7 +619,7 @@ func TestDecodeNonBase64UrlError(t *testing.T) {
 	if iss.Err() != nil {
 		t.Fatalf("env.Check() failed: %v", iss.Err())
 	}
-	testCheckCost(t, env, cAst, nil, cost.FixedCostEstimate(2))
+	testCheckCost(t, env, cAst, nil, cost.FixedCostEstimate(2), nil)
 	prgOpts := []cel.ProgramOption{}
 	if cAst.IsChecked() {
 		prgOpts = append(prgOpts, cel.CostTracking(nil))
@@ -637,7 +649,7 @@ func TestJSONEncodeCostUnbounded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("env.EstimateCost() failed: %v", err)
 	}
-	wantEst := cost.CostEstimate{Min: 0, Max: math.MaxUint64}
+	wantEst := cost.RangedCostEstimate(0, math.MaxUint64)
 	if est != wantEst {
 		t.Errorf("env.EstimateCost() got %v, wanted %v", est, wantEst)
 	}
@@ -674,7 +686,7 @@ func TestJSONParseCostUnbounded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("env.EstimateCost() failed: %v", err)
 	}
-	wantEst := checker.CostEstimate{Min: 0, Max: math.MaxUint64}
+	wantEst := cost.RangedCostEstimate(0, math.MaxUint64)
 	if est != wantEst {
 		t.Errorf("env.EstimateCost() got %v, wanted %v", est, wantEst)
 	}
@@ -1393,7 +1405,7 @@ func TestEncodersEstimatorsAndEdgeCases(t *testing.T) {
 	}
 
 	// Test estimateEncodeSize overflow guard
-	overflowSz := estimateEncodeSize(checker.SizeEstimate{Min: 0, Max: math.MaxUint64})
+	overflowSz := estimateEncodeSize(cost.RangedSizeEstimate(0, math.MaxUint64))
 	if overflowSz.Max != math.MaxUint64 {
 		t.Errorf("expected MaxUint64, got %v", overflowSz.Max)
 	}

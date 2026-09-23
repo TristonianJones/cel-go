@@ -261,6 +261,9 @@ func TestCostEstimate(t *testing.T) {
 	if got := UnknownCostEstimate(); got.Min != 0 || got.Max != math.MaxUint64 {
 		t.Errorf("UnknownCostEstimate() = %v, want {0, MaxUint64}", got)
 	}
+	if got := RangedCostEstimate(3, 8); got.Min != 3 || got.Max != 8 {
+		t.Errorf("RangedCostEstimate(3, 8) = %v, want {3, 8}", got)
+	}
 }
 
 func TestExtCostHelpers(t *testing.T) {
