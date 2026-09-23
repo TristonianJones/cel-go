@@ -96,6 +96,7 @@ type prattParserWorker struct {
 	peekTok                    token
 	macros                     map[string]Macro
 	recursionDepth             int
+	lastParsedDepth            int
 	recursionLimitExceeded     bool
 	errorCount                 int
 	maxRecursionDepth          int
@@ -160,14 +161,35 @@ func (p *prattParser) Parse(source common.Source) (*ast.AST, *common.Errors) {
 
 func (p *prattParserWorker) initTokenStream() {
 	p.currTok = token{kind: tokError, start: 0, end: 0}
-	p.peekTok = p.nextSignificantToken(true)
+	p.peekTok = p.nextSignificantToken()
 }
 
 func (p *prattParserWorker) isRecoveryLimitExceeded() bool {
 	return p.errorCount > p.errorRecoveryLimit
 }
 
-func (p *prattParserWorker) nextSignificantToken(reportError bool) token {
+// checkRecursion returns true and trips the recursion limit if parsing chainDepth further
+// levels on top of the current depth would exceed the configured limit.
+//
+// recursionDepth tracks the levels currently held by live parse frames.
+// Chains that are parsed iteratively (operator chains, selector chains, runs
+// of parentheses or unary operators) do not add frames, so they report the
+// levels they consume through chainDepth arguments and through
+// lastParsedDepth instead. Counting them keeps maxRecursionDepth a
+// bound on the depth of the resulting AST, as it is for the ANTLR parser.
+func (p *prattParserWorker) checkRecursion(chainDepth int) bool {
+	if p.recursionDepth+chainDepth > p.maxRecursionDepth {
+		if !p.recursionLimitExceeded {
+			p.recursionLimitExceeded = true
+			p.errors.internalError(fmt.Sprintf("expression recursion limit exceeded: %d", p.maxRecursionDepth))
+			p.peekTok = token{kind: tokEnd, start: p.length, end: p.length}
+		}
+		return true
+	}
+	return false
+}
+
+func (p *prattParserWorker) nextSignificantToken() token {
 	if p.isRecoveryLimitExceeded() {
 		return token{kind: tokEnd, start: p.length, end: p.length}
 	}
@@ -176,7 +198,7 @@ func (p *prattParserWorker) nextSignificantToken(reportError bool) token {
 		if tok.kind == tokWhitespace || tok.kind == tokComment {
 			continue
 		}
-		if tok.kind == tokError && reportError {
+		if tok.kind == tokError {
 			p.reportSyntaxError(tok, "%s", p.lexer.GetError().message)
 			if p.isRecoveryLimitExceeded() {
 				return token{kind: tokEnd, start: p.length, end: p.length}
@@ -193,7 +215,7 @@ func (p *prattParserWorker) nextToken() token {
 		return p.currTok
 	}
 	if p.peekTok.kind != tokEnd {
-		p.peekTok = p.nextSignificantToken(true)
+		p.peekTok = p.nextSignificantToken()
 	}
 	return p.currTok
 }
@@ -214,7 +236,7 @@ func (p *prattParserWorker) expect(kind tokenKind, msg string) bool {
 		p.nextToken()
 		return true
 	}
-	if p.isRecoveryLimitExceeded() {
+	if p.recursionLimitExceeded || p.isRecoveryLimitExceeded() {
 		return false
 	}
 	if p.peekTok.kind != tokError {
@@ -233,7 +255,7 @@ func (p *prattParserWorker) expect(kind tokenKind, msg string) bool {
 }
 
 func (p *prattParserWorker) synchronizeOnDelimiter() {
-	if p.isRecoveryLimitExceeded() {
+	if p.recursionLimitExceeded || p.isRecoveryLimitExceeded() {
 		p.peekTok = token{kind: tokEnd, start: p.length, end: p.length}
 		return
 	}
@@ -394,9 +416,7 @@ func (p *prattParserWorker) parseExpr() ast.Expr {
 	if p.recursionLimitExceeded || p.isRecoveryLimitExceeded() {
 		return p.helper.newExpr(common.NoLocation)
 	}
-	if p.recursionDepth > p.maxRecursionDepth {
-		p.recursionLimitExceeded = true
-		p.errors.internalError(fmt.Sprintf("expression recursion limit exceeded: %d", p.maxRecursionDepth))
+	if p.checkRecursion(1) {
 		return p.helper.newExpr(common.NoLocation)
 	}
 	p.recursionDepth++
@@ -405,8 +425,26 @@ func (p *prattParserWorker) parseExpr() ast.Expr {
 	return expr
 }
 
+// parseElementExpr parses one element of a delimited construct (list, map, struct or argument
+// list), accumulating lastParsedDepth to the deepest element seen so far. A construct is as
+// deep as its deepest element, not its last one, so callers must reset lastParsedDepth to 0
+// before the first element.
+func (p *prattParserWorker) parseElementExpr() ast.Expr {
+	maxDepth := p.lastParsedDepth
+	expr := p.parseExpr()
+	if maxDepth > p.lastParsedDepth {
+		p.lastParsedDepth = maxDepth
+	}
+	return expr
+}
+
 func (p *prattParserWorker) parseBinaryAndTernary(minPrec int) ast.Expr {
 	lhs := p.parseSelectorChain()
+	return p.parseBinaryAndTernaryFromLhs(lhs, minPrec, p.lastParsedDepth)
+}
+
+func (p *prattParserWorker) parseBinaryAndTernaryFromLhs(lhs ast.Expr, minPrec int, initialChainDepth int) ast.Expr {
+	chainDepth := initialChainDepth
 	for !p.recursionLimitExceeded && !p.isRecoveryLimitExceeded() {
 		tok := p.peekTok.kind
 		if tok == tokQuestion && minPrec <= 0 {
@@ -424,53 +462,66 @@ func (p *prattParserWorker) parseBinaryAndTernary(minPrec int) ast.Expr {
 			continue
 		}
 
+		if p.checkRecursion(chainDepth) {
+			return lhs
+		}
+		chainDepth++
 		opTok := p.nextToken()
 		opID := p.nextID(opTok)
 		rhs := p.parseBinaryAndTernary(opInfo.precedence + 1)
 		lhs = p.helper.newGlobalCall(opID, opInfo.name, lhs, rhs)
+		// lastParsedDepth is the depth of the rhs just parsed. It hangs one
+		// level below this operator, while chainDepth already covers the lhs, so
+		// the operator node is as deep as whichever side is deeper: "x + a.b.c.d"
+		// reaches 4 through its rhs and "a.b.c.d + x" reaches 4 through its lhs.
+		if p.lastParsedDepth+1 > chainDepth {
+			chainDepth = p.lastParsedDepth + 1
+		}
+		p.lastParsedDepth = chainDepth
 	}
 	return lhs
 }
 
 func (p *prattParserWorker) parseTernary(lhs ast.Expr) ast.Expr {
-	if p.recursionDepth > p.maxRecursionDepth {
-		p.recursionLimitExceeded = true
-		p.errors.internalError(fmt.Sprintf("expression recursion limit exceeded: %d", p.maxRecursionDepth))
-		return lhs
-	}
-	p.recursionDepth++
 	qTok := p.nextToken()
 	opID := p.nextID(qTok)
 	trueExpr := p.parseBinaryAndTernary(1)
 	if !p.expect(tokColon, "expected ':' in conditional expression") {
-		p.recursionDepth--
+		p.lastParsedDepth = 0
 		return lhs
 	}
-	falseExpr := p.parseBinaryAndTernary(0)
-	p.recursionDepth--
+	falseExpr := p.parseExpr()
+	p.lastParsedDepth = 0
 	return p.helper.newGlobalCall(opID, operators.Conditional, lhs, trueExpr, falseExpr)
 }
 
 func (p *prattParserWorker) parseLogicalChain(lhs ast.Expr, opInfo binaryOpInfo) ast.Expr {
 	l := p.newLogicManager(opInfo.name, lhs)
-	for p.peekTok.kind == opInfo.kind {
+	for !p.recursionLimitExceeded && !p.isRecoveryLimitExceeded() && p.peekTok.kind == opInfo.kind {
 		opTok := p.nextToken()
 		rhs := p.parseBinaryAndTernary(opInfo.precedence + 1)
 		opID := p.nextID(opTok)
 		l.addTerm(opID, rhs)
 	}
+	p.lastParsedDepth = 0
 	return l.toExpr()
 }
 
 func (p *prattParserWorker) parseSelectorChain() ast.Expr {
+	p.lastParsedDepth = 0
 	lhs := p.parseUnary()
-	return p.parseSelectorChainTail(lhs)
+	return p.parseSelectorChainTail(lhs, p.lastParsedDepth)
 }
 
-func (p *prattParserWorker) parseSelectorChainTail(lhs ast.Expr) ast.Expr {
+func (p *prattParserWorker) parseSelectorChainTail(lhs ast.Expr, initialChainDepth int) ast.Expr {
+	chainDepth := initialChainDepth
 	for {
 		switch p.peekTok.kind {
 		case tokDot:
+			if p.checkRecursion(chainDepth) {
+				return lhs
+			}
+			chainDepth++
 			dotTok := p.nextToken()
 			optional := false
 			if p.peekTok.kind == tokQuestion {
@@ -486,6 +537,7 @@ func (p *prattParserWorker) parseSelectorChainTail(lhs ast.Expr) ast.Expr {
 					p.reportSyntaxError(fieldTok, "expected identifier after '.'")
 				}
 				p.synchronizeOnDelimiter()
+				p.lastParsedDepth = chainDepth
 				return lhs
 			}
 			isMemberCall := p.peekTok.kind == tokLeftParen
@@ -499,11 +551,22 @@ func (p *prattParserWorker) parseSelectorChainTail(lhs ast.Expr) ast.Expr {
 				callID := p.nextID(lparen)
 				args := p.parseArguments(tokRightParen)
 				lhs = p.receiverCallOrMacro(callID, field, lhs, args...)
+				// parseArguments leaves lastParsedDepth at the deepest argument.
+				// Arguments hang one level below the call node, so "a.f(b.c.d.e)" is 4
+				// deep. The max preserves the selectors already walked when the
+				// arguments are shallower, as in "a.b.c.f(1)".
+				if p.lastParsedDepth+1 > chainDepth {
+					chainDepth = p.lastParsedDepth + 1
+				}
 			} else {
 				dotID := p.nextID(dotTok)
 				lhs = p.helper.newSelect(dotID, lhs, field)
 			}
 		case tokLeftBracket:
+			if p.checkRecursion(chainDepth) {
+				return lhs
+			}
+			chainDepth++
 			bracketTok := p.nextToken()
 			opID := p.nextID(bracketTok)
 			optional := false
@@ -521,18 +584,37 @@ func (p *prattParserWorker) parseSelectorChainTail(lhs ast.Expr) ast.Expr {
 				opName = operators.OptIndex
 			}
 			lhs = p.helper.newGlobalCall(opID, opName, lhs, index)
+			// lastParsedDepth is the depth of the index expression just parsed.
+			// It hangs one level below the index node, so "a[b.c.d.e]" is 4 deep.
+			// The max preserves the selectors already walked when the index is
+			// shallower, as in "a.b.c[0]".
+			if p.lastParsedDepth+1 > chainDepth {
+				chainDepth = p.lastParsedDepth + 1
+			}
 		case tokLeftBrace:
 			if rng, found := p.helper.sourceInfo.GetOffsetRange(lhs.ID()); found {
 				if structName, ok := p.extractStructName(lhs); ok {
 					objID := p.helper.id(rng)
 					lhs = p.parseStruct(objID, structName)
+					// parseStruct leaves lastParsedDepth at the deepest field value,
+					// which carries through unchanged: "Msg{f: a.b.c.d}" is 3 deep.
+					// There is no +1 here because struct creation is a primary rather
+					// than a chain link, so it adds no level of its own. The max
+					// preserves the selectors already walked when the fields are
+					// shallower, as in "a.b.Msg{f: 1}".
+					if p.lastParsedDepth > chainDepth {
+						chainDepth = p.lastParsedDepth
+					}
 				} else {
+					p.lastParsedDepth = chainDepth
 					return lhs
 				}
 			} else {
+				p.lastParsedDepth = chainDepth
 				return lhs
 			}
 		default:
+			p.lastParsedDepth = chainDepth
 			return lhs
 		}
 	}
@@ -565,6 +647,7 @@ func (p *prattParserWorker) extractStructName(expr ast.Expr) (string, bool) {
 func (p *prattParserWorker) parseStruct(objID int64, structName string) ast.Expr {
 	p.nextToken() // consumes {
 	var fields []ast.EntryExpr
+	p.lastParsedDepth = 0
 	for p.peekTok.kind != tokRightBrace && p.peekTok.kind != tokEnd {
 		optional := false
 		if p.peekTok.kind == tokQuestion {
@@ -586,7 +669,7 @@ func (p *prattParserWorker) parseStruct(objID int64, structName string) ast.Expr
 			break
 		}
 		fieldID := p.nextID(colonTok)
-		val := p.parseExpr()
+		val := p.parseElementExpr()
 		fields = append(fields, p.helper.newObjectField(fieldID, fieldName, val, optional))
 		if p.peekTok.kind == tokComma {
 			p.nextToken()
@@ -638,18 +721,35 @@ func (p *prattParserWorker) parseUnaryOpsChain(firstOp token) ast.Expr {
 		ops[i].id = p.nextID(ops[i].token)
 	}
 
-	var operand ast.Expr
-	if hasSolitaryTrailingMinus && (p.peekTok.kind == tokInt || p.peekTok.kind == tokFloat) {
-		lastOp := ops[len(ops)-1]
+	isNegativeNumericLiteral := hasSolitaryTrailingMinus && (p.peekTok.kind == tokInt || p.peekTok.kind == tokFloat)
+	var negativeLiteralOpID int64
+	if isNegativeNumericLiteral {
+		negativeLiteralOpID = ops[len(ops)-1].id
 		ops = ops[:len(ops)-1]
+	}
+
+	// Every retained operator wraps the operand in one more call node, so the run
+	// costs as many levels as it has operators even though it is parsed by a
+	// loop. The outermost one is the deepest, so checking it covers the rest.
+	if len(ops) > 0 && p.checkRecursion(len(ops)-1) {
+		return p.helper.newExpr(common.NoLocation)
+	}
+	p.recursionDepth += len(ops)
+
+	var operand ast.Expr
+	if isNegativeNumericLiteral {
 		if p.peekTok.kind == tokInt {
-			operand = p.parseNegativeIntLiteral(lastOp.id)
+			operand = p.parseNegativeIntLiteral(negativeLiteralOpID)
 		} else {
-			operand = p.parseNegativeDoubleLiteral(lastOp.id)
+			operand = p.parseNegativeDoubleLiteral(negativeLiteralOpID)
 		}
-		operand = p.parseSelectorChainTail(operand)
+		operand = p.parseSelectorChainTail(operand, 0)
 	} else {
 		operand = p.parseSelectorChain()
+	}
+	p.recursionDepth -= len(ops)
+	if p.recursionLimitExceeded {
+		return p.helper.newExpr(common.NoLocation)
 	}
 
 	for i := len(ops) - 1; i >= 0; i-- {
@@ -662,66 +762,52 @@ func (p *prattParserWorker) parseUnaryOpsChain(firstOp token) ast.Expr {
 	return operand
 }
 
-func (p *prattParserWorker) countGroupingParentheses() int {
-	if p.peekTok.kind != tokLeftParen {
-		return 0
-	}
-	saved := p.lexer.SavePosition()
-
-	leadingOpenParens := 1
-	tok := p.nextSignificantToken(false)
-	for tok.kind == tokLeftParen {
-		leadingOpenParens++
-		tok = p.nextSignificantToken(false)
-	}
-	if leadingOpenParens == 1 {
-		p.lexer.RestorePosition(saved)
-		return 1
-	}
-	openParens := leadingOpenParens
-	consecutiveLeadingClosed := 0
-	for openParens > 0 {
-		if tok.kind == tokEnd || tok.kind == tokError {
-			p.lexer.RestorePosition(saved)
-			return 1
-		}
-		switch tok.kind {
-		case tokLeftParen:
-			openParens++
-			consecutiveLeadingClosed = 0
-		case tokRightParen:
-			if leadingOpenParens == openParens {
-				leadingOpenParens--
-				consecutiveLeadingClosed++
-			} else {
-				consecutiveLeadingClosed = 0
-			}
-			openParens--
-		default:
-			consecutiveLeadingClosed = 0
-		}
-		if openParens > 0 {
-			tok = p.nextSignificantToken(false)
-		}
-	}
-	p.lexer.RestorePosition(saved)
-	if consecutiveLeadingClosed > 1 {
-		return consecutiveLeadingClosed
-	}
-	return 1
-}
-
 func (p *prattParserWorker) parsePrimary() ast.Expr {
 	switch p.peekTok.kind {
 	case tokLeftParen:
-		groupingCount := p.countGroupingParentheses()
-		for i := 0; i < groupingCount; i++ {
+		if p.recursionLimitExceeded || p.isRecoveryLimitExceeded() {
+			return p.helper.newExpr(common.NoLocation)
+		}
+		// To avoid deep call-stack recursion on heavily nested parentheses (e.g.
+		// "((((a))))" or "((((a + 1) + 1) + 1))"), consume all consecutive
+		// leading '(' tokens upfront, parse the innermost expression once, and
+		// then iteratively unwind each enclosing '(' from innermost to outermost.
+		// After consuming each matching ')', if more enclosing '(' remain open
+		// and the next token is not another ')', continue parsing any trailing
+		// selectors or binary/ternary operators belonging to that enclosing
+		// parenthesized level using the already-parsed inner expression as the
+		// LHS.
+		openParens := 0
+		for p.peekTok.kind == tokLeftParen {
+			openParens++
 			p.nextToken()
 		}
-		expr := p.parseExpr()
-		for i := 0; i < groupingCount; i++ {
-			p.expect(tokRightParen, "expected ')'")
+		// Every '(' is a nesting level and costs one unit of recursion budget, so
+		// charge all of them here. recursionDepth is already 1 for the
+		// enclosing expression (as in parseUnaryOpsChain), so openParens
+		// parentheses reach depth recursionDepth + openParens - 1.
+		// recursionDepth itself only advances by 1 because the parens are
+		// unwound iteratively and entering parseBinaryAndTernary(0) below adds
+		// just one stack frame.
+		if p.checkRecursion(openParens - 1) {
+			return p.helper.newExpr(common.NoLocation)
 		}
+		p.recursionDepth++
+		expr := p.parseBinaryAndTernary(0)
+		chainDepth := p.lastParsedDepth
+		for i := 0; i < openParens; i++ {
+			p.expect(tokRightParen, "expected ')'")
+			if i < openParens-1 && p.peekTok.kind != tokRightParen {
+				tok := p.peekTok.kind
+				if tok == tokDot || tok == tokLeftBracket || tok == tokLeftBrace {
+					expr = p.parseSelectorChainTail(expr, chainDepth)
+				}
+				expr = p.parseBinaryAndTernaryFromLhs(expr, 0, p.lastParsedDepth)
+				chainDepth = p.lastParsedDepth
+			}
+		}
+		p.recursionDepth--
+		p.lastParsedDepth = chainDepth
 		return expr
 	case tokNull:
 		return p.helper.exprFactory.NewLiteral(p.nextID(p.nextToken()), types.NullValue)
@@ -765,6 +851,7 @@ func (p *prattParserWorker) parseList() ast.Expr {
 	listID := p.nextID(openTok)
 	var elems []ast.Expr
 	var optionals []int32
+	p.lastParsedDepth = 0
 	for p.peekTok.kind != tokRightBracket && p.peekTok.kind != tokEnd {
 		optional := false
 		if p.peekTok.kind == tokQuestion {
@@ -777,7 +864,7 @@ func (p *prattParserWorker) parseList() ast.Expr {
 		if optional {
 			optionals = append(optionals, int32(len(elems)))
 		}
-		elem := p.parseExpr()
+		elem := p.parseElementExpr()
 		elems = append(elems, elem)
 		if p.peekTok.kind == tokComma {
 			p.nextToken()
@@ -796,6 +883,7 @@ func (p *prattParserWorker) parseMap() ast.Expr {
 	openTok := p.nextToken()
 	mapID := p.nextID(openTok)
 	var entries []ast.EntryExpr
+	p.lastParsedDepth = 0
 	for p.peekTok.kind != tokRightBrace && p.peekTok.kind != tokEnd {
 		optional := false
 		if p.peekTok.kind == tokQuestion {
@@ -806,13 +894,13 @@ func (p *prattParserWorker) parseMap() ast.Expr {
 			}
 		}
 		entryID := p.helper.allocID()
-		key := p.parseExpr()
+		key := p.parseElementExpr()
 		colonTok := p.peekTok
 		if !p.expect(tokColon, "expected ':' in map entry") {
 			break
 		}
 		p.helper.setTokenLocation(entryID, colonTok)
-		val := p.parseExpr()
+		val := p.parseElementExpr()
 		entries = append(entries, p.helper.newMapEntry(entryID, key, val, optional))
 		if p.peekTok.kind == tokComma {
 			p.nextToken()
@@ -867,9 +955,10 @@ func (p *prattParserWorker) parseIdentOrCall() ast.Expr {
 
 func (p *prattParserWorker) parseArguments(closeTok tokenKind) []ast.Expr {
 	var args []ast.Expr
+	p.lastParsedDepth = 0
 	if p.peekTok.kind != closeTok && p.peekTok.kind != tokEnd {
 		for {
-			args = append(args, p.parseExpr())
+			args = append(args, p.parseElementExpr())
 			if p.peekTok.kind == tokComma {
 				p.nextToken()
 				if p.peekTok.kind == closeTok {

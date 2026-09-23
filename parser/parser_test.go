@@ -1324,10 +1324,6 @@ var testCases = []testInfo{
 			[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[['too many']]]]]]]]]]]]]]]]]]]]]]]]]]]]
 			]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]`,
 		E: "ERROR: <input>:-1:0: expression recursion limit exceeded: 32",
-		PrattE: `ERROR: <input>:-1:0: expression recursion limit exceeded: 32
-ERROR: <input>:1:34: Syntax error: expected ']'
- | [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[
- | .................................^`,
 	},
 	{
 		I: "a ? b : a ? b : a ? b : a ? b : a ? b : a ? b : a ? b : a ? b : " +
@@ -1726,13 +1722,12 @@ ERROR: <input>:1:34: Syntax error: expected ']'
 		!=-y!=-y-y!=-y!=-y!=-y-y!=-y!=-y!=-y-y!=-y!=-y!=-y-y!=-y!=-y!=-y-y!=-y!=-y!=-y-y
 		!=-y!=-y!=-y-y!=-y!=-y!=-y-y!=-y!=-y!=-y-y!=-y`,
 		E:      `ERROR: <input>:-1:0: max recursion depth exceeded`,
-		PrattE: "-",
+		PrattE: `ERROR: <input>:-1:0: expression recursion limit exceeded: 32`,
 	},
 	{
 		// More than 32 nested list creation statements
-		I:      `[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[['not fine']]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]`,
-		E:      `ERROR: <input>:-1:0: expression recursion limit exceeded: 32`,
-		PrattE: "-",
+		I: `[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[['not fine']]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]`,
+		E: `ERROR: <input>:-1:0: expression recursion limit exceeded: 32`,
 	},
 	{
 		// More than 32 arithmetic operations.
@@ -1741,20 +1736,20 @@ ERROR: <input>:1:34: Syntax error: expected ']'
 		+ 21 + 22 + 23 + 24 + 25 + 26 + 27 + 28 + 29 + 30
 		+ 31 + 32 + 33 + 34`,
 		E:      `ERROR: <input>:-1:0: max recursion depth exceeded`,
-		PrattE: "-",
+		PrattE: `ERROR: <input>:-1:0: expression recursion limit exceeded: 32`,
 	},
 	{
 		// More than 32 field selections
 		I:      `a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q.r.s.t.u.v.w.x.y.z.A.B.C.D.E.F.G.H`,
 		E:      `ERROR: <input>:-1:0: max recursion depth exceeded`,
-		PrattE: "-",
+		PrattE: `ERROR: <input>:-1:0: expression recursion limit exceeded: 32`,
 	},
 	{
 		// More than 32 index operations
 		I: `a[1][2][3][4][5][6][7][8][9][10][11][12][13][14][15][16][17][18][19][20]
 		     [21][22][23][24][25][26][27][28][29][30][31][32][33]`,
 		E:      `ERROR: <input>:-1:0: max recursion depth exceeded`,
-		PrattE: "-",
+		PrattE: `ERROR: <input>:-1:0: expression recursion limit exceeded: 32`,
 	},
 	{
 		// More than 32 relation operators
@@ -1763,7 +1758,7 @@ ERROR: <input>:1:34: Syntax error: expected ']'
 			  < 22 < 23 < 24 < 25 < 26 < 27 < 28 < 29 < 30 < 31
 			  < 32 < 33`,
 		E:      `ERROR: <input>:-1:0: max recursion depth exceeded`,
-		PrattE: "-",
+		PrattE: `ERROR: <input>:-1:0: expression recursion limit exceeded: 32`,
 	},
 	{
 		// More than 32 index / relation operators. Note, the recursion count is the
@@ -1784,7 +1779,7 @@ ERROR: <input>:1:34: Syntax error: expected ']'
 		a[1][2][3][4][5][6][7][8][9][10][11][12][13][14][15][16][17][18][19][20] !=
 		a[1][2][3][4][5][6][7][8][9][10][11][12][13][14][15][16][17][18][19][20]`,
 		E:      `ERROR: <input>:-1:0: max recursion depth exceeded`,
-		PrattE: "-",
+		PrattE: `ERROR: <input>:-1:0: expression recursion limit exceeded: 32`,
 	},
 	{
 		I: `self.true == 1`,
@@ -2983,7 +2978,224 @@ func TestErrorRecoveryLimits(t *testing.T) {
 	}
 }
 
+func wrapInParens(inner string, count int) string {
+	return strings.Repeat("(", count) + inner + strings.Repeat(")", count)
+}
+
 func TestRecursionLimit(t *testing.T) {
+	const depth = 32
+	recursionDepthTestCases := []struct {
+		name                   string
+		source                 string
+		antlrMinRecursionDepth int
+		prattMinRecursionDepth int
+	}{
+		{
+			name:                   "LargeCalc",
+			source:                 "1" + strings.Repeat(" + 1", depth+1),
+			antlrMinRecursionDepth: depth + 1,
+			prattMinRecursionDepth: depth + 1,
+		},
+		{
+			name:                   "NestedParens",
+			source:                 wrapInParens("7", depth),
+			antlrMinRecursionDepth: depth + 1,
+			prattMinRecursionDepth: depth,
+		},
+		{
+			name:                   "NestedParensWithCalc",
+			source:                 wrapInParens("7", depth) + " + " + wrapInParens("7", depth-1),
+			antlrMinRecursionDepth: depth + 1,
+			prattMinRecursionDepth: depth,
+		},
+		{
+			name:                   "FieldSelections",
+			source:                 "a" + strings.Repeat(".f", depth+1),
+			antlrMinRecursionDepth: depth + 1,
+			prattMinRecursionDepth: depth + 1,
+		},
+		{
+			name:                   "IndexOperations",
+			source:                 "a" + strings.Repeat("[1]", depth+1),
+			antlrMinRecursionDepth: depth + 1,
+			prattMinRecursionDepth: depth + 1,
+		},
+		{
+			name:                   "RelationOperators",
+			source:                 "a" + strings.Repeat(" < 1", depth+1),
+			antlrMinRecursionDepth: depth + 1,
+			prattMinRecursionDepth: depth + 1,
+		},
+		{
+			name:                   "IndexRelationOperators",
+			source:                 "a" + strings.Repeat("[1]", 20) + strings.Repeat(" != a"+strings.Repeat("[1]", 20), 13),
+			antlrMinRecursionDepth: depth + 1,
+			prattMinRecursionDepth: depth + 1,
+		},
+		{
+			name:                   "Ternary",
+			source:                 strings.Repeat("a ? b : ", depth+1) + "c",
+			antlrMinRecursionDepth: depth + 2,
+			prattMinRecursionDepth: depth + 2,
+		},
+		{
+			name:                   "TernaryTrueBranchParens",
+			source:                 "a ? " + wrapInParens("b", depth) + " : c",
+			antlrMinRecursionDepth: depth + 1,
+			prattMinRecursionDepth: depth,
+		},
+		{
+			name:                   "NestedLeftParensWithCalc",
+			source:                 strings.Repeat("(", depth) + "7" + strings.Repeat(") + 1", depth),
+			antlrMinRecursionDepth: depth + 1,
+			prattMinRecursionDepth: depth,
+		},
+		{
+			name:                   "NestedRightParensWithLogicalOr",
+			source:                 "(true) || " + strings.Repeat("(true || ", depth) + "false" + strings.Repeat(")", depth),
+			antlrMinRecursionDepth: depth + 1,
+			prattMinRecursionDepth: depth,
+		},
+		{
+			name:                   "GroupingParensAroundCalc",
+			source:                 "((1 + ((7))))",
+			antlrMinRecursionDepth: 6,
+			prattMinRecursionDepth: 3,
+		},
+		{
+			name:                   "GroupingParensAroundCalcChain",
+			source:                 "(((1 + 2 + 3 + 4 + (5 + 6))))",
+			antlrMinRecursionDepth: 7,
+			prattMinRecursionDepth: 5,
+		},
+		{
+			name:                   "ParenthesizedLhsCalc",
+			source:                 "(1 + 1 + 1) + 1 + 1 + 1",
+			antlrMinRecursionDepth: 5,
+			prattMinRecursionDepth: 5,
+		},
+		{
+			name:                   "NestedLeftParensLhsCalc",
+			source:                 "((1 + 1) + 1) + 1 + 1 + 1",
+			antlrMinRecursionDepth: 5,
+			prattMinRecursionDepth: 5,
+		},
+		{
+			name:                   "GroupingParensLhsCalc",
+			source:                 "(((1 + 1 + 1))) + 1 + 1 + 1",
+			antlrMinRecursionDepth: 5,
+			prattMinRecursionDepth: 5,
+		},
+		{
+			name:                   "ParenthesizedRhsCalc",
+			source:                 "1 + (1 + 1 + 1 + 1 + 1)",
+			antlrMinRecursionDepth: 5,
+			prattMinRecursionDepth: 5,
+		},
+		{
+			name:                   "ParenthesizedFieldSelections",
+			source:                 "(a.b.c).d.e.f",
+			antlrMinRecursionDepth: 5,
+			prattMinRecursionDepth: 5,
+		},
+		{
+			name:                   "CallArgumentFieldSelections",
+			source:                 "f(a.b.c.d).e",
+			antlrMinRecursionDepth: 4,
+			prattMinRecursionDepth: 4,
+		},
+		{
+			name:                   "CallArgumentFieldSelectionsWithCalc",
+			source:                 "x + f(a.b.c.d) + y",
+			antlrMinRecursionDepth: 5,
+			prattMinRecursionDepth: 5,
+		},
+		{
+			name:                   "CallArgumentCalcWithCalc",
+			source:                 "x + f(a + b + c + d) + y",
+			antlrMinRecursionDepth: 5,
+			prattMinRecursionDepth: 5,
+		},
+		{
+			name:                   "IndexFieldSelectionsWithCalc",
+			source:                 "x + a[b.c.d.e] + y",
+			antlrMinRecursionDepth: 6,
+			prattMinRecursionDepth: 6,
+		},
+		{
+			name:                   "MemberCallArgumentFieldSelectionsWithCalc",
+			source:                 "x + a.f(b.c.d.e) + y",
+			antlrMinRecursionDepth: 6,
+			prattMinRecursionDepth: 6,
+		},
+		{
+			name:                   "StructFieldSelectionsWithCalc",
+			source:                 "x + Msg{f: a.b.c.d} + y",
+			antlrMinRecursionDepth: 5,
+			prattMinRecursionDepth: 5,
+		},
+		{
+			name:                   "CallArgumentDeepestNotLast",
+			source:                 "x + f(a.b.c.d, 1) + y",
+			antlrMinRecursionDepth: 5,
+			prattMinRecursionDepth: 5,
+		},
+		{
+			name:                   "MemberCallArgumentDeepestNotLast",
+			source:                 "x + a.f(b.c.d.e, 1) + y",
+			antlrMinRecursionDepth: 6,
+			prattMinRecursionDepth: 6,
+		},
+		{
+			name:                   "ListElementDeepestNotLast",
+			source:                 "x + [a.b.c.d, 1][0] + y",
+			antlrMinRecursionDepth: 6,
+			prattMinRecursionDepth: 6,
+		},
+		{
+			name:                   "MapValueDeepestNotLast",
+			source:                 "x + {'k': a.b.c.d, 'j': 1}['k'] + y",
+			antlrMinRecursionDepth: 6,
+			prattMinRecursionDepth: 6,
+		},
+		{
+			name:                   "MapKeyDeepestNotLast",
+			source:                 "x + {a.b.c.d.e: 1, 'j': 2}['j'] + y",
+			antlrMinRecursionDepth: 7,
+			prattMinRecursionDepth: 7,
+		},
+		{
+			name:                   "StructFieldDeepestNotLast",
+			source:                 "x + Msg{f: a.b.c.d, g: 1} + y",
+			antlrMinRecursionDepth: 5,
+			prattMinRecursionDepth: 5,
+		},
+		{
+			name:                   "NestedListElementDeepestNotLast",
+			source:                 "x + [[a.b.c.d, 1], 1][0] + y",
+			antlrMinRecursionDepth: 6,
+			prattMinRecursionDepth: 6,
+		},
+		{
+			name:                   "ParenthesizedLogicalAndFieldSelection",
+			source:                 "((a && b.c.d).e)",
+			antlrMinRecursionDepth: 3,
+			prattMinRecursionDepth: 3,
+		},
+		{
+			name:                   "ParenthesizedLogicalAndChainFieldSelection",
+			source:                 "((a && b && c.d.e).f)",
+			antlrMinRecursionDepth: 3,
+			prattMinRecursionDepth: 3,
+		},
+		{
+			name:                   "FieldSelectionsWithCalc",
+			source:                 "a.b.c.d.e + f.g",
+			antlrMinRecursionDepth: 5,
+			prattMinRecursionDepth: 5,
+		},
+	}
+
 	for _, pratt := range []bool{false, true} {
 		t.Run(fmt.Sprintf("enablePrattParser=%t", pratt), func(t *testing.T) {
 			t.Run("DeeplyNestedBracketsLimitExceeded", func(t *testing.T) {
@@ -3007,11 +3219,58 @@ func TestRecursionLimit(t *testing.T) {
 					t.Errorf("expected recursion limit error, got none")
 				}
 			})
+
+			t.Run("NestedParensWithTernaryAndSelectors", func(t *testing.T) {
+				p, err := NewParser(EnablePrattParser(pratt))
+				if err != nil {
+					t.Fatalf("NewParser() failed: %v", err)
+				}
+				parsed, errs := p.Parse(common.NewTextSource("((a ? b : c).d[0] ? (e ? f : g) : h) + ((x).y)"))
+				if len(errs.GetErrors()) > 0 {
+					t.Fatalf("unexpected error: %s", errs.ToDisplayString())
+				}
+				if parsed == nil {
+					t.Fatalf("expected non-nil AST")
+				}
+			})
+
+			for _, tc := range recursionDepthTestCases {
+				t.Run(tc.name, func(t *testing.T) {
+					minDepth := tc.antlrMinRecursionDepth
+					if pratt {
+						minDepth = tc.prattMinRecursionDepth
+					}
+					pOk, err := NewParser(MaxRecursionDepth(minDepth), EnablePrattParser(pratt))
+					if err != nil {
+						t.Fatalf("NewParser() failed: %v", err)
+					}
+					_, errs := pOk.Parse(common.NewTextSource(tc.source))
+					if len(errs.GetErrors()) > 0 {
+						t.Errorf("AtMinRecursionDepthSucceeds(depth=%d) failed: %s", minDepth, errs.ToDisplayString())
+					}
+
+					limit := minDepth - 1
+					pFail, err := NewParser(MaxRecursionDepth(limit), EnablePrattParser(pratt))
+					if err != nil {
+						t.Fatalf("NewParser() failed: %v", err)
+					}
+					_, errs = pFail.Parse(common.NewTextSource(tc.source))
+					if len(errs.GetErrors()) == 0 {
+						t.Errorf("BelowMinRecursionDepthFails(depth=%d) expected error, got none", limit)
+					} else {
+						msg := errs.ToDisplayString()
+						if !strings.Contains(msg, fmt.Sprintf("expression recursion limit exceeded: %d", limit)) &&
+							!strings.Contains(msg, "max recursion depth exceeded") {
+							t.Errorf("BelowMinRecursionDepthFails(depth=%d) unexpected error message: %s", limit, msg)
+						}
+					}
+				})
+			}
 		})
 	}
 
 	t.Run("PrattDeeplyNestedTernary", func(t *testing.T) {
-		p, err := NewParser(MaxRecursionDepth(4), EnablePrattParser(true))
+		p, err := NewParser(MaxRecursionDepth(5), EnablePrattParser(true))
 		if err != nil {
 			t.Fatalf("NewParser() failed: %v", err)
 		}
@@ -3036,19 +3295,11 @@ func TestRecursionLimit(t *testing.T) {
 		}
 	})
 
-	t.Run("PrattIgnoreExtraParens", func(t *testing.T) {
-		p, err := NewParser(MaxRecursionDepth(1), EnablePrattParser(true))
-		if err != nil {
-			t.Fatalf("NewParser() failed: %v", err)
-		}
-		_, errs := p.Parse(common.NewTextSource("((((1))))"))
-		if len(errs.GetErrors()) > 0 {
-			t.Errorf("unexpected error: %s", errs.ToDisplayString())
-		}
-	})
-
+	// Parentheses are unwound iteratively, so nesting them does not grow the Go
+	// call stack. The recursion limit is raised above the nesting level here to
+	// exercise that: each '(' still consumes one unit of the recursion budget.
 	t.Run("PrattDeeplyNestedParens1000", func(t *testing.T) {
-		p, err := NewParser(MaxRecursionDepth(1), EnablePrattParser(true))
+		p, err := NewParser(MaxRecursionDepth(1001), EnablePrattParser(true))
 		if err != nil {
 			t.Fatalf("NewParser() failed: %v", err)
 		}
@@ -3062,6 +3313,61 @@ func TestRecursionLimit(t *testing.T) {
 		_, errs = p.Parse(common.NewTextSource(expr2))
 		if len(errs.GetErrors()) > 0 {
 			t.Errorf("unexpected error on 1000 parens binary: %s", errs.ToDisplayString())
+		}
+
+		expr3 := strings.Repeat("(", 1000) + "1 + 2" + strings.Repeat(") + 1", 1000)
+		_, errs = p.Parse(common.NewTextSource(expr3))
+		if len(errs.GetErrors()) > 0 {
+			t.Errorf("unexpected error on 1000 left-nested parens calc: %s", errs.ToDisplayString())
+		}
+	})
+
+	t.Run("ParenthesizedAstEquivalence", func(t *testing.T) {
+		equivCases := []struct {
+			expr1 string
+			expr2 string
+		}{
+			{"((((a).b[0]) + 1) ? 2 : 3)", "(a.b[0] + 1) ? 2 : 3"},
+			{"a ? ((((b)))) : c", "a ? b : c"},
+			{"((((7) + 1) + 1) + 1)", "7 + 1 + 1 + 1"},
+			{"(true) || (true || (true || false))", "true || (true || (true || false))"},
+			{"(1 + 1 + 1) + 1", "1 + 1 + 1 + 1"},
+			{"((1 + 1) + 1) + 1", "1 + 1 + 1 + 1"},
+			{"(((1 + 1 + 1))) + 1", "1 + 1 + 1 + 1"},
+			{"1 + (1 + 1 + 1)", "1 + (1 + 1 + 1)"},
+			{"((1 + ((7))))", "1 + 7"},
+			{"(a.b.c).d.e.f", "a.b.c.d.e.f"},
+			{"((a && b.c.d).e)", "(a && b.c.d).e"},
+			{"((a && b && c.d.e).f)", "(a && b && c.d.e).f"},
+			{"((a ? b : c).d[0] ? (e ? f : g) : h) + ((x).y)", "((a ? b : c).d[0] ? (e ? f : g) : h) + x.y"},
+		}
+		pPratt, err := NewParser(EnablePrattParser(true))
+		if err != nil {
+			t.Fatalf("NewParser() failed: %v", err)
+		}
+		pAntlr, err := NewParser(EnablePrattParser(false))
+		if err != nil {
+			t.Fatalf("NewParser() failed: %v", err)
+		}
+		for _, tc := range equivCases {
+			ast1, errs1 := pPratt.Parse(common.NewTextSource(tc.expr1))
+			if len(errs1.GetErrors()) > 0 {
+				t.Fatalf("Pratt Parse(%q) failed: %s", tc.expr1, errs1.ToDisplayString())
+			}
+			ast2, errs2 := pPratt.Parse(common.NewTextSource(tc.expr2))
+			if len(errs2.GetErrors()) > 0 {
+				t.Fatalf("Pratt Parse(%q) failed: %s", tc.expr2, errs2.ToDisplayString())
+			}
+			antlrAst1, antlrErrs1 := pAntlr.Parse(common.NewTextSource(tc.expr1))
+			if len(antlrErrs1.GetErrors()) > 0 {
+				t.Fatalf("ANTLR Parse(%q) failed: %s", tc.expr1, antlrErrs1.ToDisplayString())
+			}
+			if got, want := debug.ToDebugStringWithIDs(ast1.Expr()), debug.ToDebugStringWithIDs(ast2.Expr()); got != want {
+				t.Errorf("Pratt AST mismatch between %q and %q:\ngot:  %s\nwant: %s", tc.expr1, tc.expr2, got, want)
+			}
+			if got, want := debug.ToDebugStringWithIDs(ast1.Expr()), debug.ToDebugStringWithIDs(antlrAst1.Expr()); got != want {
+				t.Errorf("Pratt vs ANTLR AST mismatch for %q:\ngot:  %s\nwant: %s", tc.expr1, got, want)
+			}
 		}
 	})
 }
@@ -3169,6 +3475,9 @@ var benchCategories = []benchCategory{
 			},
 			{
 				I: strings.Repeat("(", 20) + "a" + strings.Repeat(")", 20),
+			},
+			{
+				I: strings.Repeat("(", 20) + "1 + 2" + strings.Repeat(") + 1", 20),
 			},
 			{
 				I: `SomeMessage{foo: 5, bar: "xyz"}`,
