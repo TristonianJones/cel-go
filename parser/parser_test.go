@@ -1798,12 +1798,6 @@ var testCases = []testInfo{
         ERROR: <input>:1:10: unsupported syntax '[?'
         | a.?b && a[?b]
 		    | .........^`,
-		PrattE: `ERROR: <input>:1:2: unsupported syntax '.?'
-        | a.?b && a[?b]
-        | .^
-        ERROR: <input>:1:10: unsupported syntax '?'
-        | a.?b && a[?b]
-		    | .........^`,
 	},
 	{
 		I:    `a.?b[?0] && a[?c]`,
@@ -1814,19 +1808,6 @@ var testCases = []testInfo{
 				a^#1:*expr.Expr_IdentExpr#,
 				"b"^#2:*expr.Constant_StringValue#
 			  )^#3:*expr.Expr_CallExpr#,
-			  0^#5:*expr.Constant_Int64Value#
-			)^#4:*expr.Expr_CallExpr#,
-			_[?_](
-			  a^#6:*expr.Expr_IdentExpr#,
-			  c^#8:*expr.Expr_IdentExpr#
-			)^#7:*expr.Expr_CallExpr#
-		  )^#9:*expr.Expr_CallExpr#`,
-		PrattP: `_&&_(
-			_[?_](
-			  _?._(
-				a^#1:*expr.Expr_IdentExpr#,
-				"b"^#3:*expr.Constant_StringValue#
-			  )^#2:*expr.Expr_CallExpr#,
 			  0^#5:*expr.Constant_Int64Value#
 			)^#4:*expr.Expr_CallExpr#,
 			_[?_](
@@ -2480,6 +2461,178 @@ var testCases = []testInfo{
 			"\t\tERROR: <input>:1:8: Syntax error: unexpected token after expression\n" +
 			"\t\t| \"helloworld\"\n" +
 			"\t\t| .......^",
+	},
+	{
+		I: `import{}`,
+		P: `import{}^#1:*expr.Expr_StructExpr#`,
+	},
+	{
+		I: `.import{}`,
+		P: `.import{}^#1:*expr.Expr_StructExpr#`,
+	},
+	{
+		I: `import.Foo{}`,
+		P: `import.Foo{}^#1:*expr.Expr_StructExpr#`,
+	},
+	{
+		I: `Foo.import{}`,
+		P: `Foo.import{}^#1:*expr.Expr_StructExpr#`,
+	},
+	{
+		I:    `a.?b.?c`,
+		Opts: []Option{EnableOptionalSyntax(true)},
+		P: `_?._(
+			_?._(
+			  a^#1:*expr.Expr_IdentExpr#,
+			  "b"^#2:*expr.Constant_StringValue#
+			)^#3:*expr.Expr_CallExpr#,
+			"c"^#4:*expr.Constant_StringValue#
+		  )^#5:*expr.Expr_CallExpr#`,
+		L: `_?._(
+			_?._(
+			  a^#1[1,0]#,
+			  "b"^#2[1,3]#
+			)^#3[1,1]#,
+			"c"^#4[1,6]#
+		  )^#5[1,4]#`,
+	},
+	{
+		I: `!-42`,
+		P: `!_(
+			-42^#2:*expr.Constant_Int64Value#
+		  )^#1:*expr.Expr_CallExpr#`,
+		L: `!_(
+			-42^#2[1,1]#
+		  )^#1[1,0]#`,
+	},
+	{
+		I: `!-4.2`,
+		P: `!_(
+			-4.2^#2:*expr.Constant_DoubleValue#
+		  )^#1:*expr.Expr_CallExpr#`,
+		L: `!_(
+			-4.2^#2[1,1]#
+		  )^#1[1,0]#`,
+	},
+	{
+		I: `9in-x`,
+		P: `@in(
+			9^#1:*expr.Constant_Int64Value#,
+			-_(
+			  x^#4:*expr.Expr_IdentExpr#
+			)^#3:*expr.Expr_CallExpr#
+		  )^#2:*expr.Expr_CallExpr#`,
+	},
+	{
+		I: "1 \v + 2",
+		E: "ERROR: <input>:1:3: Syntax error: token recognition error at: '\v'\n" +
+			" | 1 \v + 2\n" +
+			" | ..^",
+		PrattE: "ERROR: <input>:1:3: Syntax error: unexpected character\n" +
+			" | 1 \v + 2\n" +
+			" | ..^",
+	},
+	{
+		I: "-!x",
+		E: "ERROR: <input>:1:2: Syntax error: no viable alternative at input '-!'\n" +
+			" | -!x\n" +
+			" | .^",
+		PrattE: "ERROR: <input>:1:2: Syntax error: unexpected token\n" +
+			" | -!x\n" +
+			" | .^\n" +
+			"ERROR: <input>:1:3: Syntax error: unexpected token after expression\n" +
+			" | -!x\n" +
+			" | ..^",
+	},
+	{
+		I: "!-x",
+		E: "ERROR: <input>:1:3: Syntax error: no viable alternative at input '-x'\n" +
+			" | !-x\n" +
+			" | ..^",
+		PrattE: "ERROR: <input>:1:2: Syntax error: unexpected '-'\n" +
+			" | !-x\n" +
+			" | .^",
+	},
+	{
+		I: "a.in",
+		E: "ERROR: <input>:1:3: Syntax error: no viable alternative at input '.in'\n" +
+			" | a.in\n" +
+			" | ..^\n" +
+			"ERROR: <input>:1:5: Syntax error: mismatched input '<EOF>' expecting {'[', '{', '(', '.', '-', '!', 'true', 'false', 'null', NUM_FLOAT, NUM_INT, NUM_UINT, STRING, BYTES, IDENTIFIER}\n" +
+			" | a.in\n" +
+			" | ....^",
+		PrattE: "ERROR: <input>:1:3: Syntax error: expected identifier after '.'\n" +
+			" | a.in\n" +
+			" | ..^",
+	},
+	{
+		I:    "has(a.`$b`)",
+		Opts: []Option{EnableIdentEscapeSyntax(true)},
+		E: "ERROR: <input>:1:7: Syntax error: token recognition error at: '`$'\n" +
+			" | has(a.`$b`)\n" +
+			" | ......^\n" +
+			"ERROR: <input>:1:10: Syntax error: token recognition error at: '`)'\n" +
+			" | has(a.`$b`)\n" +
+			" | .........^\n" +
+			"ERROR: <input>:1:12: Syntax error: missing ')' at '<EOF>'\n" +
+			" | has(a.`$b`)\n" +
+			" | ...........^",
+		PrattE: "ERROR: <input>:1:7: unexpected quoted identifier\n" +
+			" | has(a.`$b`)\n" +
+			" | ......^",
+	},
+	{
+		I: "(a){}",
+		E: "ERROR: <input>:1:4: Syntax error: mismatched input '{' expecting <EOF>\n" +
+			" | (a){}\n" +
+			" | ...^",
+		PrattE: "ERROR: <input>:1:4: Syntax error: unexpected token after expression\n" +
+			" | (a){}\n" +
+			" | ...^",
+	},
+	{
+		I: "(a.b){}",
+		E: "ERROR: <input>:1:6: Syntax error: mismatched input '{' expecting <EOF>\n" +
+			" | (a.b){}\n" +
+			" | .....^",
+		PrattE: "ERROR: <input>:1:6: Syntax error: unexpected token after expression\n" +
+			" | (a.b){}\n" +
+			" | .....^",
+	},
+	{
+		I: "(a).b{}",
+		E: "ERROR: <input>:1:6: Syntax error: mismatched input '{' expecting <EOF>\n" +
+			" | (a).b{}\n" +
+			" | .....^",
+		PrattE: "ERROR: <input>:1:6: Syntax error: unexpected token after expression\n" +
+			" | (a).b{}\n" +
+			" | .....^",
+	},
+	{
+		I:    "a.`b-c`{}",
+		Opts: []Option{EnableIdentEscapeSyntax(true)},
+		E: "ERROR: <input>:1:8: Syntax error: mismatched input '{' expecting <EOF>\n" +
+			" | a.`b-c`{}\n" +
+			" | .......^",
+		PrattE: "ERROR: <input>:1:8: Syntax error: unexpected token after expression\n" +
+			" | a.`b-c`{}\n" +
+			" | .......^",
+	},
+	{
+		I:    "Msg{`$b`: 1}",
+		Opts: []Option{EnableIdentEscapeSyntax(true)},
+		E: "ERROR: <input>:1:5: Syntax error: token recognition error at: '`$'\n" +
+			" | Msg{`$b`: 1}\n" +
+			" | ....^\n" +
+			"ERROR: <input>:1:8: Syntax error: token recognition error at: '`:'\n" +
+			" | Msg{`$b`: 1}\n" +
+			" | .......^\n" +
+			"ERROR: <input>:1:11: Syntax error: missing ':' at '1'\n" +
+			" | Msg{`$b`: 1}\n" +
+			" | ..........^",
+		PrattE: "ERROR: <input>:1:5: unexpected quoted identifier\n" +
+			" | Msg{`$b`: 1}\n" +
+			" | ....^",
 	},
 }
 

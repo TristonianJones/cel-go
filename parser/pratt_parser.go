@@ -48,41 +48,30 @@ var (
 	opSlash            = binaryOpInfo{precedence: 5, name: operators.Divide, kind: tokSlash}
 	opPercent          = binaryOpInfo{precedence: 5, name: operators.Modulo, kind: tokPercent}
 	opDefault          = binaryOpInfo{precedence: 0, name: "", kind: tokError}
+
+	binaryOpInfoTable = [tokLogicalOr + 1]binaryOpInfo{
+		tokLogicalOr:        opLogicalOr,
+		tokLogicalAnd:       opLogicalAnd,
+		tokLess:             opLess,
+		tokLessEqual:        opLessEqual,
+		tokGreater:          opGreater,
+		tokGreaterEqual:     opGreaterEqual,
+		tokEqualEqual:       opEqualEqual,
+		tokExclamationEqual: opExclamationEqual,
+		tokIn:               opIn,
+		tokPlus:             opPlus,
+		tokMinus:            opMinus,
+		tokAsterisk:         opAsterisk,
+		tokSlash:            opSlash,
+		tokPercent:          opPercent,
+	}
 )
 
 func getBinaryOpInfo(kind tokenKind) binaryOpInfo {
-	switch kind {
-	case tokLogicalOr:
-		return opLogicalOr
-	case tokLogicalAnd:
-		return opLogicalAnd
-	case tokLess:
-		return opLess
-	case tokLessEqual:
-		return opLessEqual
-	case tokGreater:
-		return opGreater
-	case tokGreaterEqual:
-		return opGreaterEqual
-	case tokEqualEqual:
-		return opEqualEqual
-	case tokExclamationEqual:
-		return opExclamationEqual
-	case tokIn:
-		return opIn
-	case tokPlus:
-		return opPlus
-	case tokMinus:
-		return opMinus
-	case tokAsterisk:
-		return opAsterisk
-	case tokSlash:
-		return opSlash
-	case tokPercent:
-		return opPercent
-	default:
-		return opDefault
+	if int(kind) < len(binaryOpInfoTable) {
+		return binaryOpInfoTable[kind]
 	}
+	return opDefault
 }
 
 type prattParserWorker struct {
@@ -206,6 +195,46 @@ func (p *prattParserWorker) nextSignificantToken() token {
 		}
 		return tok
 	}
+}
+
+func (p *prattParserWorker) scanNextSignificantToken() token {
+	for {
+		tok := p.lexer.Lex()
+		if tok.kind == tokWhitespace || tok.kind == tokComment {
+			continue
+		}
+		return tok
+	}
+}
+
+// isStructCreationAhead checks whether the current identifier is the root of a struct/message
+// creation expression (`CreateMessage` in grammar: `'.'? IDENTIFIER ('.' IDENTIFIER)* '{' ... '}'`).
+// Unlike standalone identifiers or selector chains, reserved identifiers (e.g. `import{}` or `import.Foo{}`)
+// are permitted in message type names.
+func (p *prattParserWorker) isStructCreationAhead() bool {
+	if p.peekTok.kind == tokLeftBrace {
+		return true
+	}
+	if p.peekTok.kind != tokDot {
+		return false
+	}
+	savedPos := p.lexer.SavePosition()
+	defer p.lexer.RestorePosition(savedPos)
+
+	tok := p.peekTok
+	for tok.kind == tokDot {
+		tok = p.scanNextSignificantToken()
+		if tok.kind != tokIdent && tok.kind != tokReservedWord {
+			return false
+		}
+		// Quoted identifiers are not allowed in struct creation expressions.
+		text := p.tokenText(tok)
+		if len(text) > 0 && text[0] == '`' {
+			return false
+		}
+		tok = p.scanNextSignificantToken()
+	}
+	return tok.kind == tokLeftBrace
 }
 
 func (p *prattParserWorker) nextToken() token {
@@ -363,12 +392,18 @@ func (p *prattParserWorker) expandMacro(exprID int64, function string, target as
 	return expr, true
 }
 
-func (p *prattParserWorker) normalizeIdent(tok token, allowQuoted bool) string {
+func (p *prattParserWorker) normalizeIdent(tok token, allowQuoted bool, isQuoted *bool) string {
+	if isQuoted != nil {
+		*isQuoted = false
+	}
 	text := p.tokenText(tok)
 	if len(text) == 0 {
 		return ""
 	}
 	if text[0] == '`' {
+		if isQuoted != nil {
+			*isQuoted = true
+		}
 		if !allowQuoted {
 			p.reportError(tok, "unexpected quoted identifier")
 			return ""
@@ -509,11 +544,22 @@ func (p *prattParserWorker) parseLogicalChain(lhs ast.Expr, opInfo binaryOpInfo)
 
 func (p *prattParserWorker) parseSelectorChain() ast.Expr {
 	p.lastParsedDepth = 0
-	lhs := p.parseUnary()
-	return p.parseSelectorChainTail(lhs, p.lastParsedDepth)
+	tok := p.peekTok.kind
+	if tok == tokExclamation || tok == tokMinus {
+		return p.parseUnaryOps()
+	}
+	return p.parseMember()
 }
 
-func (p *prattParserWorker) parseSelectorChainTail(lhs ast.Expr, initialChainDepth int) ast.Expr {
+func (p *prattParserWorker) parseMember() ast.Expr {
+	p.lastParsedDepth = 0
+	memberStart := p.peekTok.start
+	canBeStructName := false
+	lhs := p.parsePrimary(&canBeStructName)
+	return p.parseSelectorChainTail(lhs, memberStart, canBeStructName, p.lastParsedDepth)
+}
+
+func (p *prattParserWorker) parseSelectorChainTail(lhs ast.Expr, memberStartPosition int32, canBeStructName bool, initialChainDepth int) ast.Expr {
 	chainDepth := initialChainDepth
 	for {
 		switch p.peekTok.kind {
@@ -541,11 +587,13 @@ func (p *prattParserWorker) parseSelectorChainTail(lhs ast.Expr, initialChainDep
 				return lhs
 			}
 			isMemberCall := p.peekTok.kind == tokLeftParen
-			field := p.normalizeIdent(fieldTok, p.enableCallEscapeSyntax || !isMemberCall)
+			var isQuoted bool
+			field := p.normalizeIdent(fieldTok, p.enableCallEscapeSyntax || !isMemberCall, &isQuoted)
 			if optional {
-				opID := p.nextID(dotTok)
 				fieldID := p.nextID(fieldTok)
+				opID := p.nextID(dotTok)
 				lhs = p.helper.newGlobalCall(opID, operators.OptSelect, lhs, p.helper.newLiteralString(fieldID, field))
+				canBeStructName = false
 			} else if isMemberCall {
 				lparen := p.nextToken()
 				callID := p.nextID(lparen)
@@ -558,9 +606,11 @@ func (p *prattParserWorker) parseSelectorChainTail(lhs ast.Expr, initialChainDep
 				if p.lastParsedDepth+1 > chainDepth {
 					chainDepth = p.lastParsedDepth + 1
 				}
+				canBeStructName = false
 			} else {
 				dotID := p.nextID(dotTok)
 				lhs = p.helper.newSelect(dotID, lhs, field)
+				canBeStructName = canBeStructName && !isQuoted
 			}
 		case tokLeftBracket:
 			if p.checkRecursion(chainDepth) {
@@ -574,7 +624,7 @@ func (p *prattParserWorker) parseSelectorChainTail(lhs ast.Expr, initialChainDep
 				p.nextToken()
 				optional = true
 				if !p.enableOptionalSyntax {
-					p.reportError(bracketTok, "unsupported syntax '?'")
+					p.reportError(bracketTok, "unsupported syntax '[?'")
 				}
 			}
 			index := p.parseExpr()
@@ -591,7 +641,12 @@ func (p *prattParserWorker) parseSelectorChainTail(lhs ast.Expr, initialChainDep
 			if p.lastParsedDepth+1 > chainDepth {
 				chainDepth = p.lastParsedDepth + 1
 			}
+			canBeStructName = false
 		case tokLeftBrace:
+			if !canBeStructName {
+				p.lastParsedDepth = chainDepth
+				return lhs
+			}
 			if rng, found := p.helper.sourceInfo.GetOffsetRange(lhs.ID()); found {
 				if structName, ok := p.extractStructName(lhs); ok {
 					objID := p.helper.id(rng)
@@ -605,6 +660,7 @@ func (p *prattParserWorker) parseSelectorChainTail(lhs ast.Expr, initialChainDep
 					if p.lastParsedDepth > chainDepth {
 						chainDepth = p.lastParsedDepth
 					}
+					canBeStructName = false
 				} else {
 					p.lastParsedDepth = chainDepth
 					return lhs
@@ -634,11 +690,11 @@ func (p *prattParserWorker) extractStructName(expr ast.Expr) (string, bool) {
 		if sel.IsTestOnly() {
 			return "", false
 		}
+		p.helper.deleteID(expr.ID())
 		prefix, ok := p.extractStructName(sel.Operand())
 		if !ok {
 			return "", false
 		}
-		p.helper.deleteID(expr.ID())
 		return prefix + "." + sel.FieldName(), true
 	}
 	return "", false
@@ -663,7 +719,7 @@ func (p *prattParserWorker) parseStruct(objID int64, structName string) ast.Expr
 			p.synchronizeOnDelimiter()
 			break
 		}
-		fieldName := p.normalizeIdent(fieldTok, true)
+		fieldName := p.normalizeIdent(fieldTok, true, nil)
 		colonTok := p.peekTok
 		if !p.expect(tokColon, "expected ':' in struct field") {
 			break
@@ -681,51 +737,33 @@ func (p *prattParserWorker) parseStruct(objID int64, structName string) ast.Expr
 	return p.helper.newObject(objID, structName, fields...)
 }
 
-func (p *prattParserWorker) parseUnary() ast.Expr {
-	tok := p.peekTok.kind
-	if tok == tokExclamation || tok == tokMinus {
-		return p.parseUnaryOpsChain(p.nextToken())
-	}
-	return p.parsePrimary()
-}
-
-func (p *prattParserWorker) parseUnaryOpsChain(firstOp token) ast.Expr {
-	type unaryOp struct {
-		token token
-		id    int64
-	}
-	ops := []unaryOp{{token: firstOp}}
-	for p.peekTok.kind == tokExclamation || p.peekTok.kind == tokMinus {
-		ops = append(ops, unaryOp{token: p.nextToken()})
+func (p *prattParserWorker) parseUnaryOps() ast.Expr {
+	firstOp := p.nextToken()
+	opType := firstOp.kind
+	ops := []token{firstOp}
+	for p.peekTok.kind == opType {
+		ops = append(ops, p.nextToken())
 	}
 
-	hasSolitaryTrailingMinus := len(ops) > 0 &&
-		ops[len(ops)-1].token.kind == tokMinus &&
-		(len(ops) == 1 || ops[len(ops)-2].token.kind != tokMinus)
-
-	write := 0
-	for read := 0; read < len(ops); {
-		next := read
-		for next < len(ops) && ops[next].token.kind == ops[read].token.kind {
-			next++
+	if opType == tokMinus && len(ops) == 1 && (p.peekTok.kind == tokInt || p.peekTok.kind == tokFloat) {
+		opID := p.nextID(firstOp)
+		var lhs ast.Expr
+		if p.peekTok.kind == tokInt {
+			lhs = p.parseNegativeIntLiteral(opID)
+		} else {
+			lhs = p.parseNegativeDoubleLiteral(opID)
 		}
-		if (next-read)%2 != 0 {
-			ops[write] = ops[read]
-			write++
+		tok := p.peekTok.kind
+		if tok == tokDot || tok == tokLeftBracket || tok == tokLeftBrace {
+			lhs = p.parseSelectorChainTail(lhs, firstOp.start, false, 0)
 		}
-		read = next
-	}
-	ops = ops[:write]
-
-	for i := range ops {
-		ops[i].id = p.nextID(ops[i].token)
+		return lhs
 	}
 
-	isNegativeNumericLiteral := hasSolitaryTrailingMinus && (p.peekTok.kind == tokInt || p.peekTok.kind == tokFloat)
-	var negativeLiteralOpID int64
-	if isNegativeNumericLiteral {
-		negativeLiteralOpID = ops[len(ops)-1].id
-		ops = ops[:len(ops)-1]
+	if len(ops)%2 == 0 {
+		ops = ops[:0]
+	} else {
+		ops = ops[:1]
 	}
 
 	// Every retained operator wraps the operand in one more call node, so the run
@@ -736,33 +774,51 @@ func (p *prattParserWorker) parseUnaryOpsChain(firstOp token) ast.Expr {
 	}
 	p.recursionDepth += len(ops)
 
+	type unaryOpWithID struct {
+		token token
+		id    int64
+	}
+	retainedOps := make([]unaryOpWithID, len(ops))
+	for i, op := range ops {
+		retainedOps[i] = unaryOpWithID{token: op, id: p.nextID(op)}
+	}
+
 	var operand ast.Expr
-	if isNegativeNumericLiteral {
+	if opType == tokExclamation && p.peekTok.kind == tokMinus {
+		minusTok := p.nextToken()
+		minusID := p.nextID(minusTok)
 		if p.peekTok.kind == tokInt {
-			operand = p.parseNegativeIntLiteral(negativeLiteralOpID)
+			operand = p.parseNegativeIntLiteral(minusID)
+			operand = p.parseSelectorChainTail(operand, minusTok.start, false, 0)
+		} else if p.peekTok.kind == tokFloat {
+			operand = p.parseNegativeDoubleLiteral(minusID)
+			operand = p.parseSelectorChainTail(operand, minusTok.start, false, 0)
 		} else {
-			operand = p.parseNegativeDoubleLiteral(negativeLiteralOpID)
+			p.reportSyntaxError(minusTok, "unexpected '-'")
+			operand = p.parseMember()
 		}
-		operand = p.parseSelectorChainTail(operand, 0)
 	} else {
-		operand = p.parseSelectorChain()
+		operand = p.parseMember()
 	}
 	p.recursionDepth -= len(ops)
 	if p.recursionLimitExceeded {
 		return p.helper.newExpr(common.NoLocation)
 	}
 
-	for i := len(ops) - 1; i >= 0; i-- {
+	for i := len(retainedOps) - 1; i >= 0; i-- {
 		opName := operators.LogicalNot
-		if ops[i].token.kind == tokMinus {
+		if retainedOps[i].token.kind == tokMinus {
 			opName = operators.Negate
 		}
-		operand = p.globalCallOrMacro(ops[i].id, opName, operand)
+		operand = p.globalCallOrMacro(retainedOps[i].id, opName, operand)
 	}
 	return operand
 }
 
-func (p *prattParserWorker) parsePrimary() ast.Expr {
+func (p *prattParserWorker) parsePrimary(canBeStructName *bool) ast.Expr {
+	if canBeStructName != nil {
+		*canBeStructName = false
+	}
 	switch p.peekTok.kind {
 	case tokLeftParen:
 		if p.recursionLimitExceeded || p.isRecoveryLimitExceeded() {
@@ -778,13 +834,17 @@ func (p *prattParserWorker) parsePrimary() ast.Expr {
 		// parenthesized level using the already-parsed inner expression as the
 		// LHS.
 		openParens := 0
+		var extraParenStarts []int32
 		for p.peekTok.kind == tokLeftParen {
+			if openParens > 0 {
+				extraParenStarts = append(extraParenStarts, p.peekTok.start)
+			}
 			openParens++
 			p.nextToken()
 		}
 		// Every '(' is a nesting level and costs one unit of recursion budget, so
 		// charge all of them here. recursionDepth is already 1 for the
-		// enclosing expression (as in parseUnaryOpsChain), so openParens
+		// enclosing expression (as in parseUnaryOps), so openParens
 		// parentheses reach depth recursionDepth + openParens - 1.
 		// recursionDepth itself only advances by 1 because the parens are
 		// unwound iteratively and entering parseBinaryAndTernary(0) below adds
@@ -800,7 +860,8 @@ func (p *prattParserWorker) parsePrimary() ast.Expr {
 			if i < openParens-1 && p.peekTok.kind != tokRightParen {
 				tok := p.peekTok.kind
 				if tok == tokDot || tok == tokLeftBracket || tok == tokLeftBrace {
-					expr = p.parseSelectorChainTail(expr, chainDepth)
+					parenStart := extraParenStarts[openParens-2-i]
+					expr = p.parseSelectorChainTail(expr, parenStart, false, chainDepth)
 				}
 				expr = p.parseBinaryAndTernaryFromLhs(expr, 0, p.lastParsedDepth)
 				chainDepth = p.lastParsedDepth
@@ -832,7 +893,7 @@ func (p *prattParserWorker) parsePrimary() ast.Expr {
 	case tokLeftBrace:
 		return p.parseMap()
 	case tokDot, tokIdent, tokReservedWord:
-		return p.parseIdentOrCall()
+		return p.parseIdentOrCall(canBeStructName)
 	default:
 		badTok := p.nextToken()
 		if badTok.kind != tokError {
@@ -915,7 +976,7 @@ func (p *prattParserWorker) parseMap() ast.Expr {
 	return p.helper.newMap(mapID, entries...)
 }
 
-func (p *prattParserWorker) parseIdentOrCall() ast.Expr {
+func (p *prattParserWorker) parseIdentOrCall(canBeStructName *bool) ast.Expr {
 	leadingDot := false
 	firstTok := p.peekTok
 	if p.peekTok.kind == tokDot {
@@ -927,11 +988,15 @@ func (p *prattParserWorker) parseIdentOrCall() ast.Expr {
 		if idTok.kind != tokError {
 			p.reportSyntaxError(idTok, "expected identifier")
 		}
+		if canBeStructName != nil {
+			*canBeStructName = false
+		}
 		return p.helper.newExpr(idTok)
 	}
-	idText := p.normalizeIdent(idTok, p.enableCallEscapeSyntax)
+	var isQuoted bool
+	idText := p.normalizeIdent(idTok, p.enableCallEscapeSyntax, &isQuoted)
 	if idTok.kind == tokReservedWord {
-		if _, ok := reservedIds[idText]; ok {
+		if _, ok := reservedIds[idText]; ok && !p.isStructCreationAhead() {
 			p.reportError(idTok, "reserved identifier: %s", idText)
 		}
 	}
@@ -943,7 +1008,13 @@ func (p *prattParserWorker) parseIdentOrCall() ast.Expr {
 		lparen := p.nextToken()
 		callID := p.nextID(lparen)
 		args := p.parseArguments(tokRightParen)
+		if canBeStructName != nil {
+			*canBeStructName = false
+		}
 		return p.globalCallOrMacro(callID, name, args...)
+	}
+	if canBeStructName != nil {
+		*canBeStructName = !isQuoted
 	}
 	targetTok := idTok
 	if leadingDot {
