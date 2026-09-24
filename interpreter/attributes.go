@@ -744,10 +744,10 @@ func (a *relativeAttribute) Resolve(vars Activation) (any, error) {
 	}
 	// First, evaluate the operand.
 	v := a.operand.Exec(frame)
-	if types.IsError(v) {
+	if isError(v) {
 		return nil, v.(*types.Err)
 	}
-	if types.IsUnknown(v) {
+	if isUnknown(v) {
 		return v, nil
 	}
 	if len(a.qualifiers) == 0 {
@@ -759,7 +759,7 @@ func (a *relativeAttribute) Resolve(vars Activation) (any, error) {
 	}
 	if isOpt {
 		val := a.adapter.NativeToValue(obj)
-		if types.IsUnknown(val) {
+		if isUnknown(val) {
 			return val, nil
 		}
 		return types.OptionalOf(val), nil
@@ -1037,6 +1037,14 @@ func (q *stringQualifier) qualifyInternal(vars Activation, obj any, presenceTest
 			return obj, true, nil
 		}
 	default:
+		if nm, ok := obj.(interface{ FindStringKey(string) (any, bool) }); ok {
+			if v, found := nm.FindStringKey(s); found {
+				if presenceOnly {
+					return nil, true, nil
+				}
+				return v, true, nil
+			}
+		}
 		return refQualify(q.adapter, obj, q.celValue, presenceTest, presenceOnly, q.errorOnBadPresenceTest)
 	}
 	if presenceTest {
@@ -1113,6 +1121,11 @@ func (q *intQualifier) qualifyInternal(vars Activation, obj any, presenceTest, p
 		if isIndex {
 			return o[i], true, nil
 		}
+	case []ref.Val:
+		isIndex := i >= 0 && i < int64(len(o))
+		if isIndex {
+			return o[i], true, nil
+		}
 	case []string:
 		isIndex := i >= 0 && i < int64(len(o))
 		if isIndex {
@@ -1164,6 +1177,26 @@ func (q *intQualifier) qualifyInternal(vars Activation, obj any, presenceTest, p
 			return o[i], true, nil
 		}
 	default:
+		if nl, ok := obj.(interface{ GetInt64Index(int64) (any, bool) }); ok {
+			if v, found := nl.GetInt64Index(i); found {
+				if presenceOnly {
+					return nil, true, nil
+				}
+				return v, true, nil
+			}
+			if presenceTest {
+				return nil, false, nil
+			}
+			return nil, false, missingIndex(q.celValue)
+		}
+		if nm, ok := obj.(interface{ FindInt64Key(int64) (any, bool) }); ok {
+			if v, found := nm.FindInt64Key(i); found {
+				if presenceOnly {
+					return nil, true, nil
+				}
+				return v, true, nil
+			}
+		}
 		return refQualify(q.adapter, obj, q.celValue, presenceTest, presenceOnly, q.errorOnBadPresenceTest)
 	}
 	if presenceTest {
@@ -1525,7 +1558,7 @@ func refQualify(adapter types.Adapter, obj any, idx ref.Val, presenceTest, prese
 		val, found := v.Find(idx)
 		// If the index is of the wrong type for the map, then it is possible
 		// for the Find call to produce an error.
-		if types.IsError(val) {
+		if isError(val) {
 			return nil, false, val.(*types.Err)
 		}
 		if found {
@@ -1538,7 +1571,7 @@ func refQualify(adapter types.Adapter, obj any, idx ref.Val, presenceTest, prese
 	case traits.Lister:
 		// If the index argument is not a valid numeric type, then it is possible
 		// for the index operation to produce an error.
-		i, err := types.IndexOrError(idx)
+		i, err := types.GetOrError(idx)
 		if err != nil {
 			return nil, false, err
 		}
@@ -1555,7 +1588,7 @@ func refQualify(adapter types.Adapter, obj any, idx ref.Val, presenceTest, prese
 			ft, ok := v.(traits.FieldTester)
 			if ok {
 				presence := ft.IsSet(idx)
-				if types.IsError(presence) {
+				if isError(presence) {
 					return nil, false, presence.(*types.Err)
 				}
 				// If not found or presence only test, then return.
@@ -1566,7 +1599,7 @@ func refQualify(adapter types.Adapter, obj any, idx ref.Val, presenceTest, prese
 			}
 		}
 		val := v.Get(idx)
-		if types.IsError(val) {
+		if isError(val) {
 			return nil, false, val.(*types.Err)
 		}
 		return val, true, nil
