@@ -553,13 +553,12 @@ func (p *prattParserWorker) parseSelectorChain() ast.Expr {
 
 func (p *prattParserWorker) parseMember() ast.Expr {
 	p.lastParsedDepth = 0
-	memberStart := p.peekTok.start
 	canBeStructName := false
 	lhs := p.parsePrimary(&canBeStructName)
-	return p.parseSelectorChainTail(lhs, memberStart, canBeStructName, p.lastParsedDepth)
+	return p.parseSelectorChainTail(lhs, canBeStructName, p.lastParsedDepth)
 }
 
-func (p *prattParserWorker) parseSelectorChainTail(lhs ast.Expr, memberStartPosition int32, canBeStructName bool, initialChainDepth int) ast.Expr {
+func (p *prattParserWorker) parseSelectorChainTail(lhs ast.Expr, canBeStructName bool, initialChainDepth int) ast.Expr {
 	chainDepth := initialChainDepth
 	for {
 		switch p.peekTok.kind {
@@ -755,7 +754,7 @@ func (p *prattParserWorker) parseUnaryOps() ast.Expr {
 		}
 		tok := p.peekTok.kind
 		if tok == tokDot || tok == tokLeftBracket || tok == tokLeftBrace {
-			lhs = p.parseSelectorChainTail(lhs, firstOp.start, false, 0)
+			lhs = p.parseSelectorChainTail(lhs, false, 0)
 		}
 		return lhs
 	}
@@ -789,10 +788,10 @@ func (p *prattParserWorker) parseUnaryOps() ast.Expr {
 		minusID := p.nextID(minusTok)
 		if p.peekTok.kind == tokInt {
 			operand = p.parseNegativeIntLiteral(minusID)
-			operand = p.parseSelectorChainTail(operand, minusTok.start, false, 0)
+			operand = p.parseSelectorChainTail(operand, false, 0)
 		} else if p.peekTok.kind == tokFloat {
 			operand = p.parseNegativeDoubleLiteral(minusID)
-			operand = p.parseSelectorChainTail(operand, minusTok.start, false, 0)
+			operand = p.parseSelectorChainTail(operand, false, 0)
 		} else {
 			p.reportSyntaxError(minusTok, "unexpected '-'")
 			operand = p.parseMember()
@@ -834,11 +833,7 @@ func (p *prattParserWorker) parsePrimary(canBeStructName *bool) ast.Expr {
 		// parenthesized level using the already-parsed inner expression as the
 		// LHS.
 		openParens := 0
-		var extraParenStarts []int32
 		for p.peekTok.kind == tokLeftParen {
-			if openParens > 0 {
-				extraParenStarts = append(extraParenStarts, p.peekTok.start)
-			}
 			openParens++
 			p.nextToken()
 		}
@@ -860,8 +855,7 @@ func (p *prattParserWorker) parsePrimary(canBeStructName *bool) ast.Expr {
 			if i < openParens-1 && p.peekTok.kind != tokRightParen {
 				tok := p.peekTok.kind
 				if tok == tokDot || tok == tokLeftBracket || tok == tokLeftBrace {
-					parenStart := extraParenStarts[openParens-2-i]
-					expr = p.parseSelectorChainTail(expr, parenStart, false, chainDepth)
+					expr = p.parseSelectorChainTail(expr, false, chainDepth)
 				}
 				expr = p.parseBinaryAndTernaryFromLhs(expr, 0, p.lastParsedDepth)
 				chainDepth = p.lastParsedDepth
