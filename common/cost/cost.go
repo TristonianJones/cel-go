@@ -134,15 +134,15 @@ func SafeCeil(x float64) uint64 {
 // SafeTrunc returns the integer part of the input, saturating at math.MaxUint64 and flooring at
 // zero.
 //
-// Negative and NaN inputs return zero.
+// # Negative inputs return zero, and NaN saturates to max uint64
 //
 // Cost trackers which report a truncated cost should prefer this helper over a direct conversion,
 // as conversion of an out-of-range float64 to a uint64 is platform-defined.
 func SafeTrunc(x float64) uint64 {
-	if math.IsNaN(x) || x <= 0 {
+	if x <= 0 {
 		return 0
 	}
-	if x >= maxUint64AsFloat {
+	if math.IsNaN(x) || x >= maxUint64AsFloat {
 		return math.MaxUint64
 	}
 	return uint64(x)

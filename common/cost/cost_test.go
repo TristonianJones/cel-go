@@ -149,7 +149,7 @@ func TestSafeTrunc(t *testing.T) {
 	}{
 		{name: "zero", x: 0, want: 0},
 		{name: "negative", x: -1.5, want: 0},
-		{name: "nan", x: math.NaN(), want: 0},
+		{name: "nan", x: math.NaN(), want: math.MaxUint64},
 		{name: "fraction truncates to zero", x: 0.9, want: 0},
 		{name: "rounds down", x: 2.5, want: 2},
 		{name: "whole", x: 3.0, want: 3},
