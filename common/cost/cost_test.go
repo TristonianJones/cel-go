@@ -141,6 +141,76 @@ func TestSafeCeil(t *testing.T) {
 	}
 }
 
+func TestSafeTrunc(t *testing.T) {
+	tests := []struct {
+		name string
+		x    float64
+		want uint64
+	}{
+		{name: "zero", x: 0, want: 0},
+		{name: "negative", x: -1.5, want: 0},
+		{name: "nan", x: math.NaN(), want: math.MaxUint64},
+		{name: "fraction truncates to zero", x: 0.9, want: 0},
+		{name: "rounds down", x: 2.5, want: 2},
+		{name: "whole", x: 3.0, want: 3},
+		{name: "infinity", x: math.Inf(1), want: math.MaxUint64},
+		// Out-of-range float to uint64 conversion is platform-defined: amd64 yields
+		// 0x8000000000000000 and arm64 saturates. Both must report the saturated value.
+		{name: "out of range", x: math.Ldexp(1.0, 64), want: math.MaxUint64},
+		{name: "far out of range", x: math.Ldexp(1.0, 96), want: math.MaxUint64},
+		{name: "largest in range", x: math.Ldexp(1.0, 63), want: 1 << 63},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SafeTrunc(tc.x); got != tc.want {
+				t.Errorf("SafeTrunc(%f) got %d, want %d", tc.x, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSafeMultiplyByFactorTrunc(t *testing.T) {
+	tests := []struct {
+		name   string
+		x      uint64
+		factor float64
+		want   uint64
+	}{
+		{name: "zero value", x: 0, factor: 0.1, want: 0},
+		{name: "zero factor", x: 100, factor: 0, want: 0},
+		{name: "rounds down", x: 15, factor: 0.1, want: 1},
+		{name: "exact", x: 10, factor: 0.1, want: 1},
+		{name: "whole factor", x: 10, factor: 3, want: 30},
+		{name: "max saturates", x: math.MaxUint64, factor: 2, want: math.MaxUint64},
+		{name: "max scaled down", x: math.MaxUint64, factor: 0.1, want: 1844674407370955264},
+		{name: "negative factor", x: 10, factor: -1, want: 0},
+		// The list and sets trackers scale an already-saturated size by a factor > 1.
+		{name: "saturated size", x: math.MaxUint64, factor: 2.1, want: math.MaxUint64},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SafeMultiplyByFactorTrunc(tc.x, tc.factor); got != tc.want {
+				t.Errorf("SafeMultiplyByFactorTrunc(%d, %f) got %d, want %d", tc.x, tc.factor, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSafeMultiplyByFactorTruncMatchesUnchecked verifies that the saturating helper agrees with a
+// direct conversion for every in-range input, so that adopting it cannot change a reported cost.
+func TestSafeMultiplyByFactorTruncMatchesUnchecked(t *testing.T) {
+	factors := []float64{0.1, 1.0, 2.0, 2.1, 3.0}
+	sizes := []uint64{0, 1, 2, 5, 10, 100, 1_000, 65_535, 1 << 32}
+	for _, f := range factors {
+		for _, sz := range sizes {
+			want := uint64(float64(sz) * f)
+			if got := SafeMultiplyByFactorTrunc(sz, f); got != want {
+				t.Errorf("SafeMultiplyByFactorTrunc(%d, %f) got %d, want %d", sz, f, got, want)
+			}
+		}
+	}
+}
+
 func TestSizeEstimate(t *testing.T) {
 	s1 := FixedSizeEstimate(5)
 	s2 := FixedSizeEstimate(10)

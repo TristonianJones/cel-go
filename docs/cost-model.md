@@ -599,10 +599,14 @@ cost.MemberOverload("list_hash",
     cost.EvalCost(cost.ScaleBy(
         cost.Target(),
         cost.TargetElemTypeScale(func(elemType *types.Type) float64 {
-            if elemType == types.StringType || elemType == types.BytesKind {
+            // Kind() is nil-safe, and reports UnspecifiedKind when the target
+            // type is not a parameterized container.
+            switch elemType.Kind() {
+            case types.StringKind, types.BytesKind:
                 return 0.8
+            default:
+                return 0.2
             }
-            return 0.2
         }),
     )),
     cost.ResultSize(cost.Const(32)), // 32-byte digest

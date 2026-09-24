@@ -247,7 +247,10 @@ func trackSetsCost(costFactor float64) cost.FunctionTracker {
 	return func(args []ref.Val, _ ref.Val) *uint64 {
 		lhsSize := cost.ActualSize(args[0])
 		rhsSize := cost.ActualSize(args[1])
-		total := cost.SafeAdd(cost.CallCost, uint64(float64(lhsSize*rhsSize)*costFactor))
+		// The pairwise comparison count saturates rather than wrapping, and the scaled result
+		// avoids a platform-defined out-of-range float conversion.
+		comparisons := cost.SafeMultiply(lhsSize, rhsSize)
+		total := cost.SafeAdd(cost.CallCost, cost.SafeMultiplyByFactorTrunc(comparisons, costFactor))
 		return &total
 	}
 }

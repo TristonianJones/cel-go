@@ -131,6 +131,35 @@ func SafeCeil(x float64) uint64 {
 	return uint64(ceil)
 }
 
+// SafeTrunc returns the integer part of the input, saturating at math.MaxUint64 and flooring at
+// zero.
+//
+// # Negative inputs return zero, and NaN saturates to max uint64
+//
+// Cost trackers which report a truncated cost should prefer this helper over a direct conversion,
+// as conversion of an out-of-range float64 to a uint64 is platform-defined.
+func SafeTrunc(x float64) uint64 {
+	if x <= 0 {
+		return 0
+	}
+	if math.IsNaN(x) || x >= maxUint64AsFloat {
+		return math.MaxUint64
+	}
+	return uint64(x)
+}
+
+// SafeMultiplyByFactorTrunc multiplies a value by a cost factor and returns the integer part of
+// the result, truncated, saturating at math.MaxUint64.
+//
+// This is the truncating counterpart to SafeMultiplyByFactor, which rounds up.
+func SafeMultiplyByFactorTrunc(x uint64, factor float64) uint64 {
+	xFloat := float64(x)
+	if xFloat > 0 && factor > 0 && xFloat > math.MaxUint64/factor {
+		return math.MaxUint64
+	}
+	return SafeTrunc(xFloat * factor)
+}
+
 // SizeEstimate represents an estimated size of a variable length string, bytes, map or list.
 type SizeEstimate struct {
 	// Min is the minimum estimated size (inclusive).
