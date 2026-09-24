@@ -478,7 +478,8 @@ func (eq *evalEq) Exec(frame *ExecutionFrame) ref.Val {
 		}
 		return rVal
 	}
-	if unk := mergeBinaryUnknowns(lVal, rVal); unk != nil {
+	if isUnknown(lVal) || isUnknown(rVal) {
+		unk := mergeBinaryUnknowns(lVal, rVal)
 		if costs := frame.CostTracker(); costs != nil {
 			costs.EvalBinary(frame, eq.id, eq, lVal, rVal, unk)
 		}
@@ -542,7 +543,8 @@ func (ne *evalNe) Exec(frame *ExecutionFrame) ref.Val {
 		}
 		return rVal
 	}
-	if unk := mergeBinaryUnknowns(lVal, rVal); unk != nil {
+	if isUnknown(lVal) || isUnknown(rVal) {
+		unk := mergeBinaryUnknowns(lVal, rVal)
 		if costs := frame.CostTracker(); costs != nil {
 			costs.EvalBinary(frame, ne.id, ne, lVal, rVal, unk)
 		}
@@ -611,7 +613,7 @@ func (zero *evalZeroArity) OverloadID() string {
 	return zero.overload
 }
 
-// Args returns the argument to the unary function.
+// Args implements the InterpretableCall interface method.
 func (zero *evalZeroArity) Args() []InterpretableV2 {
 	return []InterpretableV2{}
 }
@@ -657,7 +659,7 @@ func (un *evalUnary) Exec(frame *ExecutionFrame) ref.Val {
 	var res ref.Val
 	// If the implementation is bound and the argument value has the right traits required to
 	// invoke it, then call the implementation.
-	if un.impl != nil && matchOperandTrait(un.trait, strict, argVal) {
+	if un.impl != nil && (un.trait == 0 || matchOperandTrait(un.trait, strict, argVal)) {
 		res = labelErrNode(un.id, un.impl(argVal))
 	} else if argVal.Type().HasTrait(traits.ReceiverType) {
 		// Otherwise, if the argument is a ReceiverType attempt to invoke the receiver method on the
@@ -712,25 +714,41 @@ func (bin *evalBinary) ID() int64 {
 func (bin *evalBinary) Exec(frame *ExecutionFrame) ref.Val {
 	lVal := bin.lhs.Exec(frame)
 	strict := !bin.nonStrict
-	if strict && isError(lVal) {
-		return lVal
+	if strict {
+		switch lVal.(type) {
+		case *types.Err:
+			return lVal
+		case *types.Unknown:
+			rVal := bin.rhs.Exec(frame)
+			if unk, ok := rVal.(*types.Unknown); ok {
+				res := types.MergeUnknowns(lVal.(*types.Unknown), unk)
+				if costs := frame.CostTracker(); costs != nil {
+					costs.EvalBinary(frame, bin.id, bin, lVal, rVal, res)
+				}
+				return res
+			}
+			if costs := frame.CostTracker(); costs != nil {
+				costs.EvalBinary(frame, bin.id, bin, lVal, rVal, lVal)
+			}
+			return lVal
+		}
 	}
 	rVal := bin.rhs.Exec(frame)
-	if strict && isError(rVal) {
-		return rVal
-	}
 	if strict {
-		if unk := mergeBinaryUnknowns(lVal, rVal); unk != nil {
+		switch rVal.(type) {
+		case *types.Err:
+			return rVal
+		case *types.Unknown:
 			if costs := frame.CostTracker(); costs != nil {
-				costs.EvalBinary(frame, bin.id, bin, lVal, rVal, unk)
+				costs.EvalBinary(frame, bin.id, bin, lVal, rVal, rVal)
 			}
-			return unk
+			return rVal
 		}
 	}
 	var res ref.Val
 	// If the implementation is bound and the argument value has the right traits required to
 	// invoke it, then call the implementation.
-	if bin.impl != nil && matchOperandTrait(bin.trait, strict, lVal) {
+	if bin.impl != nil && (bin.trait == 0 || matchOperandTrait(bin.trait, strict, lVal)) {
 		res = labelErrNode(bin.id, bin.impl(lVal, rVal))
 	} else if lVal.Type().HasTrait(traits.ReceiverType) {
 		// Otherwise, if the argument is a ReceiverType attempt to invoke the receiver method on the
@@ -1964,12 +1982,17 @@ func (f *folder) foldIterable(iterable traits.Iterable) ref.Val {
 		f.iterVar1Val = it.Next()
 
 		cond := f.cond.Exec(f.frame)
-		condBool, ok := cond.(types.Bool)
-		if f.interrupted || (!f.exhaustive && ok && condBool != types.True) {
+		if f.interrupted {
+			return f.evalResult()
+		}
+		if !f.exhaustive && cond != types.True {
+			if isError(cond) {
+				f.interrupted = true
+			}
 			return f.evalResult()
 		}
 
-		// Update the accumulation value and check for eval interuption.
+		// Update the accumulation value and check for eval interruption.
 		f.accuVal = f.step.Exec(f.frame)
 		f.initialized = true
 		if f.interruptable && f.frame.CheckInterrupt() {
@@ -1999,12 +2022,17 @@ func (f *folder) FoldEntry(key, val any) bool {
 	// Terminate evaluation if evaluation is interrupted or the condition is not true and exhaustive
 	// eval is not enabled.
 	cond := f.cond.Exec(f.frame)
-	condBool, ok := cond.(types.Bool)
-	if f.interrupted || (!f.exhaustive && ok && condBool != types.True) {
+	if f.interrupted {
+		return false
+	}
+	if !f.exhaustive && cond != types.True {
+		if isError(cond) {
+			f.interrupted = true
+		}
 		return false
 	}
 
-	// Update the accumulation value and check for eval interuption.
+	// Update the accumulation value and check for eval interruption.
 	f.accuVal = f.step.Exec(f.frame)
 	f.initialized = true
 	if f.interruptable && f.frame.CheckInterrupt() {
