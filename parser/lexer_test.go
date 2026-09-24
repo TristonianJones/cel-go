@@ -39,9 +39,31 @@ func TestLexer(t *testing.T) {
 		},
 		{
 			name:  "Whitespace",
-			input: " \n  \t\r\f\v",
+			input: " \n  \t\r\f",
 			expected: []expectedToken{
-				{kind: tokWhitespace, text: " \n  \t\r\f\v"},
+				{kind: tokWhitespace, text: " \n  \t\r\f"},
+			},
+		},
+		{
+			name:  "NumericFollowedByIdent",
+			input: "0x1A_invalid 123_invalid 1x0 2x 9in-x",
+			expected: []expectedToken{
+				{kind: tokInt, text: "0x1A"},
+				{kind: tokIdent, text: "_invalid"},
+				{kind: tokWhitespace, text: " "},
+				{kind: tokInt, text: "123"},
+				{kind: tokIdent, text: "_invalid"},
+				{kind: tokWhitespace, text: " "},
+				{kind: tokInt, text: "1"},
+				{kind: tokIdent, text: "x0"},
+				{kind: tokWhitespace, text: " "},
+				{kind: tokInt, text: "2"},
+				{kind: tokIdent, text: "x"},
+				{kind: tokWhitespace, text: " "},
+				{kind: tokInt, text: "9"},
+				{kind: tokIn, text: "in"},
+				{kind: tokMinus, text: "-"},
+				{kind: tokIdent, text: "x"},
 			},
 		},
 		{
@@ -341,32 +363,11 @@ func TestLexerErrors(t *testing.T) {
 				" | ^",
 		},
 		{
-			name:  "HexInvalidTrailing",
-			input: "0x1A_invalid",
-			expectedError: "ERROR: <input>:1:1: int literal has unexpected trailing characters\n" +
-				" | 0x1A_invalid\n" +
-				" | ^",
-		},
-		{
-			name:  "IntInvalidTrailing",
-			input: "123_invalid",
-			expectedError: "ERROR: <input>:1:1: int literal has unexpected trailing characters\n" +
-				" | 123_invalid\n" +
-				" | ^",
-		},
-		{
-			name:  "Int1x0",
-			input: "1x0",
-			expectedError: "ERROR: <input>:1:1: int literal has unexpected trailing characters\n" +
-				" | 1x0\n" +
-				" | ^",
-		},
-		{
-			name:  "Int2x",
-			input: "2x",
-			expectedError: "ERROR: <input>:1:1: int literal has unexpected trailing characters\n" +
-				" | 2x\n" +
-				" | ^",
+			name:  "VerticalTab",
+			input: "1 \v + 2",
+			expectedError: "ERROR: <input>:1:3: unexpected character\n" +
+				" | 1 \v + 2\n" +
+				" | ..^",
 		},
 		{
 			name:  "UnterminatedQuotedIdent",

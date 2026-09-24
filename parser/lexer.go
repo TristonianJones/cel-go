@@ -15,8 +15,6 @@
 package parser
 
 import (
-	"fmt"
-
 	"cel.dev/cel-go/common/runes"
 )
 
@@ -325,7 +323,7 @@ func (l *lexer) consumeWhitespace() {
 	for l.pos < l.length {
 		c := l.content.Get(int(l.pos))
 		switch c {
-		case '\f', '\n', ' ', '\r', '\v', '\t':
+		case '\f', '\n', ' ', '\r', '\t':
 			l.advance(1)
 		default:
 			return
@@ -499,9 +497,6 @@ func (l *lexer) consumeNumericLiteral() token {
 					return l.setError(start, l.pos, "integral literal missing digits after hexadecimal separator")
 				}
 				tokType := l.consumeIntegralSuffix()
-				if l.consumeIf(isIdentTrailing) {
-					return l.setError(start, l.pos, fmt.Sprintf("%s literal has unexpected trailing characters", tokType))
-				}
 				return l.makeToken(tokType, start, l.pos)
 			}
 		}
@@ -525,9 +520,6 @@ func (l *lexer) consumeNumericLiteral() token {
 		tokType = tokFloat
 	} else {
 		tokType = l.consumeIntegralSuffix()
-	}
-	if l.consumeIf(isIdentTrailing) {
-		return l.setError(start, l.pos, fmt.Sprintf("%s literal has unexpected trailing characters", tokType))
 	}
 	return l.makeToken(tokType, start, l.pos)
 }
@@ -557,7 +549,7 @@ func (l *lexer) Lex() token {
 	}
 	c := l.content.Get(int(l.pos))
 	switch c {
-	case '\f', '\v', '\t', '\r', '\n', ' ':
+	case '\f', '\t', '\r', '\n', ' ':
 		l.consumeWhitespace()
 		return l.makeToken(tokWhitespace, start, l.pos)
 	case '.':
