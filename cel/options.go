@@ -865,8 +865,14 @@ func CostEstimatorOptions(costOpts ...cost.CostOption) EnvOption {
 }
 
 // CostModel configures overload cost estimators and cost trackers from a set of cost.OverloadModel definitions.
+//
+// Models are validated here because neither the estimator nor the tracker compiled from a model
+// can report a problem once evaluation has begun. See cost.OverloadModel.Validate.
 func CostModel(models ...cost.OverloadModel) EnvOption {
 	return func(e *Env) (*Env, error) {
+		if err := cost.ValidateOverloadModels(models...); err != nil {
+			return nil, err
+		}
 		if e.costModel == nil {
 			e.costModel = &costModel{}
 		}
@@ -894,9 +900,9 @@ func CostSizingStrategy(strategy cost.SizingStrategy) EnvOption {
 // Runtime cost tracking is unaffected: a revision changes what an expression is predicted to cost,
 // never what it is charged.
 //
-// Use this only to hold estimates stable against a baseline recorded under an earlier release. Each
-// revision corrects a defect, so an older revision is by construction the less accurate choice; see
-// cost.ModelVersion for the per-revision details.
+// If this option is not set, the latest cost model version is used. Use this only to hold estimates
+// stable against a baseline recorded under an earlier release; see cost.ModelVersion for the
+// per-revision details.
 func CostModelVersion(version uint32) EnvOption {
 	return func(e *Env) (*Env, error) {
 		if e.costModel == nil {

@@ -15,6 +15,7 @@
 package cost
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -135,7 +136,7 @@ func TestMinQuantityModelVersions(t *testing.T) {
 		wantV1 SizeEstimate
 	}{
 		{
-			// 0 ignores the operands' own lower bounds and reports a floor of 1.
+			// ModelVersion0 ignores the operands' own lower bounds and reports a floor of 1.
 			name:   "overlapping_intervals",
 			args:   []SizeEstimate{RangedSizeEstimate(2, 10), RangedSizeEstimate(3, 5)},
 			wantV0: RangedSizeEstimate(1, 5),
@@ -143,15 +144,15 @@ func TestMinQuantityModelVersions(t *testing.T) {
 		},
 		{
 			// Equally sized operands: the traversal always visits every element, so the true
-			// minimum coincides with the maximum. 0's floor of 1 understates it,
-			// which is the unsoundness 1 corrects.
+			// minimum coincides with the maximum. ModelVersion0's floor of 1 understates it,
+			// which is the unsoundness ModelVersion1 corrects.
 			name:   "equal_fixed_operands",
 			args:   []SizeEstimate{FixedSizeEstimate(6), FixedSizeEstimate(6)},
 			wantV0: RangedSizeEstimate(1, 6),
 			wantV1: FixedSizeEstimate(6),
 		},
 		{
-			// An operand that can legitimately be empty: here 0's floor of 1
+			// An operand that can legitimately be empty: here ModelVersion0's floor of 1
 			// overstates the minimum, so the revision moves the bound down rather than up.
 			name:   "operand_can_be_empty",
 			args:   []SizeEstimate{RangedSizeEstimate(0, 4), RangedSizeEstimate(3, 9)},
@@ -171,7 +172,7 @@ func TestMinQuantityModelVersions(t *testing.T) {
 			expr := Min(Arg(0), Arg(1))
 			gotV0 := expr.estimate(&testEvalContext{args: tc.args, version: &v0})
 			if !reflect.DeepEqual(gotV0, tc.wantV0) {
-				t.Errorf("Min().estimate() at 0 got %v, wanted %v", gotV0, tc.wantV0)
+				t.Errorf("Min().estimate() at ModelVersion0 got %v, wanted %v", gotV0, tc.wantV0)
 			}
 			gotV1 := expr.estimate(&testEvalContext{args: tc.args})
 			if !reflect.DeepEqual(gotV1, tc.wantV1) {
@@ -271,9 +272,10 @@ func TestQuantityExprs_Estimate(t *testing.T) {
 			expected: arg0.Subtract(arg1),
 		},
 		{
-			name:     "mul_quantity",
-			expr:     Mul(Arg(0), Arg(1)),
-			expected: RangedSizeEstimate(6, 50),
+			name: "mul_quantity",
+			expr: Mul(Arg(0), Arg(1)),
+			// The product carries the union of the operands' key and element sizes.
+			expected: MapSizeEstimate(RangedSizeEstimate(6, 50), key1, RangedSizeEstimate(7, 12)),
 		},
 		{
 			name:     "scale_quantity",
@@ -308,22 +310,24 @@ func TestQuantityExprs_Estimate(t *testing.T) {
 		{
 			name:     "square_quantity",
 			expr:     Square(Arg(1)),
-			expected: RangedSizeEstimate(9, 25),
+			expected: MapSizeEstimate(RangedSizeEstimate(9, 25), key1, elem1),
 		},
 		{
 			name:     "square_and_scale_quantity",
 			expr:     Scale(Square(Arg(1)), 2.0),
-			expected: RangedSizeEstimate(18, 50),
+			expected: MapSizeEstimate(RangedSizeEstimate(18, 50), key1, elem1),
 		},
 		{
-			name:     "min_quantity",
-			expr:     Min(Arg(0), Arg(1)),
-			expected: RangedSizeEstimate(2, 5),
+			name: "min_quantity",
+			expr: Min(Arg(0), Arg(1)),
+			// The result is one of the two operands, so their metadata is unioned rather than
+			// dropped: whichever is selected, its elements are covered.
+			expected: MapSizeEstimate(RangedSizeEstimate(2, 5), key1, RangedSizeEstimate(7, 12)),
 		},
 		{
 			name:     "max_quantity",
 			expr:     Max(Arg(0), Arg(1)),
-			expected: RangedSizeEstimate(3, 10),
+			expected: MapSizeEstimate(RangedSizeEstimate(3, 10), key1, RangedSizeEstimate(7, 12)),
 		},
 		{
 			name:     "union_quantity",
@@ -333,27 +337,32 @@ func TestQuantityExprs_Estimate(t *testing.T) {
 		{
 			name:     "ranged_string_to_bytes",
 			expr:     Ranged(Arg(0), Scale(Arg(0), 4.0)),
-			expected: RangedSizeEstimate(2, 40),
+			expected: ListSizeEstimate(RangedSizeEstimate(2, 40), elem0),
 		},
 		{
 			name:     "ranged_bytes_to_string",
 			expr:     Ranged(Scale(Arg(0), 0.25), Arg(0)),
-			expected: RangedSizeEstimate(1, 10),
+			expected: ListSizeEstimate(RangedSizeEstimate(1, 10), elem0),
 		},
 		{
 			name:     "ranged_expression_composition",
 			expr:     Ranged(Sum(Arg(0), Const(2)), Sum(Scale(Arg(0), 2.0), Const(2))),
-			expected: RangedSizeEstimate(4, 22),
+			expected: ListSizeEstimate(RangedSizeEstimate(4, 22), elem0),
 		},
 		{
 			name:     "at_most_quantity",
 			expr:     AtMost(Arg(0)),
-			expected: RangedSizeEstimate(0, 10),
+			expected: ListSizeEstimate(RangedSizeEstimate(0, 10), elem0),
 		},
 		{
 			name:     "list_quantity",
 			expr:     List(AtMost(Arg(0)), Arg(0)),
 			expected: ListSizeEstimate(RangedSizeEstimate(0, 10), arg0),
+		},
+		{
+			name:     "list_from_map_keys_clears_key_meta",
+			expr:     List(Arg(1), KeyOf(Arg(1))),
+			expected: ListSizeEstimate(RangedSizeEstimate(3, 5), key1),
 		},
 		{
 			name:     "element_of_quantity",
@@ -369,6 +378,21 @@ func TestQuantityExprs_Estimate(t *testing.T) {
 			name:     "map_quantity",
 			expr:     Map(Arg(1), KeyOf(Arg(1)), ElemOf(Arg(1))),
 			expected: arg1,
+		},
+		{
+			name:     "element_total_of_list",
+			expr:     ElemTotal(Arg(0)),
+			expected: RangedSizeEstimate(2*7, 10*7),
+		},
+		{
+			name:     "element_total_of_map",
+			expr:     ElemTotal(Arg(1)),
+			expected: RangedSizeEstimate(3*12, 5*12),
+		},
+		{
+			name:     "element_total_without_element_size",
+			expr:     ElemTotal(Const(4)),
+			expected: UnknownSizeEstimate(),
 		},
 	}
 
@@ -439,6 +463,101 @@ func TestQuantityExprs_Track(t *testing.T) {
 	}
 }
 
+// TestProjectionExprs_Track pins the runtime behaviour of the element and key projections, which
+// read the values themselves rather than reporting a placeholder.
+func TestProjectionExprs_Track(t *testing.T) {
+	adapter := types.DefaultTypeAdapter
+	// Sizes: 'a'=1, 'bbbb'=4, 'cc'=2, so the list holds 3 elements totalling 7.
+	strList := adapter.NativeToValue([]string{"a", "bbbb", "cc"})
+	nestedList := adapter.NativeToValue([][]string{{"a", "bbbb"}, {"cc"}})
+	strMap := adapter.NativeToValue(map[string]string{"k": "vvv", "longer": "v"})
+
+	trackCtx := &testTrackContext{
+		argVals:   []ref.Val{strList, strMap, nestedList},
+		targetVal: strMap,
+		resultVal: strList,
+	}
+
+	tests := []struct {
+		name     string
+		expr     QuantityExpr
+		expected uint64
+	}{
+		{name: "elem_of_list_is_largest", expr: ArgElem(0), expected: 4},
+		{name: "elem_total_of_list", expr: ElemTotal(Arg(0)), expected: 7},
+		{name: "elem_of_map_values", expr: ArgElem(1), expected: 3},
+		{name: "elem_total_of_map_values", expr: ElemTotal(Arg(1)), expected: 4},
+		{name: "key_of_map_is_largest", expr: ArgKey(1), expected: 6},
+		{name: "elem_of_target", expr: TargetElem(), expected: 3},
+		{name: "key_of_target", expr: TargetKey(), expected: 6},
+		{name: "elem_of_result", expr: ElemOf(Result()), expected: 4},
+		// The elements of the inner lists, not of the outer one.
+		{name: "elem_of_nested_list", expr: ElemOf(ArgElem(2)), expected: 4},
+		{name: "elem_total_of_nested_list", expr: ElemTotal(ArgElem(2)), expected: 7},
+		// A list has no keys, and a string has no elements.
+		{name: "key_of_list", expr: ArgKey(0), expected: 0},
+		{name: "elem_of_absent_arg", expr: ArgElem(9), expected: 0},
+		{name: "elem_total_of_absent_arg", expr: ElemTotal(Arg(9)), expected: 0},
+		// Rejected by Validate, so this only pins the charge if a model bypasses registration.
+		{name: "elem_of_computed_quantity", expr: ElemOf(Const(4)), expected: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.expr.track(trackCtx); got != tc.expected {
+				t.Errorf("track() got %v, wanted %v", got, tc.expected)
+			}
+		})
+	}
+}
+
+// TestProjectionExprs_TrackWithoutValues covers a context which reports no values at all, the
+// state every TrackContext was in before the value accessors existed.
+func TestProjectionExprs_TrackWithoutValues(t *testing.T) {
+	trackCtx := &testTrackContext{args: []uint64{10}, receiver: 8}
+	for _, expr := range []QuantityExpr{ArgElem(0), ArgKey(0), TargetElem(), TargetKey(), ElemOf(Result())} {
+		label, _ := describeQuantityExpr(expr)
+		if got := expr.track(trackCtx); got != 0 {
+			t.Errorf("%s.track() got %v, wanted 0", label, got)
+		}
+	}
+}
+
+// BenchmarkProjectionTracking measures the scan the element and key projections perform. Unlike
+// the other quantity expressions, whose cost is independent of the values, these are linear in the
+// size of the container and run once per call that is charged through them.
+func BenchmarkProjectionTracking(b *testing.B) {
+	adapter := types.DefaultTypeAdapter
+	for _, size := range []int{1, 10, 100, 1000} {
+		elems := make([]string, size)
+		entries := make(map[string]string, size)
+		for i := range size {
+			elems[i] = strings.Repeat("x", i%16)
+			entries[elems[i]+fmt.Sprint(i)] = elems[i]
+		}
+		listVal := adapter.NativeToValue(elems)
+		mapVal := adapter.NativeToValue(entries)
+
+		benchmarks := []struct {
+			name string
+			expr QuantityExpr
+			ctx  TrackContext
+		}{
+			{name: "elem_of_list", expr: ArgElem(0), ctx: &testTrackContext{argVals: []ref.Val{listVal}}},
+			{name: "elem_total_list", expr: ElemTotal(Arg(0)), ctx: &testTrackContext{argVals: []ref.Val{listVal}}},
+			{name: "key_of_map", expr: ArgKey(0), ctx: &testTrackContext{argVals: []ref.Val{mapVal}}},
+			// The baseline: a size read, which does not scan.
+			{name: "arg_size", expr: Arg(0), ctx: &testTrackContext{args: []uint64{uint64(size)}}},
+		}
+		for _, bm := range benchmarks {
+			b.Run(fmt.Sprintf("%s/%d", bm.name, size), func(b *testing.B) {
+				for i := 0; i < b.N; i++ {
+					bm.expr.track(bm.ctx)
+				}
+			})
+		}
+	}
+}
+
 type testTrackContext struct {
 	args          []uint64
 	argValues     []uint64
@@ -446,6 +565,12 @@ type testTrackContext struct {
 	receiverValue *uint64
 	result        uint64
 	estimator     ActualCostEstimator
+
+	// Values denoted by the context, for the element and key projections. A nil entry stands for
+	// an argument, target or result which is absent.
+	argVals   []ref.Val
+	targetVal ref.Val
+	resultVal ref.Val
 }
 
 func (t *testTrackContext) ArgValue(index int, defaultVal uint64) uint64 {
@@ -475,6 +600,27 @@ func (t *testTrackContext) Target() uint64 {
 
 func (t *testTrackContext) Result() uint64 {
 	return t.result
+}
+
+func (t *testTrackContext) ArgVal(index int) (ref.Val, bool) {
+	if index < len(t.argVals) && t.argVals[index] != nil {
+		return t.argVals[index], true
+	}
+	return nil, false
+}
+
+func (t *testTrackContext) TargetVal() (ref.Val, bool) {
+	if t.targetVal != nil {
+		return t.targetVal, true
+	}
+	return nil, false
+}
+
+func (t *testTrackContext) ResultVal() (ref.Val, bool) {
+	if t.resultVal != nil {
+		return t.resultVal, true
+	}
+	return nil, false
 }
 
 func (t *testTrackContext) Estimator() ActualCostEstimator {
@@ -639,9 +785,11 @@ func TestModel_MissingContextFallbacks(t *testing.T) {
 			},
 		},
 		{
-			name:      "missing_arg_key",
-			expr:      ArgKey(0),
-			wantTrack: 1,
+			name: "missing_arg_key",
+			expr: ArgKey(0),
+			// An absent value has no keys to measure. Before the projections were value-backed
+			// this reported a single byte per key regardless of the value.
+			wantTrack: 0,
 			checkEst: func(t *testing.T, sz SizeEstimate) {
 				if sz != UnknownSizeEstimate() {
 					t.Errorf("got %v, want unknown", sz)
@@ -671,7 +819,7 @@ func TestModel_MissingContextFallbacks(t *testing.T) {
 		{
 			name:      "missing_target_key",
 			expr:      TargetKey(),
-			wantTrack: 1,
+			wantTrack: 0,
 			checkEst: func(t *testing.T, sz SizeEstimate) {
 				if sz != UnknownSizeEstimate() {
 					t.Errorf("got %v, want unknown", sz)
@@ -689,9 +837,11 @@ func TestModel_MissingContextFallbacks(t *testing.T) {
 			},
 		},
 		{
-			name:      "key_of_scalar_const",
-			expr:      KeyOf(Const(5)),
-			wantTrack: 1,
+			name: "key_of_scalar_const",
+			expr: KeyOf(Const(5)),
+			// A projection over a computed quantity is rejected by OverloadModel.Validate; this
+			// pins what a model which bypasses registration is charged.
+			wantTrack: 0,
 			checkEst: func(t *testing.T, sz SizeEstimate) {
 				if sz != UnknownSizeEstimate() {
 					t.Errorf("got %v, want unknown", sz)

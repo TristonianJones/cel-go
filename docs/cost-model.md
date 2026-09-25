@@ -110,7 +110,9 @@ The Cost Model AST evaluates quantity expressions against context interfaces:
 * [`TrackContext`](https://github.com/cel-expr/cel-go/blob/master/common/cost/model.go):
   Supplies concrete runtime argument sizes (`Arg(i)`), target size
   (`Target()`), result value size (`Result()`), integer argument values
-  (`ArgValue(i, def)`), and runtime value sizing.
+  (`ArgValue(i, def)`), runtime value sizing, and the values themselves
+  (`ArgVal(i)`, `TargetVal()`, `ResultVal()`) for the element and key
+  projections.
 
 ### Overload Definition
 
@@ -178,18 +180,64 @@ The table below catalogs the AST nodes and helper functions provided by
 | **Intervals & Bounds** | `Min(lhs, rhs)` | Minimum quantity between two expressions. |
 | | `Max(lhs, rhs)` | Maximum quantity between two expressions. |
 | | `Union(terms...)` | Encompassing interval union $[\min(Min_i), \max(Max_i)]$. |
-| | `Intersect(terms...)` | Overlapping interval intersection $[\max(Min_i), \min(Max_i)]$. |
 | | `Ranged(minExpr, maxExpr)` | Composite range with lower bound from `minExpr` and upper from `maxExpr`. |
 | | `AtMost(maxExpr)` | Quantity bounded in $[0, Max(maxExpr)]$. |
 | | `AtLeastOneQuantity(expr)` | Quantity guaranteed to be $\ge 1$. |
-| **Containers** | `ElemOf(expr)` | Extract element size from composite expression. |
-| | `KeyOf(expr)` | Extract key size from composite expression. |
+| **Containers** | `ElemOf(expr)` | Size of the largest element of a composite expression. |
+| | `KeyOf(expr)` | Size of the largest key of a composite expression. |
+| | `ElemTotal(expr)` | Combined size of every element of a composite expression. |
 | | `List(lenExpr, elemExpr)` | Construct list size estimate with element size metadata. |
 | | `Map(sizeExpr, keyExpr, valExpr)` | Construct map size estimate with key and value size metadata. |
 | **Standard Macros** | `StringScan(expr)` | Shorthand for `Scale(expr, 0.1)`. |
 | | `CompareCost(lhs, rhs)` | Comparison cost of two values ($O(1)$ scalars, min-length scaled strings, recursive containers). |
 | | `ListAlloc(elemCount, factor)` | Base allocation cost ($10$) plus scaled element count. |
 | | `Traversal(expr, factor, alloc)` | Traversal cost with optional fixed allocation cost. |
+
+### Result Size Metadata
+
+A `SizeEstimate` carries a length together with the `Key` and `Elem` sizes of
+what it holds. Every combinator which returns one of its operands, or a scaled
+or combined form of it, carries the union of its operands' metadata through:
+`Sum`, `Sub`, `Mul`, `Square`, `Scale`, `Min`, `Max`, `Union`, `Ranged` and
+`AtMost`. Because a `nil` `Key` or `Elem` is read by `KeyOf` and `ElemOf` as
+`UnknownSizeEstimate()`, attaching operand metadata **narrows** the downstream
+bound relative to leaving it unset; that narrowing is sound whenever the
+result's elements or keys are drawn from the operands.
+
+> [!WARNING]
+> Inheritance is right for a result drawn from its operands, and wrong for one
+> that is not. An estimator whose result holds *different* elements — each
+> input element expanded, decoded, or joined — must declare them with
+> `List(lenExpr, elemExpr)` (which sets `Elem` and clears `Key`) or
+> `Map(sizeExpr, keyExpr, valExpr)` (which sets both `Key` and `Elem`). Leaving
+> the operands' element size attached to a result whose elements are larger
+> understates every downstream estimate.
+
+### Element and Key Projections
+
+`ElemOf`, `KeyOf` and `ElemTotal` — and the `ArgElem`, `ArgKey`, `TargetElem`
+and `TargetKey` shorthands — read the value they are applied to, so they are
+defined only over the expressions which denote a value: `Arg(i)`, `Target()`,
+`Result()`, and projections of those. `ElemOf(Sum(Arg(0), Arg(1)))` has an
+estimate but no runtime counterpart;
+[`OverloadModel.Validate`](https://github.com/cel-expr/cel-go/blob/master/common/cost/validate.go)
+reports it, and `cel.CostModel` rejects the model rather than mispricing the
+call. Projections may be nested: `ElemOf(TargetElem())` is the element size of
+the inner lists of a list of lists.
+
+`ElemOf` and `KeyOf` report the *largest* element or key, which is what makes
+them a bound rather than an average. `ElemTotal` reports the exact combined
+size, and is the right choice for a result whose length is the sum of its
+inputs, such as a flattened list.
+
+> [!IMPORTANT]
+> A projection scans the container on every call it is charged for. Unlike the
+> other quantity expressions, whose cost does not depend on the values, it is
+> $O(n)$ on the evaluation path — roughly $30$ ns per element, against $3$ ns
+> for a size read (`BenchmarkProjectionTracking`). Prefer `Arg(i)` or
+> `Target()` where the length alone answers the question, and reserve the
+> projections for models whose cost genuinely depends on what the container
+> holds.
 
 ---
 
@@ -480,25 +528,27 @@ cost.MemberOverload("string_split_string",
 ### Nested List Flattening
 
 * **CEL Expression**: `matrix.flatten()`
-* **Complexity**: $O(N \times M)$ element traversal; output list length is
-  $N \times M$, element size is element of nested list.
+* **Complexity**: $O(N \times M)$ element traversal; output list length is the
+  combined length of the nested lists, element size is element of nested list.
 * **Cost Model AST**:
 ```go
 cost.MemberOverload("list_flatten",
     cost.EvalCost(cost.ListAlloc(
-        cost.Mul(cost.Target(), cost.TargetElem()),
+        cost.ElemTotal(cost.Target()),
         0.1,
     )),
     cost.ResultSize(cost.List(
-        cost.Mul(cost.Target(), cost.TargetElem()),
+        cost.ElemTotal(cost.Target()),
         cost.ElemOf(cost.TargetElem()),
     )),
 )
 ```
-* **Estimation Behavior**: Multiplies outer list size by inner list element
-  size.
-* **Tracking Behavior**: Accurately accounts for total flattened elements and
-  base allocation.
+* **Estimation Behavior**: `ElemTotal` multiplies the outer list length by the
+  inner list length, the same bound as `Mul(Target(), TargetElem())`.
+* **Tracking Behavior**: Charges the exact number of flattened elements plus
+  the base allocation. `Mul(Target(), TargetElem())` would charge the outer
+  length multiplied by the *largest* inner list, which is an overcharge for a
+  ragged input.
 
 ---
 

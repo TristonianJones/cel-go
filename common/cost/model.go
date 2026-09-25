@@ -19,6 +19,7 @@ import (
 
 	"cel.dev/cel-go/common/types"
 	"cel.dev/cel-go/common/types/ref"
+	"cel.dev/cel-go/common/types/traits"
 )
 
 // TypeContext provides type information for AST nodes.
@@ -80,6 +81,15 @@ type TrackContext interface {
 
 	// TargetValue returns the uint64 value of the receiver/target, or defaultVal.
 	TargetValue(defaultVal uint64) uint64
+
+	// ArgVal returns the value of the argument at the given 0-based index, if present.
+	ArgVal(index int) (ref.Val, bool)
+
+	// TargetVal returns the value of the receiver/target object, if present.
+	TargetVal() (ref.Val, bool)
+
+	// ResultVal returns the evaluated result value, if present.
+	ResultVal() (ref.Val, bool)
 }
 
 // QuantityExpr represents a computable size or cost equation.
@@ -111,6 +121,56 @@ func hasTarget(expr QuantityExpr) bool {
 		return r.hasTarget()
 	}
 	return false
+}
+
+// valueSource is an internal interface for expressions which denote runtime values rather than
+// only a quantity derived from them.
+//
+// Element and key projections read the value they project from, so they are defined only over the
+// expressions implementing this interface: Arg, Target, Result, and projections of those. An
+// expression may denote more than one value, as the elements of a list do.
+//
+// OverloadModel.Validate reports a projection over any other expression, so a model which cannot
+// answer a projection at runtime is rejected when it is registered rather than mispriced when it
+// is evaluated.
+type valueSource interface {
+	QuantityExpr
+
+	// eachValue calls fn with each value the expression denotes in the given context. An
+	// expression which denotes no value in the context makes no calls.
+	eachValue(ctx TrackContext, fn func(ref.Val))
+}
+
+// eachValueOf calls fn with each value denoted by expr, and makes no calls if expr does not denote
+// a value.
+func eachValueOf(expr QuantityExpr, ctx TrackContext, fn func(ref.Val)) {
+	if src, ok := expr.(valueSource); ok {
+		src.eachValue(ctx, fn)
+	}
+}
+
+// eachElement calls fn with each element of a list, or each value of a map. Values which are not
+// containers have no elements.
+func eachElement(val ref.Val, fn func(ref.Val)) {
+	switch v := val.(type) {
+	case traits.Lister:
+		for it := v.Iterator(); it.HasNext() == types.True; {
+			fn(it.Next())
+		}
+	case traits.Mapper:
+		for it := v.Iterator(); it.HasNext() == types.True; {
+			fn(v.Get(it.Next()))
+		}
+	}
+}
+
+// eachKey calls fn with each key of a map. Values which are not maps have no keys.
+func eachKey(val ref.Val, fn func(ref.Val)) {
+	if m, ok := val.(traits.Mapper); ok {
+		for it := m.Iterator(); it.HasNext() == types.True; {
+			fn(it.Next())
+		}
+	}
 }
 
 // constExpr represents a constant integer quantity.
@@ -147,6 +207,12 @@ func (a argExpr) estimate(ctx EstimateContext) SizeEstimate {
 
 func (a argExpr) track(ctx TrackContext) uint64 {
 	return ctx.Arg(a.index)
+}
+
+func (a argExpr) eachValue(ctx TrackContext, fn func(ref.Val)) {
+	if val, ok := ctx.ArgVal(a.index); ok {
+		fn(val)
+	}
 }
 
 func (argExpr) hasTarget() bool { return false }
@@ -202,6 +268,12 @@ func (targetExpr) track(ctx TrackContext) uint64 {
 	return ctx.Target()
 }
 
+func (targetExpr) eachValue(ctx TrackContext, fn func(ref.Val)) {
+	if val, ok := ctx.TargetVal(); ok {
+		fn(val)
+	}
+}
+
 func (targetExpr) hasTarget() bool { return true }
 
 // Target creates an expression referencing the size of the receiver / target object.
@@ -227,8 +299,23 @@ func (e elemExpr) estimate(ctx EstimateContext) SizeEstimate {
 	return UnknownSizeEstimate()
 }
 
+// track reports the size of the largest element, matching the estimate, whose Max bounds every
+// element rather than describing an average one.
+//
+// A value with no elements, including a scalar, contributes nothing. The cost of the scan is
+// linear in the number of elements; see the element projection notes in docs/cost-model.md.
 func (e elemExpr) track(ctx TrackContext) uint64 {
-	return 0
+	largest := uint64(0)
+	e.eachValue(ctx, func(elem ref.Val) {
+		largest = max(largest, ctx.Size(elem))
+	})
+	return largest
+}
+
+func (e elemExpr) eachValue(ctx TrackContext, fn func(ref.Val)) {
+	eachValueOf(e.expr, ctx, func(val ref.Val) {
+		eachElement(val, fn)
+	})
 }
 
 func (e elemExpr) hasTarget() bool {
@@ -238,6 +325,46 @@ func (e elemExpr) hasTarget() bool {
 // ElemOf creates an expression referencing the element size of another expression.
 func ElemOf(expr QuantityExpr) QuantityExpr {
 	return elemExpr{expr: expr}
+}
+
+// elemTotalExpr represents the summed size of the elements of another quantity expression.
+type elemTotalExpr struct {
+	expr QuantityExpr
+}
+
+func (e elemTotalExpr) estimate(ctx EstimateContext) SizeEstimate {
+	sz := e.expr.estimate(ctx)
+	if sz.Elem == nil {
+		return UnknownSizeEstimate()
+	}
+	total := sz.Multiply(*sz.Elem)
+	// The total is a scalar quantity, not a container, so the operands' element and key sizes are
+	// deliberately dropped rather than inherited.
+	return RangedSizeEstimate(total.Min, total.Max)
+}
+
+func (e elemTotalExpr) track(ctx TrackContext) uint64 {
+	total := uint64(0)
+	eachValueOf(e.expr, ctx, func(val ref.Val) {
+		eachElement(val, func(elem ref.Val) {
+			total = SafeAdd(total, ctx.Size(elem))
+		})
+	})
+	return total
+}
+
+func (e elemTotalExpr) hasTarget() bool {
+	return hasTarget(e.expr)
+}
+
+// ElemTotal creates an expression referencing the combined size of every element of another
+// expression: the length of a flattened list, or the number of bytes held by a list of strings.
+//
+// The estimate is the container length multiplied by the element size, which is the same bound
+// Mul(expr, ElemOf(expr)) reports. The two differ at runtime, where this reports the exact total
+// rather than the length multiplied by the largest element.
+func ElemTotal(expr QuantityExpr) QuantityExpr {
+	return elemTotalExpr{expr: expr}
 }
 
 // TargetKey creates an expression referencing the key size of the receiver / target object.
@@ -281,8 +408,23 @@ func (k keyExpr) estimate(ctx EstimateContext) SizeEstimate {
 	return UnknownSizeEstimate()
 }
 
+// track reports the size of the largest key, matching the estimate, whose Max bounds every key
+// rather than describing an average one.
+//
+// A value with no keys, including a list or a scalar, contributes nothing. The cost of the scan is
+// linear in the number of entries; see the element projection notes in docs/cost-model.md.
 func (k keyExpr) track(ctx TrackContext) uint64 {
-	return 1
+	largest := uint64(0)
+	k.eachValue(ctx, func(key ref.Val) {
+		largest = max(largest, ctx.Size(key))
+	})
+	return largest
+}
+
+func (k keyExpr) eachValue(ctx TrackContext, fn func(ref.Val)) {
+	eachValueOf(k.expr, ctx, func(val ref.Val) {
+		eachKey(val, fn)
+	})
 }
 
 func (k keyExpr) hasTarget() bool {
@@ -306,6 +448,12 @@ func (resultExpr) estimate(ctx EstimateContext) SizeEstimate {
 
 func (resultExpr) track(ctx TrackContext) uint64 {
 	return ctx.Result()
+}
+
+func (resultExpr) eachValue(ctx TrackContext, fn func(ref.Val)) {
+	if val, ok := ctx.ResultVal(); ok {
+		fn(val)
+	}
 }
 
 func (resultExpr) hasTarget() bool { return false }
@@ -522,15 +670,15 @@ func (m minExpr) estimate(ctx EstimateContext) SizeEstimate {
 	rhsVal := m.rhs.estimate(ctx)
 	smallestMax := min(lhsVal.Max, rhsVal.Max)
 	if contextModelVersion(ctx) < 1 {
-		// 0 reported a floor of 1 for any non-empty interval, ignoring the operands'
+		// Version 0 reported a floor of 1 for any non-empty interval, ignoring the operands'
 		// own lower bounds. Retained verbatim so pinned callers see their recorded estimates.
 		minVal := uint64(0)
 		if smallestMax > 0 {
 			minVal = 1
 		}
-		return RangedSizeEstimate(minVal, smallestMax)
+		return withMeta(RangedSizeEstimate(minVal, smallestMax), lhsVal, rhsVal)
 	}
-	return RangedSizeEstimate(min(lhsVal.Min, rhsVal.Min), smallestMax)
+	return withMeta(RangedSizeEstimate(min(lhsVal.Min, rhsVal.Min), smallestMax), lhsVal, rhsVal)
 }
 
 func (m minExpr) track(ctx TrackContext) uint64 {
@@ -554,10 +702,10 @@ type maxExpr struct {
 func (m maxExpr) estimate(ctx EstimateContext) SizeEstimate {
 	lhsVal := m.lhs.estimate(ctx)
 	rhsVal := m.rhs.estimate(ctx)
-	return SizeEstimate{
-		Min: max(lhsVal.Min, rhsVal.Min),
-		Max: max(lhsVal.Max, rhsVal.Max),
-	}
+	return withMeta(RangedSizeEstimate(
+		max(lhsVal.Min, rhsVal.Min),
+		max(lhsVal.Max, rhsVal.Max),
+	), lhsVal, rhsVal)
 }
 
 func (m maxExpr) track(ctx TrackContext) uint64 {
@@ -613,12 +761,9 @@ type rangedExpr struct {
 }
 
 func (r rangedExpr) estimate(ctx EstimateContext) SizeEstimate {
-	minVal := r.minExpr.estimate(ctx).Min
-	maxVal := r.maxExpr.estimate(ctx).Max
-	return SizeEstimate{
-		Min: minVal,
-		Max: maxVal,
-	}
+	minSize := r.minExpr.estimate(ctx)
+	maxSize := r.maxExpr.estimate(ctx)
+	return withMeta(RangedSizeEstimate(minSize.Min, maxSize.Max), minSize, maxSize)
 }
 
 func (r rangedExpr) track(ctx TrackContext) uint64 {
@@ -632,6 +777,21 @@ func (r rangedExpr) hasTarget() bool {
 // Ranged creates an expression where the lower bound is taken from minExpr and the upper bound from maxExpr.
 func Ranged(minExpr, maxExpr QuantityExpr) QuantityExpr {
 	return rangedExpr{minExpr: minExpr, maxExpr: maxExpr}
+}
+
+// withMeta attaches the union of the operands' key and element sizes to a combined size.
+//
+// Min, Max and Ranged select or bracket one of their operands, so when the result's elements come
+// from the operands, the union of the operands' metadata bounds whatever the result holds.
+// Relative to a nil Elem or Key (which ElemOf and KeyOf read as Unknown), attaching metadata
+// narrows the bound; estimators whose result holds transformed elements or keys must therefore
+// declare them with List or Map, which overwrite the inherited metadata.
+func withMeta(size SizeEstimate, operands ...SizeEstimate) SizeEstimate {
+	for _, operand := range operands {
+		size.Key = mergeSizeEstimatePtr(size.Key, operand.Key)
+		size.Elem = mergeSizeEstimatePtr(size.Elem, operand.Elem)
+	}
+	return size
 }
 
 // AtMost creates an expression representing a quantity bounded between 0 and the upper bound of maxExpr.
@@ -692,6 +852,7 @@ type listExpr struct {
 func (l listExpr) estimate(ctx EstimateContext) SizeEstimate {
 	lenSize := l.lenExpr.estimate(ctx)
 	elemSize := l.elemExpr.estimate(ctx)
+	lenSize.Key = nil
 	lenSize.Elem = &elemSize
 	return lenSize
 }
@@ -1032,30 +1193,54 @@ func (t *trackerEvalContext) Size(value ref.Val) uint64 {
 	return ActualSize(value)
 }
 
-// Arg returns the runtime size of the argument at index.
-func (t *trackerEvalContext) Arg(index int) uint64 {
+// ArgVal returns the value of the argument at index.
+func (t *trackerEvalContext) ArgVal(index int) (ref.Val, bool) {
 	idx := index
 	if t.isMember {
 		idx = index + 1
 	}
-	if idx < len(t.args) {
-		return t.Size(t.args[idx])
+	if idx < len(t.args) && t.args[idx] != nil {
+		return t.args[idx], true
+	}
+	return nil, false
+}
+
+// TargetVal returns the value of the receiver/target object.
+func (t *trackerEvalContext) TargetVal() (ref.Val, bool) {
+	if t.isMember && len(t.args) > 0 && t.args[0] != nil {
+		return t.args[0], true
+	}
+	return nil, false
+}
+
+// ResultVal returns the evaluated result value.
+func (t *trackerEvalContext) ResultVal() (ref.Val, bool) {
+	if t.result != nil {
+		return t.result, true
+	}
+	return nil, false
+}
+
+// Arg returns the runtime size of the argument at index.
+func (t *trackerEvalContext) Arg(index int) uint64 {
+	if val, ok := t.ArgVal(index); ok {
+		return t.Size(val)
 	}
 	return 0
 }
 
 // Target returns the runtime size of the receiver/target object.
 func (t *trackerEvalContext) Target() uint64 {
-	if t.isMember && len(t.args) > 0 {
-		return t.Size(t.args[0])
+	if val, ok := t.TargetVal(); ok {
+		return t.Size(val)
 	}
 	return 0
 }
 
 // Result returns the runtime size of the result.
 func (t *trackerEvalContext) Result() uint64 {
-	if t.result != nil {
-		return t.Size(t.result)
+	if val, ok := t.ResultVal(); ok {
+		return t.Size(val)
 	}
 	return 0
 }

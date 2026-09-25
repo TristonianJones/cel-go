@@ -5666,6 +5666,55 @@ func TestCostModel(t *testing.T) {
 	}
 }
 
+// TestCostModelValidation covers rejection of a model whose projection has no runtime counterpart.
+// Environment construction is the last point at which such a model can be reported.
+func TestCostModelValidation(t *testing.T) {
+	_, err := NewEnv(CostModel(
+		cost.Overload(overloads.InList, cost.EvalCost(cost.ElemOf(cost.Const(3)))),
+	))
+	if err == nil {
+		t.Fatal("NewEnv() succeeded, wanted the unanswerable projection reported")
+	}
+	if !strings.Contains(err.Error(), "ElemOf is not defined over Const") {
+		t.Errorf("NewEnv() errored: %v, wanted the unanswerable projection reported", err)
+	}
+}
+
+// TestCostModelValueProjections charges an element projection through a real evaluation. The two
+// lists have the same length and the same number of literals, so every other term in the total is
+// equal and the difference is the projection reading the elements themselves.
+func TestCostModelValueProjections(t *testing.T) {
+	env, err := NewEnv(CostModel(
+		cost.Overload(overloads.InList, cost.EvalCost(cost.ElemTotal(cost.Arg(1)))),
+	))
+	if err != nil {
+		t.Fatalf("NewEnv() failed: %v", err)
+	}
+	costOf := func(expr string) uint64 {
+		t.Helper()
+		ast, iss := env.Compile(expr)
+		if iss.Err() != nil {
+			t.Fatalf("env.Compile(%q) failed: %v", expr, iss.Err())
+		}
+		prg, err := env.Program(ast, CostTracking(nil))
+		if err != nil {
+			t.Fatalf("env.Program() failed: %v", err)
+		}
+		_, det, err := prg.Eval(NoVars())
+		if err != nil {
+			t.Fatalf("prg.Eval() failed: %v", err)
+		}
+		return *det.ActualCost()
+	}
+	// Total element sizes of 7 and 3 respectively.
+	large := costOf(`'zz' in ['a', 'bbbb', 'cc']`)
+	small := costOf(`'zz' in ['a', 'b', 'c']`)
+	if large-small != 4 {
+		t.Errorf("element projection charged %d - %d = %d, wanted a difference of 4",
+			large, small, large-small)
+	}
+}
+
 func TestCostModelVersion(t *testing.T) {
 	// A model built on Min is exactly what a revision changes, so this also covers the env
 	// compiling user-supplied models at the pinned revision rather than at the latest one.
@@ -5684,7 +5733,7 @@ func TestCostModelVersion(t *testing.T) {
 			want: cost.FixedCostEstimate(6),
 		},
 		{
-			// 0 reports a floor of 1 regardless of the operands' lower bounds.
+			// Version 0 reports a floor of 1 regardless of the operands' lower bounds.
 			name: "pinned to v0",
 			opts: []EnvOption{CostModelVersion(0)},
 			want: cost.RangedCostEstimate(1, 6),

@@ -207,6 +207,7 @@ func AtLeastOneSize(size SizeEstimate) SizeEstimate {
 
 // ListSizeEstimate returns a SizeEstimate for a list with the given list length and element size.
 func ListSizeEstimate(listSize SizeEstimate, elemSize SizeEstimate) SizeEstimate {
+	listSize.Key = nil
 	listSize.Elem = &elemSize
 	return listSize
 }
@@ -243,11 +244,19 @@ func (se SizeEstimate) Subtract(sizeEstimate SizeEstimate) SizeEstimate {
 
 // Multiply multiplies by another SizeEstimate and returns the product.
 // If multiply would result in an uint64 overflow, the result is math.MaxUint64.
+//
+// The product carries the union of the operands' key and element sizes, as Add, Subtract and
+// Union do: a length scaled by a factor describes the same kind of element it started with. An
+// estimator whose result holds something other than its operands' elements — expanded strings, for
+// instance — must state that with List or Map rather than let the operands' sizes be inherited.
 func (se SizeEstimate) Multiply(sizeEstimate SizeEstimate) SizeEstimate {
-	return SizeEstimate{
+	res := SizeEstimate{
 		Min: SafeMultiply(se.Min, sizeEstimate.Min),
 		Max: SafeMultiply(se.Max, sizeEstimate.Max),
 	}
+	res.Key = mergeSizeEstimatePtr(se.Key, sizeEstimate.Key)
+	res.Elem = mergeSizeEstimatePtr(se.Elem, sizeEstimate.Elem)
+	return res
 }
 
 // MultiplyByCostFactor multiplies a SizeEstimate by a cost factor and returns the CostEstimate with the

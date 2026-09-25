@@ -304,6 +304,35 @@ func TestSizeEstimate(t *testing.T) {
 	}
 }
 
+// TestSizeEstimateCarriesMetadata holds the arithmetic operations to one rule. Multiply used to be
+// the odd one out, silently dropping the element and key sizes its siblings carried, which left
+// every lookup below a scaled length unknown.
+func TestSizeEstimateCarriesMetadata(t *testing.T) {
+	lhs := cost.MapSizeEstimate(cost.FixedSizeEstimate(5), cost.FixedSizeEstimate(2), cost.FixedSizeEstimate(7))
+	rhs := cost.ListSizeEstimate(cost.FixedSizeEstimate(10), cost.FixedSizeEstimate(3))
+
+	ops := []struct {
+		name string
+		got  cost.SizeEstimate
+	}{
+		{name: "Add", got: lhs.Add(rhs)},
+		{name: "Subtract", got: lhs.Subtract(rhs)},
+		{name: "Multiply", got: lhs.Multiply(rhs)},
+		{name: "Union", got: lhs.Union(rhs)},
+	}
+	for _, op := range ops {
+		t.Run(op.name, func(t *testing.T) {
+			// The union of the operands' element sizes, and the only key size on offer.
+			if op.got.Elem == nil || *op.got.Elem != cost.RangedSizeEstimate(3, 7) {
+				t.Errorf("%s() Elem got %v, wanted [3, 7]", op.name, op.got.Elem)
+			}
+			if op.got.Key == nil || *op.got.Key != cost.FixedSizeEstimate(2) {
+				t.Errorf("%s() Key got %v, wanted [2, 2]", op.name, op.got.Key)
+			}
+		})
+	}
+}
+
 func TestCostEstimate(t *testing.T) {
 	c1 := cost.FixedCostEstimate(5)
 	c2 := cost.FixedCostEstimate(10)
