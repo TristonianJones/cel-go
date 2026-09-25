@@ -646,24 +646,19 @@ func (p *prattParserWorker) parseSelectorChainTail(lhs ast.Expr, canBeStructName
 				p.lastParsedDepth = chainDepth
 				return lhs
 			}
-			if rng, found := p.helper.sourceInfo.GetOffsetRange(lhs.ID()); found {
-				if structName, ok := p.extractStructName(lhs); ok {
-					objID := p.helper.id(rng)
-					lhs = p.parseStruct(objID, structName)
-					// parseStruct leaves lastParsedDepth at the deepest field value,
-					// which carries through unchanged: "Msg{f: a.b.c.d}" is 3 deep.
-					// There is no +1 here because struct creation is a primary rather
-					// than a chain link, so it adds no level of its own. The max
-					// preserves the selectors already walked when the fields are
-					// shallower, as in "a.b.Msg{f: 1}".
-					if p.lastParsedDepth > chainDepth {
-						chainDepth = p.lastParsedDepth
-					}
-					canBeStructName = false
-				} else {
-					p.lastParsedDepth = chainDepth
-					return lhs
+			if structName, ok := p.extractStructName(lhs); ok {
+				objID := p.nextID(p.peekTok)
+				lhs = p.parseStruct(objID, structName)
+				// parseStruct leaves lastParsedDepth at the deepest field value,
+				// which carries through unchanged: "Msg{f: a.b.c.d}" is 3 deep.
+				// There is no +1 here because struct creation is a primary rather
+				// than a chain link, so it adds no level of its own. The max
+				// preserves the selectors already walked when the fields are
+				// shallower, as in "a.b.Msg{f: 1}".
+				if p.lastParsedDepth > chainDepth {
+					chainDepth = p.lastParsedDepth
 				}
+				canBeStructName = false
 			} else {
 				p.lastParsedDepth = chainDepth
 				return lhs

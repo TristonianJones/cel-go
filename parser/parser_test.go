@@ -300,12 +300,16 @@ var testCases = []testInfo{
 	{
 		I: `foo{ }`,
 		P: `foo{}^#1:*expr.Expr_StructExpr#`,
+		L: `foo{}^#1[1,3]#`,
 	},
 	{
 		I: `foo{ a:b }`,
 		P: `foo{
 			a:b^#3:*expr.Expr_IdentExpr#^#2:*expr.Expr_CreateStruct_Entry#
 		}^#1:*expr.Expr_StructExpr#`,
+		L: `foo{
+			a:b^#3[1,7]#^#2[1,6]#
+		}^#1[1,3]#`,
 	},
 	{
 		I: `foo{ a:b, c:d }`,
@@ -313,10 +317,15 @@ var testCases = []testInfo{
 			a:b^#3:*expr.Expr_IdentExpr#^#2:*expr.Expr_CreateStruct_Entry#,
 			c:d^#5:*expr.Expr_IdentExpr#^#4:*expr.Expr_CreateStruct_Entry#
 		}^#1:*expr.Expr_StructExpr#`,
+		L: `foo{
+			a:b^#3[1,7]#^#2[1,6]#,
+			c:d^#5[1,12]#^#4[1,11]#
+		}^#1[1,3]#`,
 	},
 	{
 		I: `{}`,
 		P: `{}^#1:*expr.Expr_StructExpr#`,
+		L: `{}^#1[1,0]#`,
 	},
 
 	{
@@ -2465,18 +2474,22 @@ var testCases = []testInfo{
 	{
 		I: `import{}`,
 		P: `import{}^#1:*expr.Expr_StructExpr#`,
+		L: `import{}^#1[1,6]#`,
 	},
 	{
 		I: `.import{}`,
 		P: `.import{}^#1:*expr.Expr_StructExpr#`,
+		L: `.import{}^#1[1,7]#`,
 	},
 	{
 		I: `import.Foo{}`,
 		P: `import.Foo{}^#1:*expr.Expr_StructExpr#`,
+		L: `import.Foo{}^#1[1,10]#`,
 	},
 	{
 		I: `Foo.import{}`,
 		P: `Foo.import{}^#1:*expr.Expr_StructExpr#`,
+		L: `Foo.import{}^#1[1,10]#`,
 	},
 	{
 		I:    `a.?b.?c`,
@@ -2835,7 +2848,7 @@ func TestParse(t *testing.T) {
 						}
 					}
 
-					if !pratt && wantL != "" {
+					if wantL != "" {
 						actualWithLocation := debug.ToAdornedDebugString(parsed.Expr(), &locationAdorner{parsed.SourceInfo()})
 						if !test.Compare(actualWithLocation, wantL) {
 							t.Fatal(test.DiffMessage(fmt.Sprintf("Location - %s", failureDisplayMethod), actualWithLocation, wantL))
