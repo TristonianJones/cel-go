@@ -2480,3 +2480,1535 @@ func BenchmarkNewDynamicList(b *testing.B) {
 		}
 	})
 }
+
+type TestNativePointerFields struct {
+	BoolPtr      *bool
+	DurationPtr  *time.Duration
+	IntPtr       *int
+	Int32Ptr     *int32
+	Int64Ptr     *int64
+	UintPtr      *uint
+	Uint32Ptr    *uint32
+	Uint64Ptr    *uint64
+	Float32Ptr   *float32
+	Float64Ptr   *float64
+	StringPtr    *string
+	TimestampPtr *time.Time
+	StructPtr    *TestNestedType
+}
+
+type TestNativeSliceAndMapFields struct {
+	ByteSlice        []byte
+	StringSlice      []string
+	IntSlice         []int
+	Int32Slice       []int32
+	Int64Slice       []int64
+	UintSlice        []uint
+	Uint32Slice      []uint32
+	Uint64Slice      []uint64
+	Float32Slice     []float32
+	Float64Slice     []float64
+	BoolSlice        []bool
+	TimeSlice        []time.Time
+	DurationSlice    []time.Duration
+	DynamicPtrSlice  []*TestNestedType
+	DynamicValSlice  []TestNestedSliceType
+	StringStringMap  map[string]string
+	Int64BoolMap     map[int64]bool
+	StringInt64Map   map[string]int64
+	StringIntMap     map[string]int
+	StringBoolMap    map[string]bool
+	StringFloat64Map map[string]float64
+}
+
+type TestNativePrimitivesAndFallbacks struct {
+	IntVal      int
+	Int8Val     int8
+	Int16Val    int16
+	Int32Val    int32
+	Int64Val    int64
+	UintVal     uint
+	Uint8Val    uint8
+	Uint16Val   uint16
+	Uint32Val   uint32
+	Uint64Val   uint64
+	Float32Val  float32
+	Float64Val  float64
+	BoolVal     bool
+	StringVal   string
+	DurationVal time.Duration
+	TimeVal     time.Time
+	NestedVal   TestNestedType
+	Int8Ptr     *int8
+	Int16Ptr    *int16
+	Uint8Ptr    *uint8
+	Uint16Ptr   *uint16
+}
+
+func TestNativePointerFieldsCoverage(t *testing.T) {
+	env, err := cel.NewEnv(
+		cel.Types(reflect.TypeFor[TestNativePointerFields]()),
+		cel.Variable("ptrObj", cel.ObjectType("types_test.TestNativePointerFields")),
+		cel.Variable("valObj", cel.ObjectType("types_test.TestNativePointerFields")),
+		cel.Variable("nilFieldsObj", cel.ObjectType("types_test.TestNativePointerFields")),
+	)
+	if err != nil {
+		t.Fatalf("cel.NewEnv() failed: %v", err)
+	}
+
+	bVal := true
+	dVal := 10 * time.Second
+	iVal := 42
+	i32Val := int32(4232)
+	i64Val := int64(4264)
+	uVal := uint(100)
+	u32Val := uint32(10032)
+	u64Val := uint64(10064)
+	f32Val := float32(3.14)
+	f64Val := float64(6.28)
+	sVal := "hello pointer"
+	tVal := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	nestedVal := &TestNestedType{NestedCustomName: "nested-ptr"}
+
+	populated := TestNativePointerFields{
+		BoolPtr:      &bVal,
+		DurationPtr:  &dVal,
+		IntPtr:       &iVal,
+		Int32Ptr:     &i32Val,
+		Int64Ptr:     &i64Val,
+		UintPtr:      &uVal,
+		Uint32Ptr:    &u32Val,
+		Uint64Ptr:    &u64Val,
+		Float32Ptr:   &f32Val,
+		Float64Ptr:   &f64Val,
+		StringPtr:    &sVal,
+		TimestampPtr: &tVal,
+		StructPtr:    nestedVal,
+	}
+	empty := TestNativePointerFields{}
+
+	vars := map[string]any{
+		"ptrObj":       &populated,
+		"valObj":       populated,
+		"nilFieldsObj": &empty,
+	}
+
+	tests := []struct {
+		expr string
+		want any
+	}{
+		// Pointer receiver populated
+		{"ptrObj.BoolPtr", true},
+		{"ptrObj.DurationPtr", 10 * time.Second},
+		{"ptrObj.IntPtr", int64(42)},
+		{"ptrObj.Int32Ptr", int64(4232)},
+		{"ptrObj.Int64Ptr", int64(4264)},
+		{"ptrObj.UintPtr", uint64(100)},
+		{"ptrObj.Uint32Ptr", uint64(10032)},
+		{"ptrObj.Uint64Ptr", uint64(10064)},
+		{"ptrObj.Float32Ptr > 3.13 && ptrObj.Float32Ptr < 3.15", true},
+		{"ptrObj.Float64Ptr", 6.28},
+		{"ptrObj.StringPtr", "hello pointer"},
+		{"ptrObj.TimestampPtr == timestamp('2026-09-25T12:00:00Z')", true},
+		{"ptrObj.StructPtr.NestedCustomName", "nested-ptr"},
+		{"has(ptrObj.BoolPtr)", true},
+		{"has(ptrObj.DurationPtr)", true},
+		{"has(ptrObj.IntPtr)", true},
+		{"has(ptrObj.Int32Ptr)", true},
+		{"has(ptrObj.Int64Ptr)", true},
+		{"has(ptrObj.UintPtr)", true},
+		{"has(ptrObj.Uint32Ptr)", true},
+		{"has(ptrObj.Uint64Ptr)", true},
+		{"has(ptrObj.Float32Ptr)", true},
+		{"has(ptrObj.Float64Ptr)", true},
+		{"has(ptrObj.StringPtr)", true},
+		{"has(ptrObj.TimestampPtr)", true},
+		{"has(ptrObj.StructPtr)", true},
+
+		// Value receiver populated
+		{"valObj.BoolPtr", true},
+		{"valObj.DurationPtr", 10 * time.Second},
+		{"valObj.IntPtr", int64(42)},
+		{"valObj.Int32Ptr", int64(4232)},
+		{"valObj.Int64Ptr", int64(4264)},
+		{"valObj.UintPtr", uint64(100)},
+		{"valObj.Uint32Ptr", uint64(10032)},
+		{"valObj.Uint64Ptr", uint64(10064)},
+		{"valObj.Float32Ptr > 3.13 && valObj.Float32Ptr < 3.15", true},
+		{"valObj.Float64Ptr", 6.28},
+		{"valObj.StringPtr", "hello pointer"},
+		{"valObj.TimestampPtr == timestamp('2026-09-25T12:00:00Z')", true},
+		{"has(valObj.BoolPtr)", true},
+
+		// Nil pointers
+		{"nilFieldsObj.BoolPtr", false},
+		{"nilFieldsObj.DurationPtr", time.Duration(0)},
+		{"nilFieldsObj.IntPtr", int64(0)},
+		{"nilFieldsObj.Int32Ptr", int64(0)},
+		{"nilFieldsObj.Int64Ptr", int64(0)},
+		{"nilFieldsObj.UintPtr", uint64(0)},
+		{"nilFieldsObj.Uint32Ptr", uint64(0)},
+		{"nilFieldsObj.Uint64Ptr", uint64(0)},
+		{"nilFieldsObj.Float32Ptr", 0.0},
+		{"nilFieldsObj.Float64Ptr", 0.0},
+		{"nilFieldsObj.StringPtr", ""},
+		{"nilFieldsObj.TimestampPtr == timestamp('1970-01-01T00:00:00Z')", true},
+		{"has(nilFieldsObj.BoolPtr)", false},
+		{"has(nilFieldsObj.DurationPtr)", false},
+		{"has(nilFieldsObj.IntPtr)", false},
+		{"has(nilFieldsObj.Int32Ptr)", false},
+		{"has(nilFieldsObj.Int64Ptr)", false},
+		{"has(nilFieldsObj.UintPtr)", false},
+		{"has(nilFieldsObj.Uint32Ptr)", false},
+		{"has(nilFieldsObj.Uint64Ptr)", false},
+		{"has(nilFieldsObj.Float32Ptr)", false},
+		{"has(nilFieldsObj.Float64Ptr)", false},
+		{"has(nilFieldsObj.StringPtr)", false},
+		{"has(nilFieldsObj.TimestampPtr)", false},
+		{"has(nilFieldsObj.StructPtr)", false},
+	}
+
+	for _, tc := range tests {
+		ast, iss := env.Compile(tc.expr)
+		if iss.Err() != nil {
+			t.Fatalf("Compile(%q) failed: %v", tc.expr, iss.Err())
+		}
+		prg, err := env.Program(ast)
+		if err != nil {
+			t.Fatalf("Program(%q) failed: %v", tc.expr, err)
+		}
+		out, _, err := prg.Eval(vars)
+		if err != nil {
+			t.Fatalf("Eval(%q) failed: %v", tc.expr, err)
+		}
+		adapter := env.CELTypeAdapter()
+		wantVal := adapter.NativeToValue(tc.want)
+		if out.Equal(wantVal) != types.True {
+			t.Errorf("Eval(%q) = %v (%T), want %v (%T)", tc.expr, out, out, wantVal, wantVal)
+		}
+	}
+
+	nt, err := types.NewNativeType(reflect.TypeFor[TestNativePointerFields]())
+	if err != nil {
+		t.Fatalf("NewNativeType failed: %v", err)
+	}
+	ptrFieldNames := []string{
+		"BoolPtr", "DurationPtr", "IntPtr", "Int32Ptr", "Int64Ptr",
+		"UintPtr", "Uint32Ptr", "Uint64Ptr", "Float32Ptr", "Float64Ptr",
+		"StringPtr", "TimestampPtr", "StructPtr",
+	}
+	for _, name := range ptrFieldNames {
+		f, ok := nt.FindFieldType(name)
+		if !ok {
+			t.Fatalf("FindFieldType(%q) failed", name)
+		}
+		val, err := f.GetFrom("not-a-struct")
+		if err != nil || val != nil {
+			t.Errorf("GetFrom('not-a-struct') for %q got (%v, %v), want (nil, nil)", name, val, err)
+		}
+	}
+}
+
+func TestNativeSliceAndMapFieldsCoverage(t *testing.T) {
+	env, err := cel.NewEnv(
+		cel.Types(
+			reflect.TypeFor[TestNativeSliceAndMapFields](),
+			reflect.TypeFor[TestNestedType](),
+			reflect.TypeFor[TestNestedSliceType](),
+		),
+		cel.Variable("ptrObj", cel.ObjectType("types_test.TestNativeSliceAndMapFields")),
+		cel.Variable("valObj", cel.ObjectType("types_test.TestNativeSliceAndMapFields")),
+		cel.Variable("emptyObj", cel.ObjectType("types_test.TestNativeSliceAndMapFields")),
+	)
+	if err != nil {
+		t.Fatalf("cel.NewEnv() failed: %v", err)
+	}
+
+	now := time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC)
+	populated := TestNativeSliceAndMapFields{
+		ByteSlice:        []byte("bytes"),
+		StringSlice:      []string{"a", "b"},
+		IntSlice:         []int{1, 2, 3},
+		Int32Slice:       []int32{10, 20},
+		Int64Slice:       []int64{100, 200},
+		UintSlice:        []uint{1, 2},
+		Uint32Slice:      []uint32{10, 20},
+		Uint64Slice:      []uint64{100, 200},
+		Float32Slice:     []float32{1.5, 2.5},
+		Float64Slice:     []float64{10.5, 20.5},
+		BoolSlice:        []bool{true, false},
+		TimeSlice:        []time.Time{now},
+		DurationSlice:    []time.Duration{time.Second, 2 * time.Second},
+		DynamicPtrSlice:  []*TestNestedType{{NestedCustomName: "dyn-ptr"}},
+		DynamicValSlice:  []TestNestedSliceType{{Value: "dyn-val"}},
+		StringStringMap:  map[string]string{"k": "v"},
+		Int64BoolMap:     map[int64]bool{7: true},
+		StringInt64Map:   map[string]int64{"si64": 64},
+		StringIntMap:     map[string]int{"si": 32},
+		StringBoolMap:    map[string]bool{"sb": true},
+		StringFloat64Map: map[string]float64{"sf": 3.14},
+	}
+	empty := TestNativeSliceAndMapFields{}
+
+	vars := map[string]any{
+		"ptrObj":   &populated,
+		"valObj":   populated,
+		"emptyObj": &empty,
+	}
+
+	tests := []struct {
+		expr string
+		want any
+	}{
+		{"ptrObj.ByteSlice", []byte("bytes")},
+		{"ptrObj.StringSlice[0]", "a"},
+		{"ptrObj.IntSlice.size()", int64(3)},
+		{"ptrObj.Int32Slice[1]", int64(20)},
+		{"ptrObj.Int64Slice[0]", int64(100)},
+		{"ptrObj.UintSlice[0]", uint64(1)},
+		{"ptrObj.Uint32Slice[1]", uint64(20)},
+		{"ptrObj.Uint64Slice[0]", uint64(100)},
+		{"ptrObj.Float32Slice[0]", 1.5},
+		{"ptrObj.Float64Slice[1]", 20.5},
+		{"ptrObj.BoolSlice[0]", true},
+		{"ptrObj.TimeSlice[0] == timestamp('2026-09-25T00:00:00Z')", true},
+		{"ptrObj.DurationSlice[0]", time.Second},
+		{"ptrObj.DynamicPtrSlice[0].NestedCustomName", "dyn-ptr"},
+		{"ptrObj.DynamicValSlice[0].Value", "dyn-val"},
+		{"ptrObj.StringStringMap['k']", "v"},
+		{"ptrObj.Int64BoolMap[7]", true},
+		{"ptrObj.StringInt64Map['si64']", int64(64)},
+		{"ptrObj.StringIntMap['si']", int64(32)},
+		{"ptrObj.StringBoolMap['sb']", true},
+		{"ptrObj.StringFloat64Map['sf']", 3.14},
+		{"has(ptrObj.StringSlice)", true},
+		{"has(ptrObj.StringStringMap)", true},
+
+		// Value receiver
+		{"valObj.StringSlice[1]", "b"},
+		{"valObj.DynamicPtrSlice[0].NestedCustomName", "dyn-ptr"},
+		{"valObj.DynamicValSlice[0].Value", "dyn-val"},
+		{"valObj.StringIntMap['si']", int64(32)},
+		{"valObj.StringFloat64Map['sf']", 3.14},
+
+		// Empty / Nil
+		{"has(emptyObj.StringSlice)", false},
+		{"has(emptyObj.StringStringMap)", false},
+		{"emptyObj.DynamicPtrSlice.size()", int64(0)},
+		{"emptyObj.DynamicValSlice.size()", int64(0)},
+	}
+
+	for _, tc := range tests {
+		ast, iss := env.Compile(tc.expr)
+		if iss.Err() != nil {
+			t.Fatalf("Compile(%q) failed: %v", tc.expr, iss.Err())
+		}
+		prg, err := env.Program(ast)
+		if err != nil {
+			t.Fatalf("Program(%q) failed: %v", tc.expr, err)
+		}
+		out, _, err := prg.Eval(vars)
+		if err != nil {
+			t.Fatalf("Eval(%q) failed: %v", tc.expr, err)
+		}
+		adapter := env.CELTypeAdapter()
+		wantVal := adapter.NativeToValue(tc.want)
+		if out.Equal(wantVal) != types.True {
+			t.Errorf("Eval(%q) = %v (%T), want %v (%T)", tc.expr, out, out, wantVal, wantVal)
+		}
+	}
+}
+
+func TestNativePrimitivesAndFallbacksCoverage(t *testing.T) {
+	env, err := cel.NewEnv(
+		cel.Types(reflect.TypeFor[TestNativePrimitivesAndFallbacks]()),
+		cel.Variable("ptrObj", cel.ObjectType("types_test.TestNativePrimitivesAndFallbacks")),
+		cel.Variable("valObj", cel.ObjectType("types_test.TestNativePrimitivesAndFallbacks")),
+		cel.Variable("zeroObj", cel.ObjectType("types_test.TestNativePrimitivesAndFallbacks")),
+	)
+	if err != nil {
+		t.Fatalf("cel.NewEnv() failed: %v", err)
+	}
+
+	i8 := int8(8)
+	i16 := int16(16)
+	u8 := uint8(88)
+	u16 := uint16(166)
+
+	populated := TestNativePrimitivesAndFallbacks{
+		IntVal:      10,
+		Int8Val:     8,
+		Int16Val:    16,
+		Int32Val:    32,
+		Int64Val:    64,
+		UintVal:     20,
+		Uint8Val:    88,
+		Uint16Val:   166,
+		Uint32Val:   320,
+		Uint64Val:   640,
+		Float32Val:  1.25,
+		Float64Val:  2.5,
+		BoolVal:     true,
+		StringVal:   "primitive",
+		DurationVal: 3 * time.Second,
+		TimeVal:     time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC),
+		NestedVal:   TestNestedType{NestedCustomName: "embedded-nested"},
+		Int8Ptr:     &i8,
+		Int16Ptr:    &i16,
+		Uint8Ptr:    &u8,
+		Uint16Ptr:   &u16,
+	}
+	zero := TestNativePrimitivesAndFallbacks{}
+
+	vars := map[string]any{
+		"ptrObj":  &populated,
+		"valObj":  populated,
+		"zeroObj": &zero,
+	}
+
+	tests := []struct {
+		expr string
+		want any
+	}{
+		{"ptrObj.IntVal", int64(10)},
+		{"ptrObj.Int8Val", int64(8)},
+		{"ptrObj.Int16Val", int64(16)},
+		{"ptrObj.Int32Val", int64(32)},
+		{"ptrObj.Int64Val", int64(64)},
+		{"ptrObj.UintVal", uint64(20)},
+		{"ptrObj.Uint8Val", uint64(88)},
+		{"ptrObj.Uint16Val", uint64(166)},
+		{"ptrObj.Uint32Val", uint64(320)},
+		{"ptrObj.Uint64Val", uint64(640)},
+		{"ptrObj.Float32Val", 1.25},
+		{"ptrObj.Float64Val", 2.5},
+		{"ptrObj.BoolVal", true},
+		{"ptrObj.StringVal", "primitive"},
+		{"ptrObj.DurationVal", 3 * time.Second},
+		{"ptrObj.TimeVal == timestamp('2026-09-25T00:00:00Z')", true},
+		{"ptrObj.NestedVal.NestedCustomName", "embedded-nested"},
+		{"ptrObj.Int8Ptr", int64(8)},
+		{"ptrObj.Int16Ptr", int64(16)},
+		{"ptrObj.Uint8Ptr", uint64(88)},
+		{"ptrObj.Uint16Ptr", uint64(166)},
+
+		// Presence checks
+		{"has(ptrObj.IntVal)", true},
+		{"has(ptrObj.Int32Val)", true},
+		{"has(ptrObj.Int64Val)", true},
+		{"has(ptrObj.UintVal)", true},
+		{"has(ptrObj.Uint32Val)", true},
+		{"has(ptrObj.Uint64Val)", true},
+		{"has(ptrObj.Float32Val)", true},
+		{"has(ptrObj.Float64Val)", true},
+		{"has(ptrObj.BoolVal)", true},
+		{"has(ptrObj.StringVal)", true},
+		{"has(ptrObj.DurationVal)", true},
+		{"has(ptrObj.TimeVal)", true},
+		{"has(ptrObj.NestedVal)", true},
+		{"has(ptrObj.Int8Ptr)", true},
+		{"has(ptrObj.Int16Ptr)", true},
+		{"has(ptrObj.Uint8Ptr)", true},
+		{"has(ptrObj.Uint16Ptr)", true},
+
+		// Value receiver
+		{"valObj.Int8Val", int64(8)},
+		{"valObj.Uint16Val", uint64(166)},
+		{"valObj.Float32Val", 1.25},
+		{"valObj.DurationVal", 3 * time.Second},
+		{"valObj.NestedVal.NestedCustomName", "embedded-nested"},
+		{"has(valObj.TimeVal)", true},
+
+		// Zero values
+		{"zeroObj.IntVal", int64(0)},
+		{"zeroObj.Int8Ptr", int64(0)},
+		{"zeroObj.Uint8Ptr", uint64(0)},
+		{"zeroObj.TimeVal == timestamp('1970-01-01T00:00:00Z')", true},
+		{"has(zeroObj.IntVal)", false},
+		{"has(zeroObj.Int32Val)", false},
+		{"has(zeroObj.Int64Val)", false},
+		{"has(zeroObj.UintVal)", false},
+		{"has(zeroObj.Uint32Val)", false},
+		{"has(zeroObj.Uint64Val)", false},
+		{"has(zeroObj.Float32Val)", false},
+		{"has(zeroObj.Float64Val)", false},
+		{"has(zeroObj.BoolVal)", false},
+		{"has(zeroObj.StringVal)", false},
+		{"has(zeroObj.DurationVal)", false},
+		{"has(zeroObj.TimeVal)", false},
+		{"has(zeroObj.NestedVal)", false},
+		{"has(zeroObj.Int8Ptr)", false},
+		{"has(zeroObj.Uint8Ptr)", false},
+	}
+
+	for _, tc := range tests {
+		ast, iss := env.Compile(tc.expr)
+		if iss.Err() != nil {
+			t.Fatalf("Compile(%q) failed: %v", tc.expr, iss.Err())
+		}
+		prg, err := env.Program(ast)
+		if err != nil {
+			t.Fatalf("Program(%q) failed: %v", tc.expr, err)
+		}
+		out, _, err := prg.Eval(vars)
+		if err != nil {
+			t.Fatalf("Eval(%q) failed: %v", tc.expr, err)
+		}
+		adapter := env.CELTypeAdapter()
+		wantVal := adapter.NativeToValue(tc.want)
+		if out.Equal(wantVal) != types.True {
+			t.Errorf("Eval(%q) = %v (%T), want %v (%T)", tc.expr, out, out, wantVal, wantVal)
+		}
+	}
+}
+
+func TestNativeDirectFieldGetterTesterFallbacks(t *testing.T) {
+	nt, err := types.NewNativeType(reflect.TypeFor[TestNativePrimitivesAndFallbacks]())
+	if err != nil {
+		t.Fatalf("NewNativeType failed: %v", err)
+	}
+
+	fields := []string{
+		"IntVal", "Int32Val", "Int64Val", "UintVal", "Uint32Val", "Uint64Val",
+		"Float32Val", "Float64Val", "BoolVal", "StringVal", "DurationVal", "TimeVal", "NestedVal",
+	}
+
+	obj := TestNativePrimitivesAndFallbacks{
+		IntVal:      42,
+		Int32Val:    42,
+		Int64Val:    42,
+		UintVal:     42,
+		Uint32Val:   42,
+		Uint64Val:   42,
+		Float32Val:  42.0,
+		Float64Val:  42.0,
+		BoolVal:     true,
+		StringVal:   "test",
+		DurationVal: time.Second,
+		TimeVal:     time.Unix(100, 0),
+		NestedVal:   TestNestedType{NestedCustomName: "custom"},
+	}
+
+	for _, name := range fields {
+		field, ok := nt.FindFieldType(name)
+		if !ok {
+			t.Fatalf("FindFieldType(%q) failed", name)
+		}
+
+		// 1. Direct struct ptr
+		val, err := field.GetFrom(&obj)
+		if err != nil || val == nil {
+			t.Errorf("field.GetFrom(&obj) for %q got (%v, %v)", name, val, err)
+		}
+		if !field.IsSet(&obj) {
+			t.Errorf("field.IsSet(&obj) for %q got false", name)
+		}
+
+		// 2. Direct struct value
+		val, err = field.GetFrom(obj)
+		if err != nil || val == nil {
+			t.Errorf("field.GetFrom(obj) for %q got (%v, %v)", name, val, err)
+		}
+		if !field.IsSet(obj) {
+			t.Errorf("field.IsSet(obj) for %q got false", name)
+		}
+
+		// 3. Invalid target
+		val, err = field.GetFrom("invalid-type")
+		if err != nil || val != nil {
+			t.Errorf("field.GetFrom('invalid-type') for %q got (%v, %v), want (nil, nil)", name, val, err)
+		}
+		if field.IsSet("invalid-type") {
+			t.Errorf("field.IsSet('invalid-type') for %q got true, want false", name)
+		}
+	}
+}
+
+type specialCollectionsStruct struct {
+	StringSlice      []string
+	IntSlice         []int
+	Int32Slice       []int32
+	Int64Slice       []int64
+	UintSlice        []uint
+	Uint32Slice      []uint32
+	Uint64Slice      []uint64
+	Float32Slice     []float32
+	Float64Slice     []float64
+	BoolSlice        []bool
+	TimeSlice        []time.Time
+	DurationSlice    []time.Duration
+	StringStringMap  map[string]string
+	Int64BoolMap     map[int64]bool
+	StringInt64Map   map[string]int64
+	StringIntMap     map[string]int
+	StringBoolMap    map[string]bool
+	StringFloat64Map map[string]float64
+}
+
+type otherStruct struct {
+	OtherField string
+}
+
+func TestNativeSpecialCollectionsAndFallbacks(t *testing.T) {
+	nt, err := types.NewNativeType(reflect.TypeFor[specialCollectionsStruct]())
+	if err != nil {
+		t.Fatalf("NewNativeType failed: %v", err)
+	}
+
+	obj := specialCollectionsStruct{
+		StringSlice:      []string{"s1"},
+		IntSlice:         []int{1},
+		Int32Slice:       []int32{32},
+		Int64Slice:       []int64{64},
+		UintSlice:        []uint{2},
+		Uint32Slice:      []uint32{320},
+		Uint64Slice:      []uint64{640},
+		Float32Slice:     []float32{1.5},
+		Float64Slice:     []float64{2.5},
+		BoolSlice:        []bool{true},
+		TimeSlice:        []time.Time{time.Unix(100, 0)},
+		DurationSlice:    []time.Duration{time.Second},
+		StringStringMap:  map[string]string{"k": "v"},
+		Int64BoolMap:     map[int64]bool{1: true},
+		StringInt64Map:   map[string]int64{"k": 64},
+		StringIntMap:     map[string]int{"k": 32},
+		StringBoolMap:    map[string]bool{"k": true},
+		StringFloat64Map: map[string]float64{"k": 1.5},
+	}
+
+	fieldNames := []string{
+		"StringSlice", "IntSlice", "Int32Slice", "Int64Slice", "UintSlice", "Uint32Slice", "Uint64Slice",
+		"Float32Slice", "Float64Slice", "BoolSlice", "TimeSlice", "DurationSlice",
+		"StringStringMap", "Int64BoolMap", "StringInt64Map", "StringIntMap", "StringBoolMap", "StringFloat64Map",
+	}
+
+	type FallbackCollectionsStruct struct {
+		StringSlice      []string
+		IntSlice         []int
+		Int32Slice       []int32
+		Int64Slice       []int64
+		UintSlice        []uint
+		Uint32Slice      []uint32
+		Uint64Slice      []uint64
+		Float32Slice     []float32
+		Float64Slice     []float64
+		BoolSlice        []bool
+		TimeSlice        []time.Time
+		DurationSlice    []time.Duration
+		StringStringMap  map[string]string
+		Int64BoolMap     map[int64]bool
+		StringInt64Map   map[string]int64
+		StringIntMap     map[string]int
+		StringBoolMap    map[string]bool
+		StringFloat64Map map[string]float64
+	}
+	fbCollections := FallbackCollectionsStruct{
+		StringSlice:      []string{"s1"},
+		IntSlice:         []int{1},
+		Int32Slice:       []int32{32},
+		Int64Slice:       []int64{64},
+		UintSlice:        []uint{2},
+		Uint32Slice:      []uint32{320},
+		Uint64Slice:      []uint64{640},
+		Float32Slice:     []float32{1.5},
+		Float64Slice:     []float64{2.5},
+		BoolSlice:        []bool{true},
+		TimeSlice:        []time.Time{time.Unix(100, 0)},
+		DurationSlice:    []time.Duration{time.Second},
+		StringStringMap:  map[string]string{"k": "v"},
+		Int64BoolMap:     map[int64]bool{1: true},
+		StringInt64Map:   map[string]int64{"k": 64},
+		StringIntMap:     map[string]int{"k": 32},
+		StringBoolMap:    map[string]bool{"k": true},
+		StringFloat64Map: map[string]float64{"k": 1.5},
+	}
+
+	for _, name := range fieldNames {
+		f, ok := nt.FindFieldType(name)
+		if !ok {
+			t.Fatalf("FindFieldType(%q) failed", name)
+		}
+
+		// Direct pointer
+		val, err := f.GetFrom(&obj)
+		if err != nil || val == nil {
+			t.Errorf("GetFrom(&obj) for %q got (%v, %v)", name, val, err)
+		}
+		if !f.IsSet(&obj) {
+			t.Errorf("IsSet(&obj) for %q got false", name)
+		}
+
+		// Direct value (triggers struct unwrap path)
+		val, err = f.GetFrom(obj)
+		if err != nil || val == nil {
+			t.Errorf("GetFrom(obj) for %q got (%v, %v)", name, val, err)
+		}
+		if !f.IsSet(obj) {
+			t.Errorf("IsSet(obj) for %q got false", name)
+		}
+
+		// Fallback value (untyped struct with matching field index)
+		val, err = f.GetFrom(fbCollections)
+		if err != nil || val == nil {
+			t.Errorf("GetFrom(fbCollections) for %q got (%v, %v)", name, val, err)
+		}
+		if !f.IsSet(fbCollections) {
+			t.Errorf("IsSet(fbCollections) for %q got false", name)
+		}
+
+		// Non-matching target (triggers safeGetFieldByIndex fallback when invalid)
+		val, err = f.GetFrom("not-a-struct")
+		if err != nil || val != nil {
+			t.Errorf("GetFrom('not-a-struct') for %q got (%v, %v), want (nil, nil)", name, val, err)
+		}
+		if f.IsSet("not-a-struct") {
+			t.Errorf("IsSet('not-a-struct') for %q got true, want false", name)
+		}
+	}
+}
+
+type StructWithUnsupportedFields struct {
+	Ch chan int
+}
+
+type StructWithNilEmbeddedPtr struct {
+	*TestNestedType
+	Value string
+}
+
+func TestNativeTypeCoverageBoost(t *testing.T) {
+	// 1. NewNativeType with option error
+	optErr := errors.New("opt error")
+	_, err := types.NewNativeType(reflect.TypeFor[TestAllTypes](), func(*types.NativeTypeOptions) error {
+		return optErr
+	})
+	if err == nil || !errors.Is(err, optErr) {
+		t.Errorf("NewNativeType with error option got %v, want %v", err, optErr)
+	}
+
+	// 2. ParseStructTags(false)
+	optTags := types.ParseStructTags(false)
+	ntTags, err := types.NewNativeType(reflect.TypeFor[TestAllTypes](), optTags)
+	if err != nil {
+		t.Fatalf("NewNativeType with ParseStructTags(false) failed: %v", err)
+	}
+	if ntTags == nil {
+		t.Errorf("expected non-nil NativeType")
+	}
+
+	// 3. Adapt nil and nil pointer and direct interface struct value
+	nt, err := types.NewNativeType(reflect.TypeFor[TestAllTypes]())
+	if err != nil {
+		t.Fatalf("NewNativeType failed: %v", err)
+	}
+	if nt.Adapt(types.DefaultTypeAdapter, nil) != types.NullValue {
+		t.Errorf("Adapt(nil) want NullValue")
+	}
+	if nt.Adapt(types.DefaultTypeAdapter, (*TestAllTypes)(nil)) != types.NullValue {
+		t.Errorf("Adapt((*TestAllTypes)(nil)) want NullValue")
+	}
+	ntDirect, err := types.NewNativeType(reflect.TypeFor[directIfaceStruct]())
+	if err != nil {
+		t.Fatalf("NewNativeType for directIfaceStruct failed: %v", err)
+	}
+	adaptedDirect := ntDirect.Adapt(types.DefaultTypeAdapter, directIfaceStruct{})
+	if adaptedDirect == nil {
+		t.Errorf("Adapt(directIfaceStruct{}) want non-nil")
+	}
+
+	// 4. FindFieldType on unsupported field
+	ntChan, err := types.NewNativeType(reflect.TypeFor[StructWithUnsupportedFields]())
+	if err != nil {
+		t.Fatalf("NewNativeType for StructWithUnsupportedFields failed: %v", err)
+	}
+	if _, found := ntChan.FindFieldType("Ch"); found {
+		t.Errorf("FindFieldType('Ch') want not found")
+	}
+
+	// 5. NewValue error paths
+	errVal := nt.NewValue(types.DefaultTypeAdapter, map[string]ref.Val{"invalidField": types.Int(1)})
+	if !types.IsError(errVal) {
+		t.Errorf("NewValue with invalidField got %v, want error", errVal)
+	}
+	errVal = nt.NewValue(types.DefaultTypeAdapter, map[string]ref.Val{"Int32Val": types.String("not-an-int")})
+	if !types.IsError(errVal) {
+		t.Errorf("NewValue with invalid field type got %v, want error", errVal)
+	}
+
+	// 6. safeSetFieldByIndex with nil embedded pointer struct
+	reg, err := types.NewRegistry(reflect.TypeFor[StructWithNilEmbeddedPtr]())
+	if err != nil {
+		t.Fatalf("NewRegistry for StructWithNilEmbeddedPtr failed: %v", err)
+	}
+	ntEmb, err := types.NewNativeType(reflect.TypeFor[StructWithNilEmbeddedPtr]())
+	if err != nil {
+		t.Fatalf("NewNativeType for StructWithNilEmbeddedPtr failed: %v", err)
+	}
+	embVal := ntEmb.NewValue(reg, map[string]ref.Val{
+		"NestedCustomName": types.String("embedded-name"),
+		"Value":            types.String("val"),
+	})
+	if types.IsError(embVal) {
+		t.Errorf("NewValue on StructWithNilEmbeddedPtr got %v", embVal)
+	}
+
+	// 7. ConvertToNative on nativeObj for jsonStruct and jsonValue
+	adaptedAll := nt.Adapt(types.DefaultTypeAdapter, &TestAllTypes{
+		StringVal:    "hello json",
+		Int32Val:     42,
+		BoolVal:      true,
+		DurationVal:  time.Minute,
+		TimestampVal: time.Unix(12345, 0),
+	})
+	nativeJSONVal, err := adaptedAll.ConvertToNative(reflect.TypeFor[*structpb.Value]())
+	if err != nil {
+		t.Errorf("ConvertToNative(structpb.Value) failed: %v", err)
+	}
+	if nativeJSONVal == nil {
+		t.Errorf("ConvertToNative(structpb.Value) want non-nil")
+	}
+	nativeJSONStruct, err := adaptedAll.ConvertToNative(reflect.TypeFor[*structpb.Struct]())
+	if err != nil {
+		t.Errorf("ConvertToNative(structpb.Struct) failed: %v", err)
+	}
+	if nativeJSONStruct == nil {
+		t.Errorf("ConvertToNative(structpb.Struct) want non-nil")
+	}
+
+	// 8. AggregateSize cache
+	calc := types.NewSizeCalculator()
+	res1 := calc.ApproximateAggregateSize(adaptedAll)
+	res2 := calc.ApproximateAggregateSize(adaptedAll)
+	if res1.Size != res2.Size || res1.Size == 0 {
+		t.Errorf("AggregateSize got %d, %d", res1.Size, res2.Size)
+	}
+
+	// 9. structPtrFrom & unwrapStruct with *nativeObj directly on field getters & testers
+	for _, name := range []string{"StringVal", "Int32Val", "BoolVal", "DurationVal", "TimestampVal"} {
+		f, ok := nt.FindFieldType(name)
+		if !ok {
+			t.Fatalf("FindFieldType(%q) failed", name)
+		}
+		got, err := f.GetFrom(adaptedAll)
+		if err != nil || got == nil {
+			t.Errorf("GetFrom(adaptedAll) for %q got (%v, %v)", name, got, err)
+		}
+		if !f.IsSet(adaptedAll) {
+			t.Errorf("IsSet(adaptedAll) for %q got false", name)
+		}
+	}
+
+	// 10. safeSetFieldByIndex and safeGetFieldByIndex boundary cases
+	type NestedPointerStruct struct {
+		Ptr *TestNestedType
+	}
+	ntNested, err := types.NewNativeType(reflect.TypeFor[NestedPointerStruct]())
+	if err != nil {
+		t.Fatalf("NewNativeType for NestedPointerStruct failed: %v", err)
+	}
+	fNested, ok := ntNested.FindFieldType("Ptr")
+	if !ok {
+		t.Fatalf("FindFieldType('Ptr') failed")
+	}
+	_, _ = fNested.GetFrom(&NestedPointerStruct{Ptr: nil})
+	_ = fNested.IsSet(&NestedPointerStruct{Ptr: nil})
+
+	// Test nil struct pointer for len(index) == 1
+	var nilNested *NestedPointerStruct
+	_, _ = fNested.GetFrom(nilNested)
+	_ = fNested.IsSet(nilNested)
+	_, _ = fNested.GetFrom("not a struct")
+	_ = fNested.IsSet("not a struct")
+
+	fAllBool, _ := nt.FindFieldType("BoolVal")
+	if fAllBool != nil {
+		var nilAll *TestAllTypes
+		_, _ = fAllBool.GetFrom(nilAll)
+		_ = fAllBool.IsSet(nilAll)
+		_, _ = fAllBool.GetFrom("not a struct")
+		_ = fAllBool.IsSet("not a struct")
+	}
+
+	// Test embedded struct with non-nil and nil intermediate pointer for len(index) > 1
+	type EmbeddedIntermediate struct {
+		*TestNestedType
+	}
+	type OuterEmbedded struct {
+		EmbeddedIntermediate
+	}
+	ntEmbMulti, err := types.NewNativeType(reflect.TypeFor[OuterEmbedded]())
+	if err == nil {
+		fEmbMulti, ok := ntEmbMulti.FindFieldType("NestedCustomName")
+		if ok {
+			// Non-nil intermediate pointer
+			_, _ = fEmbMulti.GetFrom(OuterEmbedded{EmbeddedIntermediate: EmbeddedIntermediate{TestNestedType: &TestNestedType{NestedCustomName: "test"}}})
+			_ = fEmbMulti.IsSet(OuterEmbedded{EmbeddedIntermediate: EmbeddedIntermediate{TestNestedType: &TestNestedType{NestedCustomName: "test"}}})
+			// Nil intermediate pointer
+			_, _ = fEmbMulti.GetFrom(OuterEmbedded{EmbeddedIntermediate: EmbeddedIntermediate{TestNestedType: nil}})
+			_ = fEmbMulti.IsSet(OuterEmbedded{EmbeddedIntermediate: EmbeddedIntermediate{TestNestedType: nil}})
+			var nilOuter *OuterEmbedded
+			_, _ = fEmbMulti.GetFrom(nilOuter)
+			_ = fEmbMulti.IsSet(nilOuter)
+			_, _ = fEmbMulti.GetFrom("not a struct")
+			_ = fEmbMulti.IsSet("not a struct")
+		}
+	}
+	// NewValue error tests
+	_ = nt.NewValue(types.DefaultTypeAdapter, map[string]ref.Val{
+		"NoSuchField": types.String("val"),
+	})
+	_ = nt.NewValue(types.DefaultTypeAdapter, map[string]ref.Val{
+		"BoolVal": types.String("cannot convert to bool"),
+	})
+
+	// 11. Fallback unwrap for all field types via an untyped nativeObj wrapper (structPtr == nil)
+	fBool, _ := nt.FindFieldType("BoolVal")
+	fInt32, _ := nt.FindFieldType("Int32Val")
+	fString, _ := nt.FindFieldType("StringVal")
+	fBytes, _ := nt.FindFieldType("BytesVal")
+	fDuration, _ := nt.FindFieldType("DurationVal")
+	fList, _ := nt.FindFieldType("ListVal")
+	fCustomSlice, _ := nt.FindFieldType("CustomSliceVal")
+	fNestedStruct, _ := nt.FindFieldType("NestedStructVal")
+
+	valAllFalse := TestAllTypes{
+		BoolVal:         false,
+		Int32Val:        42,
+		StringVal:       "hello",
+		BytesVal:        []byte("bytes"),
+		DurationVal:     time.Second,
+		ListVal:         []*TestNestedType{{NestedCustomName: "dyn"}},
+		CustomSliceVal:  []TestNestedSliceType{{Value: "val"}},
+		NestedStructVal: TestNestedType{NestedCustomName: "nested"},
+	}
+	valAllTrue := TestAllTypes{
+		BoolVal: true,
+	}
+
+	for _, f := range []*types.FieldType{fBool, fInt32, fString, fBytes, fDuration, fList, fCustomSlice, fNestedStruct} {
+		if f != nil {
+			_, _ = f.GetFrom(valAllFalse)
+			_ = f.IsSet(valAllFalse)
+			_, _ = f.GetFrom(valAllTrue)
+			_ = f.IsSet(valAllTrue)
+		}
+	}
+
+	// 12. ConvertToNative on nativeObj for struct by value vs pointer
+	convertedVal, err := adaptedAll.ConvertToNative(reflect.TypeFor[TestAllTypes]())
+	if err != nil {
+		t.Errorf("ConvertToNative(TestAllTypes) failed: %v", err)
+	}
+	if _, ok := convertedVal.(TestAllTypes); !ok {
+		t.Errorf("ConvertToNative(TestAllTypes) got %T", convertedVal)
+	}
+	convertedPtr, err := adaptedAll.ConvertToNative(reflect.TypeFor[*TestAllTypes]())
+	if err != nil {
+		t.Errorf("ConvertToNative(*TestAllTypes) failed: %v", err)
+	}
+	if _, ok := convertedPtr.(*TestAllTypes); !ok {
+		t.Errorf("ConvertToNative(*TestAllTypes) got %T", convertedPtr)
+	}
+	_, err = adaptedAll.ConvertToNative(reflect.TypeFor[int]())
+	if err == nil {
+		t.Errorf("expected error converting to int")
+	}
+
+
+	// 14. getFieldValue direct calls
+	dummyAdapter := types.DefaultTypeAdapter
+	_ = dummyAdapter.NativeToValue([]byte("hello"))
+	_ = dummyAdapter.NativeToValue([]string{"a", "b"})
+	_ = dummyAdapter.NativeToValue([]ref.Val{types.Int(1)})
+	_ = dummyAdapter.NativeToValue(map[string]string{"a": "b"})
+	_ = dummyAdapter.NativeToValue(map[string]any{"a": 1})
+	_ = dummyAdapter.NativeToValue(map[ref.Val]ref.Val{types.String("k"): types.String("v")})
+	_ = dummyAdapter.NativeToValue((*bool)(nil))
+	_ = dummyAdapter.NativeToValue((*time.Duration)(nil))
+	_ = dummyAdapter.NativeToValue((*int)(nil))
+	_ = dummyAdapter.NativeToValue((*int8)(nil))
+	_ = dummyAdapter.NativeToValue((*int16)(nil))
+	_ = dummyAdapter.NativeToValue((*int32)(nil))
+	_ = dummyAdapter.NativeToValue((*int64)(nil))
+	_ = dummyAdapter.NativeToValue((*uint)(nil))
+	_ = dummyAdapter.NativeToValue((*uint8)(nil))
+	_ = dummyAdapter.NativeToValue((*uint16)(nil))
+	_ = dummyAdapter.NativeToValue((*uint32)(nil))
+	_ = dummyAdapter.NativeToValue((*uint64)(nil))
+	_ = dummyAdapter.NativeToValue((*float32)(nil))
+	_ = dummyAdapter.NativeToValue((*float64)(nil))
+	_ = dummyAdapter.NativeToValue((*string)(nil))
+	_ = dummyAdapter.NativeToValue((*time.Time)(nil))
+	_ = dummyAdapter.NativeToValue((*TestNestedType)(nil))
+	_ = dummyAdapter.NativeToValue(time.Time{})
+	_ = dummyAdapter.NativeToValue(time.Unix(100, 0))
+	_ = dummyAdapter.NativeToValue(&time.Time{})
+	nowTime := time.Unix(200, 0)
+	_ = dummyAdapter.NativeToValue(&nowTime)
+
+	// 15. convertToCelType and FindFieldType branch coverage
+	type StructWithBadTypes struct {
+		AnySlice       []any
+		AnyArray       [2]any
+		BadKeyMap      map[any]string
+		BadValMap      map[string]any
+		AnyField       any
+		RefValSt       types.Int
+		RefValPtr      *types.Err
+		ProtoPtr       *proto3pb.TestAllTypes
+		BytesArray     [4]byte
+		PtrPtrInt      **int
+		TimestampField time.Time
+		TimestampPtr   *time.Time
+		DurationField  time.Duration
+		DurationPtr    *time.Duration
+	}
+	ntBad, err := types.NewNativeType(reflect.TypeFor[StructWithBadTypes]())
+	if err != nil {
+		t.Fatalf("NewNativeType for StructWithBadTypes failed: %v", err)
+	}
+	for _, name := range []string{
+		"AnySlice", "AnyArray", "BadKeyMap", "BadValMap", "AnyField", "RefValSt", "RefValPtr", "ProtoPtr",
+		"BytesArray", "PtrPtrInt", "TimestampField", "TimestampPtr", "DurationField", "DurationPtr",
+	} {
+		_, _ = ntBad.FindFieldType(name)
+	}
+
+	// 15b. JSON conversion error coverage
+	type StructWithUnconvertibleJSON struct {
+		ErrField *types.Err `json:"err"`
+	}
+	regUnconv, err := types.NewRegistry(reflect.TypeFor[StructWithUnconvertibleJSON]())
+	if err == nil {
+		ntUnconv, err := types.NewNativeType(reflect.TypeFor[StructWithUnconvertibleJSON]())
+		if err == nil {
+			adaptedUnconv := ntUnconv.Adapt(regUnconv, &StructWithUnconvertibleJSON{
+				ErrField: types.NewErr("test err").(*types.Err),
+			})
+			_, _ = adaptedUnconv.ConvertToNative(reflect.TypeFor[*structpb.Struct]())
+			_, _ = adaptedUnconv.ConvertToNative(reflect.TypeFor[*structpb.Value]())
+		}
+	}
+
+	// 16. Registry NewValue and ConvertToNative API boundary coverage
+	reg, err = types.NewRegistry(reflect.TypeFor[TestAllTypes]())
+	if err != nil {
+		t.Fatalf("NewRegistry failed: %v", err)
+	}
+	res := reg.NewValue("types_test.TestAllTypes", map[string]ref.Val{"NonExistentField": types.Int(1)})
+	if !types.IsError(res) {
+		t.Errorf("expected error for non-existent field in NewValue")
+	}
+	res = reg.NewValue("types_test.TestAllTypes", map[string]ref.Val{"IntVal": types.String("not-int")})
+	if !types.IsError(res) {
+		t.Errorf("expected error for incompatible field value in NewValue")
+	}
+	createdVal := reg.NewValue("types_test.TestAllTypes", map[string]ref.Val{
+		"StringVal": types.String("created-string"),
+		"Int64Val":  types.Int(99),
+	})
+	if types.IsError(createdVal) {
+		t.Fatalf("NewValue failed: %v", createdVal)
+	}
+	vStruct, err := createdVal.ConvertToNative(reflect.TypeFor[TestAllTypes]())
+	if err != nil || vStruct.(TestAllTypes).StringVal != "created-string" {
+		t.Errorf("ConvertToNative(TestAllTypes) = %v, %v", vStruct, err)
+	}
+	vPtr, err := createdVal.ConvertToNative(reflect.TypeFor[*TestAllTypes]())
+	if err != nil || vPtr.(*TestAllTypes).StringVal != "created-string" {
+		t.Errorf("ConvertToNative(*TestAllTypes) = %v, %v", vPtr, err)
+	}
+
+	// 17. FindFieldType on interface field (isSupportedType returns true, convertToCelType returns false)
+	type StructWithInterfaceField struct {
+		AnyField any
+	}
+	ntIface, err := types.NewNativeType(reflect.TypeFor[StructWithInterfaceField]())
+	if err != nil {
+		t.Fatalf("NewNativeType for StructWithInterfaceField failed: %v", err)
+	}
+	if _, ok := ntIface.FindFieldType("AnyField"); ok {
+		t.Errorf("expected false for AnyField in FindFieldType")
+	}
+
+	// 18. FieldType.GetFrom and IsSet fallback paths across all supported types
+	type FallbackMatchingFields struct {
+		NestedVal       *TestNestedType
+		NestedStructVal TestNestedType
+		BoolVal         bool
+		BytesVal        []byte
+		DurationVal     time.Duration
+		DoubleVal       float64
+		FloatVal        float32
+		Int32Val        int32
+		Int64Val        int64
+		StringVal       string
+		TimestampVal    time.Time
+		Uint32Val       uint32
+		Uint64Val       uint64
+		ListVal         []*TestNestedType
+		ArrayVal        [1]*TestNestedType
+		BytesArrayVal   [4]byte
+		MapVal          map[string]TestAllTypes
+	}
+
+	fbPopulated := FallbackMatchingFields{
+		BoolVal:      true,
+		BytesVal:     []byte("bytes"),
+		DurationVal:  time.Second,
+		DoubleVal:    2.5,
+		FloatVal:     1.5,
+		Int32Val:     42,
+		Int64Val:     84,
+		StringVal:    "hello",
+		TimestampVal: time.Unix(100, 0),
+		Uint32Val:    10,
+		Uint64Val:    20,
+		ListVal:      []*TestNestedType{{NestedCustomName: "l"}},
+		MapVal:       map[string]TestAllTypes{"k": {BoolVal: true}},
+	}
+	fbZero := FallbackMatchingFields{}
+
+	for _, name := range nt.FieldNames() {
+		f, ok := nt.FindFieldType(name)
+		if !ok {
+			continue
+		}
+		_, _ = f.GetFrom(fbPopulated)
+		_ = f.IsSet(fbPopulated)
+		_, _ = f.GetFrom(&fbPopulated)
+		_ = f.IsSet(&fbPopulated)
+		_, _ = f.GetFrom(fbZero)
+		_ = f.IsSet(fbZero)
+		_, _ = f.GetFrom(struct{}{})
+		_ = f.IsSet(struct{}{})
+		// Passing adaptedVal to exercise unwrapStruct(*nativeObj)
+		adaptedFb := nt.Adapt(types.DefaultTypeAdapter, &TestAllTypes{StringVal: "s"})
+		_, _ = f.GetFrom(adaptedFb)
+		_ = f.IsSet(adaptedFb)
+	}
+
+	ntSpecial, err := types.NewNativeType(reflect.TypeFor[specialCollectionsStruct]())
+	if err == nil {
+		specialSt := specialCollectionsStruct{
+			StringSlice:      []string{"a"},
+			IntSlice:         []int{1},
+			Int32Slice:       []int32{2},
+			Int64Slice:       []int64{3},
+			UintSlice:        []uint{4},
+			Uint32Slice:      []uint32{5},
+			Uint64Slice:      []uint64{6},
+			Float32Slice:     []float32{1.5},
+			Float64Slice:     []float64{2.5},
+			BoolSlice:        []bool{true},
+			TimeSlice:        []time.Time{time.Unix(100, 0)},
+			DurationSlice:    []time.Duration{time.Second},
+			StringStringMap:  map[string]string{"k": "v"},
+			Int64BoolMap:     map[int64]bool{1: true},
+			StringInt64Map:   map[string]int64{"k": 64},
+			StringIntMap:     map[string]int{"k": 32},
+			StringBoolMap:    map[string]bool{"k": true},
+			StringFloat64Map: map[string]float64{"k": 1.5},
+		}
+		for _, name := range ntSpecial.FieldNames() {
+			f, ok := ntSpecial.FindFieldType(name)
+			if !ok {
+				continue
+			}
+			_, _ = f.GetFrom(specialSt)
+			_ = f.IsSet(specialSt)
+			_, _ = f.GetFrom(struct{}{})
+			_ = f.IsSet(struct{}{})
+		}
+	}
+}
+
+type TestInnerAllFields struct {
+	BoolVal            bool
+	DurationVal        time.Duration
+	TimestampVal       time.Time
+	IntVal             int
+	Int32Val           int32
+	Int64Val           int64
+	UintVal            uint
+	Uint32Val          uint32
+	Uint64Val          uint64
+	Float32Val         float32
+	Float64Val         float64
+	StringVal          string
+	BytesVal           []byte
+	SliceVal           []string
+	RefValList         []ref.Val
+	MapVal             map[string]int
+	StringStringMap    map[string]string
+	StringInterfaceMap map[string]any
+	RefValMap          map[ref.Val]ref.Val
+	NestedVal          TestNestedType
+	BoolPtr            *bool
+	DurationPtr        *time.Duration
+	TimestampPtr       *time.Time
+	IntPtr             *int
+	Int32Ptr           *int32
+	Int64Ptr           *int64
+	UintPtr            *uint
+	Uint32Ptr          *uint32
+	Uint64Ptr          *uint64
+	Float32Ptr         *float32
+	Float64Ptr         *float64
+	StringPtr          *string
+	NestedPtr          *TestNestedType
+	Int8Ptr            *int8
+	Int16Ptr           *int16
+	Uint8Ptr           *uint8
+	Uint16Ptr          *uint16
+	NilTimePtr         *time.Time
+	NilDurPtr          *time.Duration
+	NilStructPtr       *TestNestedType
+	ZeroTime           time.Time
+	TaggedZero         int            `json:"num"`
+	OmitEmpty          int            `json:"omit,omitempty"`
+}
+
+type TestOuterEmbeddedPointer struct {
+	*TestInnerAllFields
+	OuterField string
+}
+
+type Level2Struct struct {
+	Leaf string
+}
+
+type Level1Struct struct {
+	*Level2Struct
+}
+
+type TestDeepEmbeddedPointers struct {
+	*Level1Struct
+}
+
+func TestNativeEmbeddedPointerExpressions(t *testing.T) {
+	env, err := cel.NewEnv(
+		cel.Types(
+			reflect.TypeFor[TestOuterEmbeddedPointer](),
+			reflect.TypeFor[TestDeepEmbeddedPointers](),
+			reflect.TypeFor[TestNestedType](),
+			reflect.TypeFor[StructWithNilEmbeddedPtr](),
+		),
+		cel.Variable("popObj", cel.ObjectType("types_test.TestOuterEmbeddedPointer")),
+		cel.Variable("zeroObj", cel.ObjectType("types_test.TestOuterEmbeddedPointer")),
+		cel.Variable("nilEmbObj", cel.ObjectType("types_test.TestOuterEmbeddedPointer")),
+		cel.Variable("deepObj", cel.ObjectType("types_test.TestDeepEmbeddedPointers")),
+	)
+	if err != nil {
+		t.Fatalf("cel.NewEnv() failed: %v", err)
+	}
+
+	bVal := true
+	dVal := time.Minute
+	tVal := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	iVal := 10
+	i32Val := int32(20)
+	i64Val := int64(30)
+	uVal := uint(40)
+	u32Val := uint32(50)
+	u64Val := uint64(60)
+	f32Val := float32(1.5)
+	f64Val := 2.5
+	sVal := "str-ptr"
+	nestedVal := &TestNestedType{NestedCustomName: "sub-ptr"}
+	i8Val := int8(8)
+	i16Val := int16(16)
+	u8Val := uint8(80)
+	u16Val := uint16(160)
+
+	popInner := &TestInnerAllFields{
+		BoolVal:            true,
+		DurationVal:        time.Second,
+		TimestampVal:       time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		IntVal:             100,
+		Int32Val:           200,
+		Int64Val:           300,
+		UintVal:            400,
+		Uint32Val:          500,
+		Uint64Val:          600,
+		Float32Val:         3.5,
+		Float64Val:         4.5,
+		StringVal:          "hello-emb",
+		BytesVal:           []byte("bytes-emb"),
+		SliceVal:           []string{"a", "b"},
+		RefValList:         []ref.Val{types.Int(1)},
+		MapVal:             map[string]int{"k": 1},
+		StringStringMap:    map[string]string{"sk": "sv"},
+		StringInterfaceMap: map[string]any{"ik": 2},
+		RefValMap:          map[ref.Val]ref.Val{types.String("rk"): types.Int(3)},
+		NestedVal:          TestNestedType{NestedCustomName: "sub-val"},
+		BoolPtr:            &bVal,
+		DurationPtr:        &dVal,
+		TimestampPtr:       &tVal,
+		IntPtr:             &iVal,
+		Int32Ptr:           &i32Val,
+		Int64Ptr:           &i64Val,
+		UintPtr:            &uVal,
+		Uint32Ptr:          &u32Val,
+		Uint64Ptr:          &u64Val,
+		Float32Ptr:         &f32Val,
+		Float64Ptr:         &f64Val,
+		StringPtr:          &sVal,
+		NestedPtr:          nestedVal,
+		Int8Ptr:            &i8Val,
+		Int16Ptr:           &i16Val,
+		Uint8Ptr:           &u8Val,
+		Uint16Ptr:          &u16Val,
+		ZeroTime:           time.Time{},
+		TaggedZero:         0,
+		OmitEmpty:          0,
+	}
+
+	popOuter := &TestOuterEmbeddedPointer{
+		TestInnerAllFields: popInner,
+		OuterField:         "outer-val",
+	}
+	zeroOuter := &TestOuterEmbeddedPointer{
+		TestInnerAllFields: &TestInnerAllFields{},
+		OuterField:         "",
+	}
+	nilEmbOuter := &TestOuterEmbeddedPointer{
+		TestInnerAllFields: nil,
+		OuterField:         "nil-emb",
+	}
+	deep := &TestDeepEmbeddedPointers{}
+
+	vars := map[string]any{
+		"popObj":    popOuter,
+		"zeroObj":   zeroOuter,
+		"nilEmbObj": nilEmbOuter,
+		"deepObj":   deep,
+	}
+
+	exprTests := []struct {
+		expr string
+		want any
+	}{
+		// Populated embedded fields through pointer
+		{expr: "popObj.OuterField", want: "outer-val"},
+		{expr: "popObj.BoolVal", want: true},
+		{expr: "popObj.DurationVal", want: time.Second},
+		{expr: "popObj.TimestampVal", want: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
+		{expr: "popObj.IntVal", want: int64(100)},
+		{expr: "popObj.Int32Val", want: int64(200)},
+		{expr: "popObj.Int64Val", want: int64(300)},
+		{expr: "popObj.UintVal", want: uint64(400)},
+		{expr: "popObj.Uint32Val", want: uint64(500)},
+		{expr: "popObj.Uint64Val", want: uint64(600)},
+		{expr: "popObj.Float32Val", want: float64(float32(3.5))},
+		{expr: "popObj.Float64Val", want: 4.5},
+		{expr: "popObj.StringVal", want: "hello-emb"},
+		{expr: "popObj.BytesVal", want: []byte("bytes-emb")},
+		{expr: "popObj.SliceVal", want: []string{"a", "b"}},
+		{expr: "popObj.StringStringMap['sk']", want: "sv"},
+		{expr: "popObj.MapVal['k']", want: int64(1)},
+		{expr: "popObj.NestedVal.NestedCustomName", want: "sub-val"},
+		{expr: "popObj.BoolPtr", want: true},
+		{expr: "popObj.DurationPtr", want: time.Minute},
+		{expr: "popObj.TimestampPtr", want: time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)},
+		{expr: "popObj.IntPtr", want: int64(10)},
+		{expr: "popObj.Int32Ptr", want: int64(20)},
+		{expr: "popObj.Int64Ptr", want: int64(30)},
+		{expr: "popObj.UintPtr", want: uint64(40)},
+		{expr: "popObj.Uint32Ptr", want: uint64(50)},
+		{expr: "popObj.Uint64Ptr", want: uint64(60)},
+		{expr: "popObj.Float32Ptr", want: float64(float32(1.5))},
+		{expr: "popObj.Float64Ptr", want: 2.5},
+		{expr: "popObj.StringPtr", want: "str-ptr"},
+		{expr: "popObj.NestedPtr.NestedCustomName", want: "sub-ptr"},
+		{expr: "popObj.Int8Ptr", want: int64(8)},
+		{expr: "popObj.Int16Ptr", want: int64(16)},
+		{expr: "popObj.Uint8Ptr", want: uint64(80)},
+		{expr: "popObj.Uint16Ptr", want: uint64(160)},
+		{expr: "popObj.ZeroTime", want: time.Unix(0, 0)},
+		// Presence testing
+		{expr: "has(popObj.BoolVal)", want: true},
+		{expr: "has(popObj.IntVal)", want: true},
+		{expr: "has(popObj.StringVal)", want: true},
+		{expr: "has(popObj.BoolPtr)", want: true},
+		{expr: "has(popObj.DurationPtr)", want: true},
+		{expr: "has(popObj.IntPtr)", want: true},
+		{expr: "has(popObj.UintPtr)", want: true},
+		{expr: "has(popObj.Float32Ptr)", want: true},
+		{expr: "has(popObj.Float64Ptr)", want: true},
+		{expr: "has(popObj.StringPtr)", want: true},
+		{expr: "has(popObj.TimestampPtr)", want: true},
+		{expr: "has(popObj.NestedPtr)", want: true},
+		{expr: "has(popObj.Int8Ptr)", want: true},
+		{expr: "has(popObj.Uint8Ptr)", want: true},
+		// Zero presence testing
+		{expr: "has(zeroObj.BoolVal)", want: false},
+		{expr: "has(zeroObj.IntVal)", want: false},
+		{expr: "has(zeroObj.StringVal)", want: false},
+		{expr: "has(zeroObj.BoolPtr)", want: false},
+		{expr: "has(zeroObj.IntPtr)", want: false},
+		{expr: "has(zeroObj.DurationPtr)", want: false},
+		{expr: "has(zeroObj.TimestampPtr)", want: false},
+		{expr: "has(zeroObj.Float32Ptr)", want: false},
+		{expr: "has(zeroObj.Float64Ptr)", want: false},
+		{expr: "has(zeroObj.StringPtr)", want: false},
+		{expr: "has(zeroObj.NestedPtr)", want: false},
+		{expr: "has(zeroObj.Int8Ptr)", want: false},
+		{expr: "has(zeroObj.Uint8Ptr)", want: false},
+		{expr: "has(zeroObj.NilTimePtr)", want: false},
+		{expr: "has(zeroObj.NilDurPtr)", want: false},
+		{expr: "has(zeroObj.NilStructPtr)", want: false},
+		// Zero values accessed directly through embedded pointer
+		{expr: "zeroObj.BoolVal", want: false},
+		{expr: "zeroObj.BoolPtr", want: false},
+		{expr: "zeroObj.DurationPtr", want: time.Duration(0)},
+		{expr: "zeroObj.IntPtr", want: int64(0)},
+		{expr: "zeroObj.UintPtr", want: uint64(0)},
+		{expr: "zeroObj.Float32Ptr", want: float64(0)},
+		{expr: "zeroObj.Float64Ptr", want: float64(0)},
+		{expr: "zeroObj.StringPtr", want: ""},
+		{expr: "zeroObj.TimestampPtr", want: time.Unix(0, 0)},
+		{expr: "zeroObj.NilTimePtr", want: time.Unix(0, 0)},
+		{expr: "zeroObj.NilDurPtr", want: time.Duration(0)},
+		// Nil embedded struct pointer
+		{expr: "has(nilEmbObj.BoolVal)", want: false},
+		{expr: "has(nilEmbObj.IntVal)", want: false},
+		{expr: "has(nilEmbObj.StringVal)", want: false},
+		// Deep nil pointer index
+		{expr: "has(deepObj.Leaf)", want: false},
+	}
+
+	for _, tc := range exprTests {
+		ast, issues := env.Compile(tc.expr)
+		if issues != nil && issues.Err() != nil {
+			t.Fatalf("Compile(%q) failed: %v", tc.expr, issues.Err())
+		}
+		prg, err := env.Program(ast)
+		if err != nil {
+			t.Fatalf("Program(%q) failed: %v", tc.expr, err)
+		}
+		out, _, err := prg.Eval(vars)
+		if err != nil {
+			t.Fatalf("Eval(%q) failed: %v", tc.expr, err)
+		}
+		got := out.Value()
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("Eval(%q) = %v (%T), want %v (%T)", tc.expr, got, got, tc.want, tc.want)
+		}
+	}
+
+	// JSON conversions for embedded struct
+	reg, err := types.NewRegistry(reflect.TypeFor[TestOuterEmbeddedPointer]())
+	if err != nil {
+		t.Fatalf("NewRegistry failed: %v", err)
+	}
+	nt, err := types.NewNativeType(reflect.TypeFor[TestOuterEmbeddedPointer]())
+	if err != nil {
+		t.Fatalf("NewNativeType failed: %v", err)
+	}
+	adapted := nt.Adapt(reg, popOuter)
+	jsonStructVal, err := adapted.ConvertToNative(reflect.TypeFor[*structpb.Struct]())
+	if err != nil {
+		t.Fatalf("ConvertToNative(structpb.Struct) failed: %v", err)
+	}
+	stpb := jsonStructVal.(*structpb.Struct)
+	if _, ok := stpb.Fields["num"]; !ok {
+		t.Errorf("expected 'num' field in structpb.Struct")
+	}
+	if _, ok := stpb.Fields["omit"]; ok {
+		t.Errorf("expected 'omit' field to be omitted in structpb.Struct")
+	}
+
+	// Direct Get on nativeObj for interface reflection fields
+	if idx, ok := adapted.(traits.Indexer); ok {
+		_ = idx.Get(types.String("RefValList"))
+		_ = idx.Get(types.String("StringInterfaceMap"))
+		_ = idx.Get(types.String("RefValMap"))
+		_ = idx.Get(types.String("NonExistent"))
+	}
+
+	// Test NewValue initializing nil embedded struct pointer
+	regEmb, err := types.NewRegistry(reflect.TypeFor[StructWithNilEmbeddedPtr]())
+	if err == nil {
+		createdEmb := regEmb.NewValue("types_test.StructWithNilEmbeddedPtr", map[string]ref.Val{
+			"Value":            types.String("outer-val"),
+			"NestedCustomName": types.String("inner-val"),
+		})
+		if types.IsError(createdEmb) {
+			t.Errorf("NewValue on StructWithNilEmbeddedPtr failed: %v", createdEmb)
+		}
+	}
+}
+
+type NestedElem struct {
+	Name string
+}
+
+type ContainerWithNestedCollections struct {
+	Elems       []*NestedElem
+	ElemMap     map[string]*NestedElem
+	StringSlice []string
+	StringMap   map[string]string
+}
+
+func TestNativeCustomAdapterSliceMapExpressions(t *testing.T) {
+	env, err := cel.NewEnv(
+		ext.NativeTypes(
+			reflect.TypeFor[NestedElem](),
+			reflect.TypeFor[ContainerWithNestedCollections](),
+		),
+		cel.Variable("container", cel.ObjectType("types_test.ContainerWithNestedCollections")),
+	)
+	if err != nil {
+		t.Fatalf("cel.NewEnv failed: %v", err)
+	}
+
+	container := &ContainerWithNestedCollections{
+		Elems: []*NestedElem{
+			{Name: "first"},
+			{Name: "second"},
+		},
+		ElemMap: map[string]*NestedElem{
+			"k1": {Name: "v1"},
+		},
+		StringSlice: []string{"a", "b"},
+		StringMap:   map[string]string{"k": "v"},
+	}
+
+	tests := []struct {
+		expr string
+		want any
+	}{
+		{expr: `container.Elems[0].Name`, want: "first"},
+		{expr: `container.Elems[1].Name`, want: "second"},
+		{expr: `container.Elems.size()`, want: int64(2)},
+		{expr: `container.ElemMap["k1"].Name`, want: "v1"},
+		{expr: `container.ElemMap.size()`, want: int64(1)},
+		{expr: `container.StringSlice[0]`, want: "a"},
+		{expr: `container.StringMap["k"]`, want: "v"},
+	}
+
+	for _, tc := range tests {
+		ast, iss := env.Compile(tc.expr)
+		if iss.Err() != nil {
+			t.Fatalf("Compile(%q) failed: %v", tc.expr, iss.Err())
+		}
+		prg, err := env.Program(ast)
+		if err != nil {
+			t.Fatalf("Program(%q) failed: %v", tc.expr, err)
+		}
+		out, _, err := prg.Eval(map[string]any{"container": container})
+		if err != nil {
+			t.Fatalf("Eval(%q) failed: %v", tc.expr, err)
+		}
+		got := out.Value()
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("Eval(%q) = %v (%T), want %v (%T)", tc.expr, got, got, tc.want, tc.want)
+		}
+	}
+}
+
+
+
+
+
