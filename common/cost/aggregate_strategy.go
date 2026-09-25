@@ -68,6 +68,9 @@ func (a *aggregateSizingStrategy) EstimateSize(ctx EstimateContext, node AstNode
 	if sz := node.ComputedSize(); sz != nil {
 		return *sz, true
 	}
+	if node.Expr() != nil && node.Expr().Kind() == ast.LiteralKind {
+		return FixedSizeEstimate(uint64(a.calc.AggregateSize(node.Expr().AsLiteral()))), true
+	}
 	if node.Type() == nil {
 		return estimateScalarOrFallback(ctx, node)
 	}
@@ -109,6 +112,7 @@ func estimateAggregateListSize(ctx EstimateContext, node AstNode) (SizeEstimate,
 			return res, true
 		}
 		// For other calls (e.g. conditional branches), listSize is already the branch aggregate size.
+		listSize.Key = nil
 		return *listSize, true
 	}
 
@@ -116,26 +120,33 @@ func estimateAggregateListSize(ctx EstimateContext, node AstNode) (SizeEstimate,
 		listSize = ctx.Estimator().EstimateSize(node)
 	}
 	if elemSize == nil && listSize != nil && listSize.Elem != nil {
-		elemSize = listSize.Elem
+		e := *listSize.Elem
+		elemSize = &e
 	}
-	// If element size is missing or incomplete for nested containers, query child path @items.
-	if elemSize == nil || (elemSize.Elem == nil && isContainerKind(elemType.Kind())) {
-		if len(node.Path()) > 0 && ctx != nil {
-			elemPath := append(slices.Clone(node.Path()), "@items")
-			elemNode := NewAstNode(nil, elemPath, elemType, nil)
-			sz := ctx.Size(elemNode)
-			if sz != UnknownSizeEstimate() {
-				if elemSize == nil {
-					elemSize = &sz
-				} else {
-					elemSize.Elem = sz.Elem
-					elemSize.Key = sz.Key
+	if listSize == nil || listSize.Max > 0 {
+		// If element size is missing or incomplete for nested containers, query child path @items.
+		if elemSize == nil || (elemSize.Elem == nil && isContainerKind(elemType.Kind())) {
+			if len(node.Path()) > 0 && ctx != nil {
+				elemPath := append(slices.Clone(node.Path()), "@items")
+				elemNode := NewAstNode(nil, elemPath, elemType, nil)
+				sz := ctx.Size(elemNode)
+				if sz != UnknownSizeEstimate() {
+					if elemSize == nil {
+						elemSize = &sz
+					} else {
+						elemSize.Elem = sz.Elem
+						elemSize.Key = sz.Key
+					}
 				}
 			}
 		}
+		if elemSize == nil {
+			elemSize = fallbackElemSize(ctx, elemType)
+		}
 	}
-	if elemSize == nil {
-		elemSize = fallbackElemSize(ctx, elemType)
+	if listSize == nil && elemSize == nil && node.Expr() != nil {
+		u := UnknownSizeEstimate()
+		listSize = &u
 	}
 	if listSize == nil {
 		if elemSize != nil {
@@ -152,6 +163,9 @@ func estimateAggregateListSize(ctx EstimateContext, node AstNode) (SizeEstimate,
 	if elemSize != nil {
 		minElem = elemSize.Min
 		maxElem = elemSize.Max
+	} else if listSize.Max > 0 {
+		u := UnknownSizeEstimate()
+		elemSize = &u
 	}
 	aggMin := SafeAdd(1, SafeMultiply(listSize.Min, minElem))
 	aggMax := SafeAdd(1, SafeMultiply(listSize.Max, maxElem))
@@ -179,46 +193,62 @@ func estimateAggregateMapSize(ctx EstimateContext, node AstNode) (SizeEstimate, 
 		mapSize = ctx.Estimator().EstimateSize(node)
 	}
 	if keySize == nil && mapSize != nil && mapSize.Key != nil {
-		keySize = mapSize.Key
+		k := *mapSize.Key
+		keySize = &k
 	}
 	if valSize == nil && mapSize != nil && mapSize.Elem != nil {
-		valSize = mapSize.Elem
+		v := *mapSize.Elem
+		valSize = &v
 	}
 	// Query subpaths @keys and @values if hints were not provided on the parent map node.
-	if len(node.Path()) > 0 && ctx != nil {
-		if keySize == nil || (keySize.Elem == nil && isContainerKind(keyType.Kind())) {
-			kPath := append(slices.Clone(node.Path()), "@keys")
-			kSz := ctx.Size(NewAstNode(nil, kPath, keyType, nil))
-			if kSz != UnknownSizeEstimate() {
-				if keySize == nil {
-					keySize = &kSz
-				} else {
-					keySize.Elem = kSz.Elem
-					keySize.Key = kSz.Key
+	if mapSize == nil || mapSize.Max > 0 {
+		if len(node.Path()) > 0 && ctx != nil {
+			if keySize == nil || (keySize.Elem == nil && isContainerKind(keyType.Kind())) {
+				kPath := append(slices.Clone(node.Path()), "@keys")
+				kSz := ctx.Size(NewAstNode(nil, kPath, keyType, nil))
+				if kSz != UnknownSizeEstimate() {
+					if keySize == nil {
+						keySize = &kSz
+					} else {
+						keySize.Elem = kSz.Elem
+						keySize.Key = kSz.Key
+					}
+				}
+			}
+			if valSize == nil || (valSize.Elem == nil && isContainerKind(valType.Kind())) {
+				vPath := append(slices.Clone(node.Path()), "@values")
+				vSz := ctx.Size(NewAstNode(nil, vPath, valType, nil))
+				if vSz != UnknownSizeEstimate() {
+					if valSize == nil {
+						valSize = &vSz
+					} else {
+						valSize.Elem = vSz.Elem
+						valSize.Key = vSz.Key
+					}
 				}
 			}
 		}
-		if valSize == nil || (valSize.Elem == nil && isContainerKind(valType.Kind())) {
-			vPath := append(slices.Clone(node.Path()), "@values")
-			vSz := ctx.Size(NewAstNode(nil, vPath, valType, nil))
-			if vSz != UnknownSizeEstimate() {
-				if valSize == nil {
-					valSize = &vSz
-				} else {
-					valSize.Elem = vSz.Elem
-					valSize.Key = vSz.Key
-				}
-			}
+		if keySize == nil {
+			keySize = fallbackElemSize(ctx, keyType)
+		}
+		if valSize == nil {
+			valSize = fallbackElemSize(ctx, valType)
 		}
 	}
-	if keySize == nil {
-		keySize = fallbackElemSize(ctx, keyType)
-	}
-	if valSize == nil {
-		valSize = fallbackElemSize(ctx, valType)
+	if mapSize == nil && keySize == nil && valSize == nil && node.Expr() != nil {
+		u := UnknownSizeEstimate()
+		mapSize = &u
 	}
 	if mapSize == nil {
 		if keySize != nil || valSize != nil {
+			if keySize == nil {
+				u := UnknownSizeEstimate()
+				keySize = &u
+			}
+			if valSize == nil {
+				u := UnknownSizeEstimate()
+				valSize = &u
+			}
 			res := UnknownSizeEstimate()
 			res.Key = keySize
 			res.Elem = valSize
@@ -230,10 +260,16 @@ func estimateAggregateMapSize(ctx EstimateContext, node AstNode) (SizeEstimate, 
 	minKey, maxKey := uint64(1), uint64(math.MaxUint64)
 	if keySize != nil {
 		minKey, maxKey = keySize.Min, keySize.Max
+	} else if mapSize.Max > 0 {
+		u := UnknownSizeEstimate()
+		keySize = &u
 	}
 	minVal, maxVal := uint64(1), uint64(math.MaxUint64)
 	if valSize != nil {
 		minVal, maxVal = valSize.Min, valSize.Max
+	} else if mapSize.Max > 0 {
+		u := UnknownSizeEstimate()
+		valSize = &u
 	}
 	entryMin := SafeAdd(minKey, minVal)
 	entryMax := SafeAdd(maxKey, maxVal)

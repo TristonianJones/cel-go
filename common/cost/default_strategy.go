@@ -39,6 +39,11 @@ func (defaultSizingStrategy) EstimateSize(ctx EstimateContext, node AstNode) (Si
 	if sz := node.ComputedSize(); sz != nil {
 		return *sz, true
 	}
+	if node.Expr() != nil {
+		if sz := computeExprSize(node.Expr()); sz != nil {
+			return *sz, true
+		}
+	}
 	if node.Type() == nil {
 		return estimateScalarOrFallback(ctx, node)
 	}
@@ -60,8 +65,16 @@ func estimateDefaultListSize(ctx EstimateContext, node AstNode) (SizeEstimate, b
 	if listSize == nil && ctx != nil && ctx.Estimator() != nil {
 		listSize = ctx.Estimator().EstimateSize(node)
 	}
-	if elemSize == nil {
+	if elemSize == nil && listSize != nil && listSize.Elem != nil {
+		e := *listSize.Elem
+		elemSize = &e
+	}
+	if elemSize == nil && (listSize == nil || listSize.Max > 0) {
 		elemSize = estimateSubpath(ctx, node.Path(), "@items", elemType)
+	}
+	if listSize == nil && elemSize == nil && node.Expr() != nil {
+		u := UnknownSizeEstimate()
+		listSize = &u
 	}
 	return combineListSize(listSize, elemSize)
 }
@@ -74,16 +87,31 @@ func estimateDefaultMapSize(ctx EstimateContext, node AstNode) (SizeEstimate, bo
 	if mapSize == nil && ctx != nil && ctx.Estimator() != nil {
 		mapSize = ctx.Estimator().EstimateSize(node)
 	}
-	if keySize == nil {
-		keySize = estimateSubpath(ctx, node.Path(), "@keys", keyType)
+	if keySize == nil && mapSize != nil && mapSize.Key != nil {
+		k := *mapSize.Key
+		keySize = &k
 	}
-	if valSize == nil {
-		valSize = estimateSubpath(ctx, node.Path(), "@values", valType)
+	if valSize == nil && mapSize != nil && mapSize.Elem != nil {
+		v := *mapSize.Elem
+		valSize = &v
+	}
+	if mapSize == nil || mapSize.Max > 0 {
+		if keySize == nil {
+			keySize = estimateSubpath(ctx, node.Path(), "@keys", keyType)
+		}
+		if valSize == nil {
+			valSize = estimateSubpath(ctx, node.Path(), "@values", valType)
+		}
+	}
+	if mapSize == nil && keySize == nil && valSize == nil && node.Expr() != nil {
+		u := UnknownSizeEstimate()
+		mapSize = &u
 	}
 	return combineMapSize(mapSize, keySize, valSize)
 }
 
-// estimateSubpath attempts to estimate the size of a nested child node by path, falling back to primitive type size.
+// estimateSubpath attempts to estimate the size of a nested child node by path, falling back to
+// primitive type size.
 func estimateSubpath(ctx EstimateContext, basePath []string, subpath string, t *types.Type) *SizeEstimate {
 	if len(basePath) > 0 && ctx != nil && ctx.Estimator() != nil {
 		childPath := append(slices.Clone(basePath), subpath)
@@ -198,7 +226,28 @@ func estimateMapExpr(ctx EstimateContext, node AstNode, keyType, valType *types.
 		}
 	case ast.CallKind:
 		call := node.Expr().AsCall()
-		if call.FunctionName() == operators.Conditional {
+		switch call.FunctionName() {
+		case "cel.@mapInsert":
+			args := call.Args()
+			if len(args) == 3 {
+				lhs := ctx.Size(NewAstNode(args[0], nil, node.Type(), nil))
+				kSz := ctx.Size(NewAstNode(args[1], nil, keyType, nil))
+				vSz := ctx.Size(NewAstNode(args[2], nil, valType, nil))
+				keySize = mergeSizeEstimatePtr(lhs.Key, &kSz)
+				valSize = mergeSizeEstimatePtr(lhs.Elem, &vSz)
+				added := lhs.Add(FixedSizeEstimate(1))
+				added.Key = keySize
+				added.Elem = valSize
+				mapSize = &added
+			} else if len(args) == 2 {
+				lhs := ctx.Size(NewAstNode(args[0], nil, node.Type(), nil))
+				rhs := ctx.Size(NewAstNode(args[1], nil, node.Type(), nil))
+				added := lhs.Add(rhs)
+				mapSize = &added
+				keySize = added.Key
+				valSize = added.Elem
+			}
+		case operators.Conditional:
 			if u, ok := estimateConditionalSize(ctx, node.Type(), call.Args()); ok {
 				mapSize = &u
 				keySize = u.Key
@@ -230,11 +279,19 @@ func estimateScalarOrFallback(ctx EstimateContext, node AstNode) (SizeEstimate, 
 }
 
 // combineListSize constructs a list SizeEstimate combining container length and element size.
+//
+// A list that can be non-empty (Max > 0) whose element size is unknown carries an explicit
+// UnknownSizeEstimate in Elem rather than nil, so combining it with a literal list (e.g.
+// ['a'] + unhinted) widens the element size to unknown instead of dropping it to the literal's.
+// Empty list literals (Max == 0) leave Elem nil so they contribute no element bound when joined.
 func combineListSize(listSize, elemSize *SizeEstimate) (SizeEstimate, bool) {
 	if listSize != nil {
-		if elemSize != nil {
-			listSize.Elem = elemSize
+		if elemSize == nil && listSize.Max > 0 {
+			u := UnknownSizeEstimate()
+			elemSize = &u
 		}
+		listSize.Key = nil
+		listSize.Elem = elemSize
 		return *listSize, true
 	}
 	if elemSize != nil {
@@ -246,13 +303,35 @@ func combineListSize(listSize, elemSize *SizeEstimate) (SizeEstimate, bool) {
 }
 
 // combineMapSize constructs a map SizeEstimate combining map size, key size, and value size.
+//
+// As with combineListSize, a map that can be non-empty (Max > 0) records an explicit
+// UnknownSizeEstimate for an unhinted Key or Elem so merging with a literal map widens the bound
+// rather than dropping the unknown side.
 func combineMapSize(mapSize, keySize, valSize *SizeEstimate) (SizeEstimate, bool) {
 	if mapSize != nil {
+		if mapSize.Max > 0 {
+			if keySize == nil {
+				u := UnknownSizeEstimate()
+				keySize = &u
+			}
+			if valSize == nil {
+				u := UnknownSizeEstimate()
+				valSize = &u
+			}
+		}
 		mapSize.Key = keySize
 		mapSize.Elem = valSize
 		return *mapSize, true
 	}
 	if keySize != nil || valSize != nil {
+		if keySize == nil {
+			u := UnknownSizeEstimate()
+			keySize = &u
+		}
+		if valSize == nil {
+			u := UnknownSizeEstimate()
+			valSize = &u
+		}
 		res := UnknownSizeEstimate()
 		res.Key = keySize
 		res.Elem = valSize

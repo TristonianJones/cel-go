@@ -16,6 +16,7 @@ package cost
 
 import (
 	"math"
+	"strconv"
 
 	"cel.dev/cel-go/common/ast"
 	"cel.dev/cel-go/common/operators"
@@ -145,8 +146,8 @@ func EstimateSizingStrategy(strategy SizingStrategy) Option {
 
 // EstimateModelVersion pins cost estimation to a revision of the cost model's rules.
 //
-// Defaults to defaultModelVersion. Pin only to hold estimates stable against a previously recorded
-// baseline; see ModelVersion for why an older revision is always the less accurate choice.
+// If not set, the latest cost model version is used. Pin only to hold estimates stable against a
+// previously recorded baseline; see ModelVersion for per-version details.
 func EstimateModelVersion(version uint32) Option {
 	return func(c *coster) error {
 		c.modelVersion = version
@@ -242,20 +243,21 @@ func (s scopes) peek(varName string) (*localVar, bool) {
 // pushIterKey pushes the iteration key or index variable for a comprehension onto the scope stack.
 func (c *coster) pushIterKey(varName string, rangeExpr ast.Expr) {
 	rangeSize := c.sizeOrUnknown(rangeExpr)
-	var size *SizeEstimate
-	if rangeSize.Key != nil {
-		size = rangeSize.Key
-	} else {
-		s := FixedSizeEstimate(1)
-		size = &s
-	}
-	path := c.getPath(rangeExpr)
 	container := c.getType(rangeExpr).Kind()
+	var size *SizeEstimate
 	subpath := "@keys"
 	if container == types.ListKind {
+		s := FixedSizeEstimate(1)
+		size = &s
 		subpath = "@indices"
+	} else if rangeSize.Key != nil {
+		size = rangeSize.Key
 	}
-	c.localVars.push(varName, rangeExpr, append(path, subpath), size)
+	var varPath []string
+	if path := c.getPath(rangeExpr); len(path) > 0 {
+		varPath = append(path, subpath)
+	}
+	c.localVars.push(varName, rangeExpr, varPath, size)
 }
 
 // pushIterValue pushes the iteration value variable for a comprehension onto the scope stack.
@@ -265,13 +267,16 @@ func (c *coster) pushIterValue(varName string, rangeExpr ast.Expr) {
 	if rangeSize.Elem != nil {
 		size = rangeSize.Elem
 	}
-	path := c.getPath(rangeExpr)
 	container := c.getType(rangeExpr).Kind()
 	subpath := "@values"
 	if container == types.ListKind {
 		subpath = "@items"
 	}
-	c.localVars.push(varName, rangeExpr, append(path, subpath), size)
+	var varPath []string
+	if path := c.getPath(rangeExpr); len(path) > 0 {
+		varPath = append(path, subpath)
+	}
+	c.localVars.push(varName, rangeExpr, varPath, size)
 }
 
 // pushIterSingle pushes a single iteration variable (items for list, keys for map) onto the scope stack.
@@ -280,19 +285,17 @@ func (c *coster) pushIterSingle(varName string, rangeExpr ast.Expr) {
 	var size *SizeEstimate
 	subpath := "@keys"
 	container := c.getType(rangeExpr).Kind()
-	if container == types.ListKind {
+	if container == types.ListKind || (container == types.DynKind && rangeSize.Key == nil && rangeSize.Elem != nil) {
 		size = rangeSize.Elem
 		subpath = "@items"
 	} else {
-		if rangeSize.Key != nil {
-			size = rangeSize.Key
-		} else {
-			s := FixedSizeEstimate(1)
-			size = &s
-		}
+		size = rangeSize.Key
 	}
-	path := c.getPath(rangeExpr)
-	c.localVars.push(varName, rangeExpr, append(path, subpath), size)
+	var varPath []string
+	if path := c.getPath(rangeExpr); len(path) > 0 {
+		varPath = append(path, subpath)
+	}
+	c.localVars.push(varName, rangeExpr, varPath, size)
 }
 
 // pushLocalVar records a local variable binding with its path and size estimates.
@@ -401,6 +404,9 @@ func isAttributeChain(e ast.Expr) bool {
 
 // costCall estimates the cost of evaluating a function call expression.
 func (c *coster) costCall(e ast.Expr) CostEstimate {
+	if e.AsCall().FunctionName() == "cel.@block" {
+		return c.costBlock(e)
+	}
 	// Dyn is just a way to disable type-checking, so return the cost of 1 with the cost of the argument
 	if dynEstimate := c.maybeUnwrapDynCall(e); dynEstimate != nil {
 		return *dynEstimate
@@ -450,7 +456,12 @@ func (c *coster) costCall(e ast.Expr) CostEstimate {
 		resultSize = mergeSizeEstimatePtr(resultSize, overloadCost.ResultSize)
 		// build and track the field path for index operations
 		if field, ok := c.indexFieldPath(overload); ok && len(args) > 0 {
-			c.addPath(e, append(c.getPath(args[0]), field))
+			if targetPath := c.getPath(args[0]); len(targetPath) > 0 {
+				c.addPath(e, append(targetPath, field))
+			} else if containerSize := argTypes[0].ComputedSize(); containerSize != nil && containerSize.Elem != nil {
+				elemSize := *containerSize.Elem
+				resultSize = &elemSize
+			}
 		}
 		if resultSize == nil {
 			resultSize = c.computeSize(e)
@@ -491,6 +502,31 @@ func (c *coster) maybeUnwrapDynCall(e ast.Expr) *CostEstimate {
 	c.copySizeEstimates(e, arg)
 	callCost := FixedCostEstimate(1).Add(argCost)
 	return &callCost
+}
+
+// costBlock estimates the cost of a cel.@block([slot0, slot1, ...], resultExpr) call,
+// binding each slot expression to @index0, @index1, ... while evaluating the block result.
+func (c *coster) costBlock(e ast.Expr) CostEstimate {
+	call := e.AsCall()
+	args := call.Args()
+	if len(args) != 2 || args[0].Kind() != ast.ListKind {
+		return FixedCostEstimate(1)
+	}
+	slots := args[0].AsList().Elements()
+	var sum CostEstimate
+	for i, slot := range slots {
+		sum = sum.Add(c.cost(slot))
+		c.pushLocalVar("@index"+strconv.Itoa(i), slot)
+	}
+	sum = sum.Add(c.cost(args[1]))
+	if p := c.getPath(args[1]); len(p) > 0 {
+		c.addPath(e, p)
+	}
+	c.copySizeEstimates(e, args[1])
+	for i := len(slots) - 1; i >= 0; i-- {
+		c.popLocalVar("@index" + strconv.Itoa(i))
+	}
+	return sum
 }
 
 // costCreateList estimates the cost of constructing a list literal.
@@ -545,6 +581,7 @@ func (c *coster) costComprehension(e ast.Expr) CostEstimate {
 	// Determine the cost for each element in the loop
 	loopCost := c.cost(comp.LoopCondition())
 	stepCost := c.cost(comp.LoopStep())
+	stepSize := c.computeSize(comp.LoopStep())
 
 	// Clear the intermediate variable tracking.
 	c.popLocalVar(comp.IterVar())
@@ -566,11 +603,14 @@ func (c *coster) costComprehension(e ast.Expr) CostEstimate {
 		c.setSize(e, c.computeSize(comp.AccuInit()))
 	case ast.ListKind, ast.MapKind:
 		accuSize := rangeCnt
-		if stepSize := c.computeSize(comp.LoopStep()); stepSize != nil {
+		if k == ast.ListKind {
+			accuSize.Key = nil
+		}
+		if stepSize != nil {
 			if stepSize.Elem != nil {
 				accuSize.Elem = stepSize.Elem
 			}
-			if stepSize.Key != nil {
+			if k == ast.MapKind && stepSize.Key != nil {
 				accuSize.Key = stepSize.Key
 			}
 		}
@@ -599,10 +639,13 @@ func (c *coster) costBind(e ast.Expr) CostEstimate {
 
 	c.pushLocalVar(comp.AccuVar(), comp.AccuInit())
 	sum = sum.Add(c.cost(comp.Result()))
+	if p := c.getPath(comp.Result()); len(p) > 0 {
+		c.addPath(e, p)
+	}
+	// Associate the bind output size with the result size before popping the bound variable.
+	c.copySizeEstimates(e, comp.Result())
 	c.popLocalVar(comp.AccuVar())
 
-	// Associate the bind output size with the result size.
-	c.copySizeEstimates(e, comp.Result())
 	return sum
 }
 
@@ -775,9 +818,6 @@ func (c *coster) computeSize(e ast.Expr) *SizeEstimate {
 	if size, ok := c.computedSizes[e.ID()]; ok {
 		return &size
 	}
-	if size := computeExprSize(e); size != nil {
-		return size
-	}
 	if e.Kind() == ast.IdentKind {
 		varName := e.AsIdent()
 		if v, ok := c.peekLocalVar(varName); ok && v.size != nil {
@@ -789,6 +829,9 @@ func (c *coster) computeSize(e ast.Expr) *SizeEstimate {
 	if size, ok := c.getSizingStrategy().EstimateSize(ctx, node); ok {
 		c.computedSizes[e.ID()] = size
 		return &size
+	}
+	if size := computeExprSize(e); size != nil {
+		return size
 	}
 	if size := computeTypeSize(c.getType(e)); size != nil {
 		return size

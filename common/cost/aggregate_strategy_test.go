@@ -246,7 +246,7 @@ func TestAggregateSizingStrategy_EstimateSize_List(t *testing.T) {
 			name:     "list_count_hint_unknown_string_elements",
 			ctx:      &testEvalContext{estimator: testHintsEstimator{hints: map[string]uint64{"str_list": 5}}, strategy: strat},
 			node:     NewAstNode(nil, []string{"str_list"}, types.NewListType(types.StringType), nil),
-			wantSize: RangedSizeEstimate(6, math.MaxUint64),
+			wantSize: ListSizeEstimate(RangedSizeEstimate(6, math.MaxUint64), UnknownSizeEstimate()),
 			wantOk:   true,
 		},
 		{
@@ -389,11 +389,11 @@ func TestAggregateSizingStrategy_EstimateSize_Map(t *testing.T) {
 				strategy:  strat,
 			},
 			node: NewAstNode(nil, []string{"str_map"}, types.NewMapType(types.StringType, types.StringType), nil),
-			wantSize: SizeEstimate{
-				Min: 21,
-				Max: math.MaxUint64,
-				Key: &SizeEstimate{Min: 3, Max: 3},
-			},
+			wantSize: MapSizeEstimate(
+				RangedSizeEstimate(21, math.MaxUint64),
+				FixedSizeEstimate(3),
+				UnknownSizeEstimate(),
+			),
 			wantOk: true,
 		},
 		{
