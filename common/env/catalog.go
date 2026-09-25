@@ -123,6 +123,7 @@ func (c *Catalog) Find(name string) []*CatalogSymbol {
 		if seen[sym.Name] {
 			continue
 		}
+		// If the input might be namespaced, only consider other namespaced symbols.
 		if strings.Contains(sym.Name, ".") != hasDot {
 			continue
 		}
@@ -149,12 +150,9 @@ func (c *Catalog) Find(name string) []*CatalogSymbol {
 			}
 			return best[i].sym.Name < best[j].sym.Name
 		})
-		resultCount := len(best)
-		if resultCount > 2 {
-			resultCount = 2
-		}
+		resultCount := min(len(best), 2)
 		res := make([]*CatalogSymbol, resultCount)
-		for i := 0; i < resultCount; i++ {
+		for i := range res {
 			res[i] = best[i].sym
 		}
 		return res
@@ -194,6 +192,10 @@ func (c *Catalog) Find(name string) []*CatalogSymbol {
 	return nil
 }
 
+const (
+	maxEditDistanceIterations = 64 * 64
+)
+
 // EditDistance calculates the Damerau-Levenshtein distance between two strings,
 // taking into account insertions, deletions, substitutions, and adjacent transpositions.
 //
@@ -210,6 +212,18 @@ func EditDistance(a, b string) int {
 	if lb == 0 {
 		return la
 	}
+	if la >= 16 && la*2 >= lb*3 {
+		return la - lb
+	}
+	if lb >= 16 && lb*2 >= la*3 {
+		return lb - la
+	}
+	if la*lb > maxEditDistanceIterations {
+		return math.MaxInt32
+	}
+
+	maxLen := max(la, lb)
+	threshold := maxLen / 3
 
 	d := make([][]int, la+1)
 	for i := range d {
@@ -221,6 +235,7 @@ func EditDistance(a, b string) int {
 	}
 
 	for i := 1; i <= la; i++ {
+		rowMin := d[i][0]
 		for j := 1; j <= lb; j++ {
 			cost := 1
 			if ra[i-1] == rb[j-1] {
@@ -234,6 +249,12 @@ func EditDistance(a, b string) int {
 			if i > 1 && j > 1 && ra[i-1] == rb[j-2] && ra[i-2] == rb[j-1] {
 				d[i][j] = min(d[i][j], d[i-2][j-2]+1) // transposition
 			}
+			if d[i][j] < rowMin {
+				rowMin = d[i][j]
+			}
+		}
+		if rowMin > threshold {
+			return math.MaxInt32
 		}
 	}
 	return d[la][lb]

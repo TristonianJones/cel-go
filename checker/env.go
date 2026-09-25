@@ -121,7 +121,7 @@ func (e *Env) Catalog() *env.Catalog {
 		return nil
 	}
 	e.catalogOnce.Do(func() {
-		if e.catalogSupplier != nil {
+		if e.catalog == nil && e.catalogSupplier != nil {
 			e.catalog = e.catalogSupplier()
 		}
 	})
@@ -339,26 +339,28 @@ func (e *Env) validatedDeclarations() *Scopes {
 	return e.declarations
 }
 
+// cloneWithDecls creates a copy of the Env with a new declaration scope stack.
+func (e *Env) cloneWithDecls(decls *Scopes) *Env {
+	return &Env{
+		container:           e.container,
+		provider:            e.provider,
+		declarations:        decls,
+		aggLitElemType:      e.aggLitElemType,
+		filteredOverloadIDs: e.filteredOverloadIDs,
+		jsonFieldNames:      e.jsonFieldNames,
+		catalogSupplier:     e.catalogSupplier,
+		catalog:             e.catalog,
+	}
+}
+
 // enterScope creates a new Env instance with a new innermost declaration scope.
 func (e *Env) enterScope() *Env {
-	childDecls := e.declarations.Push()
-	return &Env{
-		declarations:   childDecls,
-		container:      e.container,
-		provider:       e.provider,
-		aggLitElemType: e.aggLitElemType,
-	}
+	return e.cloneWithDecls(e.declarations.Push())
 }
 
 // exitScope creates a new Env instance with the nearest outer declaration scope.
 func (e *Env) exitScope() *Env {
-	parentDecls := e.declarations.Pop()
-	return &Env{
-		declarations:   parentDecls,
-		container:      e.container,
-		provider:       e.provider,
-		aggLitElemType: e.aggLitElemType,
-	}
+	return e.cloneWithDecls(e.declarations.Pop())
 }
 
 // errorMsg is a type alias meant to represent error-based return values which

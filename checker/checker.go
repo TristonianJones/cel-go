@@ -152,8 +152,8 @@ func (c *checker) checkSelect(e ast.Expr) {
 			e.SetKindCase(c.NewIdent(e.ID(), name))
 			return
 		}
-		qualifiedName := strings.Join(qualifiers, ".")
-		if c.checkCatalogSymbol(e, qualifiers[:len(qualifiers)-1], qualifiedName) {
+		if c.errors.checkUndeclaredIdent(c.env, e.ID(), c.location(e), qualifiers...) {
+			c.setType(e, types.ErrorType)
 			return
 		}
 	}
@@ -311,8 +311,8 @@ func (c *checker) checkCall(e ast.Expr) {
 			c.resolveOverloadOrError(e, fn, nil, args)
 			return
 		}
-		prefixParts := strings.Split(qualifiedPrefix, ".")
-		if c.checkCatalogSymbol(e, prefixParts, maybeQualifiedName) {
+		if c.errors.checkUndeclaredFunction(c.env, e.ID(), c.location(e), qualifiedPrefix, fnName) {
+			c.setType(e, types.ErrorType)
 			return
 		}
 	}
@@ -328,37 +328,6 @@ func (c *checker) checkCall(e ast.Expr) {
 	// Function name not declared, record error.
 	c.setType(e, types.ErrorType)
 	c.errors.undeclaredReference(e.ID(), c.location(e), c.env.container.Name(), fnName)
-}
-
-// hasDeclaredPrefix returns true if any non-empty prefix of the given qualifier parts
-// resolves to a declared identifier or variable in the environment.
-//
-// If a prefix is declared (e.g. 'a' in 'a.b.c'), the expression is treated as a field selection
-// or method call on that declared variable rather than an undeclared qualified symbol name.
-func (c *checker) hasDeclaredPrefix(qualifierPrefixes []string) bool {
-	for i := 1; i <= len(qualifierPrefixes); i++ {
-		if c.env.resolveQualifiedIdent(qualifierPrefixes[:i]...) != nil {
-			return true
-		}
-	}
-	return false
-}
-
-// checkCatalogSymbol checks whether an unresolved qualified name exists in the environment catalog
-// (such as a function, type, or macro in an un-enabled library) and records an undeclared reference error
-// with helpful library suggestions if found.
-//
-// Returns true if a matching catalog symbol was found and an error was recorded.
-func (c *checker) checkCatalogSymbol(e ast.Expr, qualifierPrefixes []string, qualifiedName string) bool {
-	if c.env.Catalog() == nil || c.hasDeclaredPrefix(qualifierPrefixes) {
-		return false
-	}
-	if syms := c.env.Catalog().Find(qualifiedName); len(syms) > 0 {
-		c.setType(e, types.ErrorType)
-		c.errors.undeclaredReference(e.ID(), c.location(e), c.env.container.Name(), qualifiedName)
-		return true
-	}
-	return false
 }
 
 func (c *checker) resolveOverloadOrError(

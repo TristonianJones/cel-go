@@ -15,6 +15,8 @@
 package env_test
 
 import (
+	"math"
+	"strings"
 	"testing"
 
 	"cel.dev/cel-go/common/env"
@@ -35,7 +37,16 @@ func TestEditDistance(t *testing.T) {
 		{"optioanl", "optional", 1}, // transposition
 		{"contians", "contains", 1}, // transposition
 		{"kitten", "sitting", 3},
-		{"hello", "world", 4},
+		{"hello", "world", math.MaxInt32}, // cost > 5/3: early return math.MaxInt32
+		{"abcdefghijk", "abcdefghijk", 0}, // 11 * 11 = 121 <= 4096 iterations
+		{"abcdefghijklmnopqrstuvwxyz0123456", "abcdefghijklmnopqrstuvwxyz0123456", 0}, // 33 * 33 = 1089 <= 4096 iterations
+		{strings.Repeat("a", 64), strings.Repeat("a", 64), 0},                          // 64 * 64 = 4096 <= 4096 iterations
+		{strings.Repeat("a", 65), strings.Repeat("a", 65), math.MaxInt32},              // 65 * 65 = 4225 > 4096 iterations
+		{"abcdefghij", "0123456789", math.MaxInt32},                                   // completely different: cost > 10/3: early return math.MaxInt32
+		{"abcdefghijklmnop", "abcdefghij", 6},                                          // 16 vs 10: la >= 16 and 16 >= 1.5 * 10
+		{"abcdefghij", "abcdefghijklmnop", 6},                                          // 10 vs 16: lb >= 16 and 16 >= 1.5 * 10
+		{"abcdefghijklmnop", "abcdef", 10},                                             // 16 vs 6: la >= 16 and 16 >= 1.5 * 6
+		{"abcdef", "abcdefghijklmnop", 10},                                             // 6 vs 16: lb >= 16 and 16 >= 1.5 * 6
 	}
 
 	for _, tc := range tests {
@@ -50,7 +61,7 @@ func TestCatalogFind(t *testing.T) {
 	cat := env.NewCatalog(
 		&env.CatalogSymbol{Name: "size", Kind: env.FunctionKind},
 		&env.CatalogSymbol{Name: "contains", Kind: env.FunctionKind},
-		&env.CatalogSymbol{Name: "optional.of", Kind: env.FunctionKind, Option: "cel.OptionalTypes()"},
+		&env.CatalogSymbol{Name: "optional", Kind: env.FunctionKind, Option: "cel.OptionalTypes()"},
 		&env.CatalogSymbol{Name: "optional_type", Kind: env.TypeKind, Option: "cel.OptionalTypes()"},
 		&env.CatalogSymbol{Name: "optMap", Kind: env.MacroKind, Option: "cel.OptionalTypes()"},
 		&env.CatalogSymbol{Name: "username", Kind: env.VariableKind},
@@ -65,9 +76,9 @@ func TestCatalogFind(t *testing.T) {
 	if len(syms) != 1 || syms[0].Kind != env.FunctionKind {
 		t.Errorf("Find('size') failed: syms=%+v", syms)
 	}
-	syms = cat.Find("optional.of")
+	syms = cat.Find("optional")
 	if len(syms) != 1 || syms[0].Option != "cel.OptionalTypes()" {
-		t.Errorf("Find('optional.of') failed: syms=%+v", syms)
+		t.Errorf("Find('optional') failed: syms=%+v", syms)
 	}
 	if syms := cat.Find("unknown_ident_with_no_similarity"); len(syms) != 0 {
 		t.Errorf("expected Find('unknown...') to return empty, got %+v", syms)
@@ -80,7 +91,7 @@ func TestCatalogFind(t *testing.T) {
 	}{
 		{"siz", []string{"size"}},
 		{"contians", []string{"contains"}},
-		{"optioanl.of", []string{"optional.of"}},
+		{"optioanl", []string{"optional"}},
 		{"optMpa", []string{"optMap"}},
 		{"usrname", []string{"username"}},
 		// Fallback: prefix match

@@ -279,6 +279,15 @@ func TestCatalogSuggestionsExtensionLibraries(t *testing.T) {
 			expr:    "optional.off('hello')",
 			wantErr: "undeclared reference to 'optional.off' (did you mean 'optional.of'?)",
 		},
+		{
+			name: "no suggestion - iteration budget exceeded",
+			opts: []cel.EnvOption{
+				ext.Strings(),
+			},
+			expr:             "long_unrecognized_custom_function_call(1)",
+			wantErr:          "undeclared reference to 'long_unrecognized_custom_function_call'",
+			wantNoSuggestion: true,
+		},
 	}
 
 	for _, tc := range tests {

@@ -16,6 +16,7 @@ package checker
 
 import (
 	"fmt"
+	"strings"
 
 	"cel.dev/cel-go/common"
 	"cel.dev/cel-go/common/ast"
@@ -95,15 +96,67 @@ func (e *typeErrors) undefinedField(id int64, l common.Location, field string) {
 }
 
 func (e *typeErrors) undeclaredReference(id int64, l common.Location, container string, name string) {
+	var syms []*env.CatalogSymbol
+	if cat := e.getCatalog(); cat != nil {
+		syms = cat.Find(name)
+	}
+	e.undeclaredReferenceWithSymbols(id, l, container, name, syms)
+}
+
+func (e *typeErrors) undeclaredReferenceWithSymbols(id int64, l common.Location, container string, name string, syms []*env.CatalogSymbol) {
 	containerSuffix := ""
 	if container != "" {
 		containerSuffix = fmt.Sprintf(" (in container '%s')", container)
 	}
-	suggestion := ""
-	if cat := e.getCatalog(); cat != nil {
-		suggestion = formatSuggestionSuffix(name, cat.Find(name))
-	}
+	suggestion := formatSuggestionSuffix(name, syms)
 	e.errs.ReportErrorAtID(id, l, "undeclared reference to '%s'%s%s", name, containerSuffix, suggestion)
+}
+
+func (e *typeErrors) checkUndeclaredIdent(env *Env, id int64, l common.Location, qualifiers ...string) bool {
+	if len(qualifiers) <= 1 || e.hasDeclaredPrefix(env, qualifiers[:len(qualifiers)-1]...) {
+		return false
+	}
+	return e.checkUndeclaredReference(env, id, l, strings.Join(qualifiers, "."))
+}
+
+func (e *typeErrors) checkUndeclaredFunction(env *Env, id int64, l common.Location, qualifiedPrefix, fnName string) bool {
+	prefixParts := strings.Split(qualifiedPrefix, ".")
+	if e.hasDeclaredPrefix(env, prefixParts...) {
+		return false
+	}
+	return e.checkUndeclaredReference(env, id, l, qualifiedPrefix+"."+fnName)
+}
+
+func (e *typeErrors) checkUndeclaredReference(env *Env, id int64, l common.Location, qualifiedName string) bool {
+	if env == nil {
+		return false
+	}
+	cat := env.Catalog()
+	if cat == nil {
+		return false
+	}
+	syms := cat.Find(qualifiedName)
+	if len(syms) == 0 {
+		return false
+	}
+	container := ""
+	if env.container != nil {
+		container = env.container.Name()
+	}
+	e.undeclaredReferenceWithSymbols(id, l, container, qualifiedName, syms)
+	return true
+}
+
+func (e *typeErrors) hasDeclaredPrefix(env *Env, qualifierPrefixes ...string) bool {
+	if env == nil {
+		return false
+	}
+	for i := 1; i <= len(qualifierPrefixes); i++ {
+		if env.resolveQualifiedIdent(qualifierPrefixes[:i]...) != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func formatSuggestionSuffix(name string, syms []*env.CatalogSymbol) string {
