@@ -1816,3 +1816,667 @@ func TestNativeTypeAlias(t *testing.T) {
 		t.Errorf("nt.String() got %s, wanted custom.MyStruct", nt.String())
 	}
 }
+
+type iterableOnlyWrapper struct {
+	ref.Val
+	iterable traits.Iterable
+}
+
+func (w iterableOnlyWrapper) Iterator() traits.Iterator {
+	return w.iterable.Iterator()
+}
+
+func BenchmarkListComprehensions(b *testing.B) {
+	env := testNativeEnv(b,
+		cel.Variable("ptrList", cel.ListType(cel.ObjectType("types_test.TestAllTypes"))),
+		cel.Variable("valList", cel.ListType(cel.ObjectType("types_test.TestAllTypes"))),
+		cel.Variable("strList", cel.ListType(cel.StringType)),
+		cel.Variable("intList", cel.ListType(cel.IntType)),
+	)
+	adapter := env.CELTypeAdapter()
+
+	ptrSlice := make([]*TestAllTypes, 10)
+	valSlice := make([]TestAllTypes, 10)
+	strSlice := make([]string, 10)
+	intSlice := make([]int64, 10)
+	for i := 0; i < 10; i++ {
+		v := int32(i)
+		ptrSlice[i] = &TestAllTypes{Int32Val: v}
+		valSlice[i] = TestAllTypes{Int32Val: v}
+		strSlice[i] = fmt.Sprintf("item-%d", i)
+		intSlice[i] = int64(i * 100)
+	}
+
+	ptrLister := types.NewList(adapter, ptrSlice)
+	valLister := types.NewList(adapter, valSlice)
+	strLister := types.NewList(adapter, strSlice)
+	intLister := types.NewList(adapter, intSlice)
+
+	cases := []struct {
+		name string
+		expr string
+		in   map[string]any
+	}{
+		{
+			name: "PtrStruct/Foldable",
+			expr: "ptrList.exists(x, x.Int32Val == 9)",
+			in:   map[string]any{"ptrList": ptrLister},
+		},
+		{
+			name: "PtrStruct/Iterable",
+			expr: "ptrList.exists(x, x.Int32Val == 9)",
+			in:   map[string]any{"ptrList": iterableOnlyWrapper{Val: ptrLister, iterable: ptrLister}},
+		},
+		{
+			name: "ValStruct/Foldable",
+			expr: "valList.exists(x, x.Int32Val == 9)",
+			in:   map[string]any{"valList": valLister},
+		},
+		{
+			name: "ValStruct/Iterable",
+			expr: "valList.exists(x, x.Int32Val == 9)",
+			in:   map[string]any{"valList": iterableOnlyWrapper{Val: valLister, iterable: valLister}},
+		},
+		{
+			name: "String/Foldable",
+			expr: "strList.exists(x, x == 'item-9')",
+			in:   map[string]any{"strList": strLister},
+		},
+		{
+			name: "String/Iterable",
+			expr: "strList.exists(x, x == 'item-9')",
+			in:   map[string]any{"strList": iterableOnlyWrapper{Val: strLister, iterable: strLister}},
+		},
+		{
+			name: "Int64/Foldable",
+			expr: "intList.exists(x, x == 900)",
+			in:   map[string]any{"intList": intLister},
+		},
+		{
+			name: "Int64/Iterable",
+			expr: "intList.exists(x, x == 900)",
+			in:   map[string]any{"intList": iterableOnlyWrapper{Val: intLister, iterable: intLister}},
+		},
+	}
+
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			ast, iss := env.Compile(tc.expr)
+			if iss.Err() != nil {
+				b.Fatalf("Compile(%q) failed: %v", tc.expr, iss.Err())
+			}
+			prg, err := env.Program(ast, cel.EvalOptions(cel.OptOptimize))
+			if err != nil {
+				b.Fatalf("Program() failed: %v", err)
+			}
+			b.ResetTimer()
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				out, _, err := prg.Eval(tc.in)
+				if err != nil || out != types.True {
+					b.Fatalf("Eval got (%v, %v), want true", out, err)
+				}
+			}
+		})
+	}
+}
+
+type directIfaceStruct struct {
+	Ptr *int32
+}
+
+func TestSliceListElemTypePtrAndDirectIface(t *testing.T) {
+	v1 := int32(10)
+	v2 := int32(20)
+	env, err := cel.NewEnv(
+		cel.Types(
+			reflect.TypeFor[TestAllTypes](),
+			reflect.TypeFor[directIfaceStruct](),
+		),
+		cel.Variable("valList", cel.ListType(cel.ObjectType("types_test.TestAllTypes"))),
+		cel.Variable("directList", cel.ListType(cel.ObjectType("types_test.directIfaceStruct"))),
+	)
+	if err != nil {
+		t.Fatalf("cel.NewEnv() failed: %v", err)
+	}
+	adapter := env.CELTypeAdapter()
+
+	valSlice := []TestAllTypes{
+		{Int32Val: 10, StringVal: "first"},
+		{Int32Val: 20, StringVal: "second"},
+	}
+	valLister := types.NewList(adapter, valSlice)
+
+	// 1. Verify Get(0).Value() returns a copy and mutating it does not mutate the backing slice.
+	elem0 := valLister.Get(types.Int(0)).Value().(TestAllTypes)
+	elem0.Int32Val = 999
+	if valSlice[0].Int32Val != 10 {
+		t.Errorf("mutating Get(0).Value() modified backing slice: got %d, want 10", valSlice[0].Int32Val)
+	}
+
+	// 2. Verify Contains and Equal on value-struct sliceList.
+	if valLister.Contains(adapter.NativeToValue(TestAllTypes{Int32Val: 20, StringVal: "second"})) != types.True {
+		t.Errorf("valLister.Contains() got false, want true")
+	}
+	valListerCopy := types.NewList(adapter, []TestAllTypes{
+		{Int32Val: 10, StringVal: "first"},
+		{Int32Val: 20, StringVal: "second"},
+	})
+	if valLister.Equal(valListerCopy) != types.True {
+		t.Errorf("valLister.Equal(valListerCopy) got false, want true")
+	}
+
+	// 3. Verify filter comprehension returning value structs and ConvertToNative back to []TestAllTypes.
+	ast, iss := env.Compile("valList.filter(x, x.Int32Val > 15)")
+	if iss.Err() != nil {
+		t.Fatalf("Compile failed: %v", iss.Err())
+	}
+	prg, err := env.Program(ast)
+	if err != nil {
+		t.Fatalf("Program failed: %v", err)
+	}
+	out, _, err := prg.Eval(map[string]any{"valList": valLister})
+	if err != nil {
+		t.Fatalf("Eval failed: %v", err)
+	}
+	filteredNative, err := out.ConvertToNative(reflect.TypeFor[[]TestAllTypes]())
+	if err != nil {
+		t.Fatalf("ConvertToNative([]TestAllTypes) failed: %v", err)
+	}
+	filteredSlice := filteredNative.([]TestAllTypes)
+	if len(filteredSlice) != 1 || filteredSlice[0].Int32Val != 20 || filteredSlice[0].StringVal != "second" {
+		t.Errorf("filteredSlice got %+v, want [{Int32Val:20 StringVal:second}]", filteredSlice)
+	}
+	// Mutating filteredSlice must not affect original valSlice.
+	filteredSlice[0].Int32Val = 777
+	if valSlice[1].Int32Val != 20 {
+		t.Errorf("mutating filteredSlice modified original valSlice: got %d, want 20", valSlice[1].Int32Val)
+	}
+
+	// 4. Verify direct-interface struct (single pointer field, isDirectIface == true).
+	directSlice := []directIfaceStruct{{Ptr: &v1}, {Ptr: &v2}}
+	directLister := types.NewList(adapter, directSlice)
+	astDirect, iss := env.Compile("directList.exists(d, d.Ptr == 20)")
+	if iss.Err() != nil {
+		t.Fatalf("Compile directList failed: %v", iss.Err())
+	}
+	prgDirect, err := env.Program(astDirect)
+	if err != nil {
+		t.Fatalf("Program directList failed: %v", err)
+	}
+	outDirect, _, err := prgDirect.Eval(map[string]any{"directList": directLister})
+	if err != nil || outDirect != types.True {
+		t.Errorf("directList.exists got (%v, %v), want true", outDirect, err)
+	}
+
+	// 5. Verify zero-sized struct slice []struct{}.
+	emptyStructLister := types.NewList(adapter, []struct{}{{}, {}})
+	if emptyStructLister.Size() != types.Int(2) {
+		t.Errorf("emptyStructLister.Size() got %v, want 2", emptyStructLister.Size())
+	}
+}
+
+type iterableOnlyMapper struct {
+	traits.Mapper
+}
+
+func (m iterableOnlyMapper) FindStringKey(s string) (any, bool) {
+	if nm, ok := m.Mapper.(interface{ FindStringKey(string) (any, bool) }); ok {
+		return nm.FindStringKey(s)
+	}
+	return nil, false
+}
+
+func (m iterableOnlyMapper) FindInt64Key(ik int64) (any, bool) {
+	if nm, ok := m.Mapper.(interface{ FindInt64Key(int64) (any, bool) }); ok {
+		return nm.FindInt64Key(ik)
+	}
+	return nil, false
+}
+
+func (m iterableOnlyMapper) FindNative(key any) (any, bool) {
+	if nm, ok := m.Mapper.(interface{ FindNative(any) (any, bool) }); ok {
+		return nm.FindNative(key)
+	}
+	return nil, false
+}
+
+func TestNativeMapGeneric(t *testing.T) {
+	env := testNativeEnv(
+		t,
+		cel.OptionalTypes(),
+		ext.TwoVarComprehensions(),
+		cel.Variable("valMap", cel.MapType(cel.StringType, cel.ObjectType("types_test.TestAllTypes"))),
+	)
+	adapter := env.CELTypeAdapter()
+
+	valMap := map[string]TestAllTypes{
+		"first":  {Int32Val: 10, StringVal: "alpha"},
+		"second": {Int32Val: 20, StringVal: "beta"},
+	}
+	mapper := types.NewMap(adapter, valMap)
+
+	// 1. Verify Get returns an independent copy (does not mutate backing map).
+	got := mapper.Get(types.String("first"))
+	if types.IsError(got) {
+		t.Fatalf("mapper.Get('first') failed: %v", got)
+	}
+	gotStruct, ok := got.Value().(TestAllTypes)
+	if !ok {
+		t.Fatalf("mapper.Get('first').Value() got type %T, want TestAllTypes", got.Value())
+	}
+	gotStruct.Int32Val = 999
+	if valMap["first"].Int32Val != 10 {
+		t.Errorf("mutating Get('first').Value() modified backing map: got %d, want 10", valMap["first"].Int32Val)
+	}
+
+	// 2. Verify Contains and Equal.
+	if mapper.Contains(types.String("second")) != types.True {
+		t.Errorf("mapper.Contains('second') got false, want true")
+	}
+	mapperCopy := types.NewMap(adapter, map[string]TestAllTypes{
+		"first":  {Int32Val: 10, StringVal: "alpha"},
+		"second": {Int32Val: 20, StringVal: "beta"},
+	})
+	if mapper.Equal(mapperCopy) != types.True {
+		t.Errorf("mapper.Equal(mapperCopy) got false, want true")
+	}
+
+	// 3. Verify 1-variable comprehension (FoldKeyOnly fast-path).
+	ast1, iss := env.Compile("valMap.exists(k, k == 'second')")
+	if iss.Err() != nil {
+		t.Fatalf("Compile 1-var failed: %v", iss.Err())
+	}
+	prg1, err := env.Program(ast1)
+	if err != nil {
+		t.Fatalf("Program 1-var failed: %v", err)
+	}
+	out1, _, err := prg1.Eval(map[string]any{"valMap": mapper})
+	if err != nil || out1 != types.True {
+		t.Errorf("1-var exists got (%v, %v), want true", out1, err)
+	}
+
+	// 4. Verify 2-variable comprehension (zero-copy valTypePtr fast-path).
+	ast2, iss := env.Compile("valMap.exists(k, v, k == 'second' && v.Int32Val == 20)")
+	if iss.Err() != nil {
+		t.Fatalf("Compile 2-var failed: %v", iss.Err())
+	}
+	prg2, err := env.Program(ast2)
+	if err != nil {
+		t.Fatalf("Program 2-var failed: %v", err)
+	}
+	out2, _, err := prg2.Eval(map[string]any{"valMap": mapper})
+	if err != nil || out2 != types.True {
+		t.Errorf("2-var exists got (%v, %v), want true", out2, err)
+	}
+
+	// 5. Verify transformMap returning value structs and ConvertToNative back to map[string]TestAllTypes
+	// ensuring no stack aliasing across loop iterations.
+	astTrans, iss := env.Compile("valMap.transformMap(k, v, v.Int32Val > 15, v)")
+	if iss.Err() != nil {
+		t.Fatalf("Compile transformMap failed: %v", iss.Err())
+	}
+	prgTrans, err := env.Program(astTrans)
+	if err != nil {
+		t.Fatalf("Program transformMap failed: %v", err)
+	}
+	outTrans, _, err := prgTrans.Eval(map[string]any{"valMap": mapper})
+	if err != nil {
+		t.Fatalf("Eval transformMap failed: %v", err)
+	}
+	transNative, err := outTrans.ConvertToNative(reflect.TypeFor[map[string]TestAllTypes]())
+	if err != nil {
+		t.Fatalf("ConvertToNative(map[string]TestAllTypes) failed: %v", err)
+	}
+	transMap := transNative.(map[string]TestAllTypes)
+	if len(transMap) != 1 || transMap["second"].Int32Val != 20 || transMap["second"].StringVal != "beta" {
+		t.Errorf("transMap got %+v, want map[second:{Int32Val:20 StringVal:beta}]", transMap)
+	}
+}
+
+func BenchmarkMapComprehensions(b *testing.B) {
+	env := testNativeEnv(
+		b,
+		cel.OptionalTypes(),
+		ext.TwoVarComprehensions(),
+		cel.Variable("ptrMap", cel.MapType(cel.StringType, cel.ObjectType("types_test.TestAllTypes"))),
+		cel.Variable("valMap", cel.MapType(cel.StringType, cel.ObjectType("types_test.TestAllTypes"))),
+		cel.Variable("strMap", cel.MapType(cel.StringType, cel.StringType)),
+		cel.Variable("intMap", cel.MapType(cel.IntType, cel.BoolType)),
+	)
+	adapter := env.CELTypeAdapter()
+
+	ptrMap := make(map[string]*TestAllTypes, 10)
+	valMap := make(map[string]TestAllTypes, 10)
+	strMap := make(map[string]string, 10)
+	intMap := make(map[int64]bool, 10)
+	for i := 0; i < 10; i++ {
+		k := fmt.Sprintf("k%d", i)
+		v := fmt.Sprintf("v%d", i)
+		ptrMap[k] = &TestAllTypes{Int32Val: int32(i), StringVal: v}
+		valMap[k] = TestAllTypes{Int32Val: int32(i), StringVal: v}
+		strMap[k] = v
+		intMap[int64(i)] = (i == 9)
+	}
+
+	ptrMapper := types.NewMap(adapter, ptrMap)
+	valMapper := types.NewMap(adapter, valMap)
+	strMapper := types.NewMap(adapter, strMap)
+	intMapper := types.NewMap(adapter, intMap)
+
+	ptrLegacy := types.NewDynamicMap(adapter, ptrMap)
+	valLegacy := types.NewDynamicMap(adapter, valMap)
+	strLegacy := types.NewDynamicMap(adapter, strMap)
+	intLegacy := types.NewDynamicMap(adapter, intMap)
+
+	compileBench := func(expr string) cel.Program {
+		ast, iss := env.Compile(expr)
+		if iss.Err() != nil {
+			b.Fatalf("Compile(%q) failed: %v", expr, iss.Err())
+		}
+		prg, err := env.Program(ast, cel.EvalOptions(cel.OptOptimize))
+		if err != nil {
+			b.Fatalf("Program(%q) failed: %v", expr, err)
+		}
+		return prg
+	}
+
+	prgPtr1Var := compileBench("ptrMap.exists(k, ptrMap[k].Int32Val == 9)")
+	prgPtr2Var := compileBench("ptrMap.exists(k, v, v.Int32Val == 9)")
+	prgVal1Var := compileBench("valMap.exists(k, valMap[k].Int32Val == 9)")
+	prgVal2Var := compileBench("valMap.exists(k, v, v.Int32Val == 9)")
+	prgStr1Var := compileBench("strMap.exists(k, k == 'k9')")
+	prgStr2Var := compileBench("strMap.exists(k, v, v == 'v9')")
+	prgInt1Var := compileBench("intMap.exists(k, intMap[k])")
+	prgInt2Var := compileBench("intMap.exists(k, v, v)")
+
+	cases := []struct {
+		name string
+		prg  cel.Program
+		vars map[string]any
+	}{
+		{"PtrStruct_1Var_LegacyReflect", prgPtr1Var, map[string]any{"ptrMap": ptrLegacy}},
+		{"PtrStruct_1Var_Iterable", prgPtr1Var, map[string]any{"ptrMap": iterableOnlyMapper{ptrMapper}}},
+		{"PtrStruct_1Var_Foldable", prgPtr1Var, map[string]any{"ptrMap": ptrMapper}},
+		{"PtrStruct_2Var_LegacyReflect", prgPtr2Var, map[string]any{"ptrMap": ptrLegacy}},
+		{"PtrStruct_2Var_Foldable", prgPtr2Var, map[string]any{"ptrMap": ptrMapper}},
+		{"ValStruct_1Var_LegacyReflect", prgVal1Var, map[string]any{"valMap": valLegacy}},
+		{"ValStruct_1Var_Iterable", prgVal1Var, map[string]any{"valMap": iterableOnlyMapper{valMapper}}},
+		{"ValStruct_1Var_Foldable", prgVal1Var, map[string]any{"valMap": valMapper}},
+		{"ValStruct_2Var_LegacyReflect", prgVal2Var, map[string]any{"valMap": valLegacy}},
+		{"ValStruct_2Var_Foldable", prgVal2Var, map[string]any{"valMap": valMapper}},
+		{"StringMap_1Var_LegacyReflect", prgStr1Var, map[string]any{"strMap": strLegacy}},
+		{"StringMap_1Var_Iterable", prgStr1Var, map[string]any{"strMap": iterableOnlyMapper{strMapper}}},
+		{"StringMap_1Var_Foldable", prgStr1Var, map[string]any{"strMap": strMapper}},
+		{"StringMap_2Var_LegacyReflect", prgStr2Var, map[string]any{"strMap": strLegacy}},
+		{"StringMap_2Var_Foldable", prgStr2Var, map[string]any{"strMap": strMapper}},
+		{"Int64Bool_1Var_LegacyReflect", prgInt1Var, map[string]any{"intMap": intLegacy}},
+		{"Int64Bool_1Var_Iterable", prgInt1Var, map[string]any{"intMap": iterableOnlyMapper{intMapper}}},
+		{"Int64Bool_1Var_Foldable", prgInt1Var, map[string]any{"intMap": intMapper}},
+		{"Int64Bool_2Var_LegacyReflect", prgInt2Var, map[string]any{"intMap": intLegacy}},
+		{"Int64Bool_2Var_Foldable", prgInt2Var, map[string]any{"intMap": intMapper}},
+	}
+
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ResetTimer()
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				out, _, err := tc.prg.Eval(tc.vars)
+				if err != nil || out != types.True {
+					b.Fatalf("Eval got (%v, %v), want true", out, err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkMapLookup(b *testing.B) {
+	env := testNativeEnv(
+		b,
+		cel.Variable("ptrMap", cel.MapType(cel.StringType, cel.ObjectType("types_test.TestAllTypes"))),
+		cel.Variable("valMap", cel.MapType(cel.StringType, cel.ObjectType("types_test.TestAllTypes"))),
+		cel.Variable("strMap", cel.MapType(cel.StringType, cel.StringType)),
+		cel.Variable("intMap", cel.MapType(cel.IntType, cel.BoolType)),
+	)
+	adapter := env.CELTypeAdapter()
+
+	ptrMap := map[string]*TestAllTypes{"k9": {Int32Val: 9}}
+	valMap := map[string]TestAllTypes{"k9": {Int32Val: 9}}
+	strMap := map[string]string{"k9": "v9"}
+	intMap := map[int64]bool{9: true}
+
+	ptrMapper := types.NewMap(adapter, ptrMap)
+	valMapper := types.NewMap(adapter, valMap)
+	strMapper := types.NewMap(adapter, strMap)
+	intMapper := types.NewMap(adapter, intMap)
+
+	ptrLegacy := types.NewDynamicMap(adapter, ptrMap)
+	valLegacy := types.NewDynamicMap(adapter, valMap)
+	strLegacy := types.NewDynamicMap(adapter, strMap)
+	intLegacy := types.NewDynamicMap(adapter, intMap)
+
+	compileBench := func(expr string) cel.Program {
+		ast, iss := env.Compile(expr)
+		if iss.Err() != nil {
+			b.Fatalf("Compile(%q) failed: %v", expr, iss.Err())
+		}
+		prg, err := env.Program(ast, cel.EvalOptions(cel.OptOptimize))
+		if err != nil {
+			b.Fatalf("Program(%q) failed: %v", expr, err)
+		}
+		return prg
+	}
+
+	prgPtr := compileBench("ptrMap['k9'].Int32Val == 9")
+	prgVal := compileBench("valMap['k9'].Int32Val == 9")
+	prgStr := compileBench("strMap['k9'] == 'v9'")
+	prgInt := compileBench("intMap[9] == true")
+
+	cases := []struct {
+		name string
+		prg  cel.Program
+		vars map[string]any
+	}{
+		{"PtrStruct_LegacyReflect", prgPtr, map[string]any{"ptrMap": ptrLegacy}},
+		{"PtrStruct_NewMap", prgPtr, map[string]any{"ptrMap": ptrMapper}},
+		{"ValStruct_LegacyReflect", prgVal, map[string]any{"valMap": valLegacy}},
+		{"ValStruct_NewMap", prgVal, map[string]any{"valMap": valMapper}},
+		{"StringMap_LegacyReflect", prgStr, map[string]any{"strMap": strLegacy}},
+		{"StringMap_NewMap", prgStr, map[string]any{"strMap": strMapper}},
+		{"Int64Bool_LegacyReflect", prgInt, map[string]any{"intMap": intLegacy}},
+		{"Int64Bool_NewMap", prgInt, map[string]any{"intMap": intMapper}},
+	}
+
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ResetTimer()
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				out, _, err := tc.prg.Eval(tc.vars)
+				if err != nil || out != types.True {
+					b.Fatalf("Eval got (%v, %v), want true", out, err)
+				}
+			}
+		})
+	}
+}
+
+func TestNewDynamicListAdaptations(t *testing.T) {
+	env := testNativeEnv(
+		t,
+		cel.Variable("ptrList", cel.ListType(cel.ObjectType("types_test.TestAllTypes"))),
+		cel.Variable("valList", cel.ListType(cel.ObjectType("types_test.TestAllTypes"))),
+		cel.Variable("entity", cel.ObjectType("types_test.TestAllTypes")),
+	)
+	adapter := env.CELTypeAdapter()
+
+	ptrSlice := []*TestAllTypes{{Int32Val: 1}, {Int32Val: 2}, {Int32Val: 9}}
+	valSlice := []TestAllTypes{{Int32Val: 1}, {Int32Val: 2}, {Int32Val: 9}}
+	entity := &TestAllTypes{
+		ListVal: []*TestNestedType{
+			{NestedCustomName: "a"},
+			{NestedCustomName: "b"},
+			{NestedCustomName: "target"},
+		},
+		CustomSliceVal: []TestNestedSliceType{
+			{Value: "x"},
+			{Value: "y"},
+			{Value: "target"},
+		},
+	}
+
+	vars := map[string]any{
+		"ptrList": types.NewDynamicList(adapter, ptrSlice),
+		"valList": types.NewDynamicList(adapter, valSlice),
+		"entity":  entity,
+	}
+
+	exprs := []string{
+		"ptrList.exists(x, x.Int32Val == 9)",
+		"ptrList[2].Int32Val == 9",
+		"valList.exists(x, x.Int32Val == 9)",
+		"valList[2].Int32Val == 9",
+		"entity.ListVal.exists(x, x.NestedCustomName == 'target')",
+		"entity.ListVal[2].NestedCustomName == 'target'",
+		"entity.CustomSliceVal.exists(x, x.Value == 'target')",
+		"entity.CustomSliceVal[2].Value == 'target'",
+	}
+
+	for _, expr := range exprs {
+		ast, iss := env.Compile(expr)
+		if iss.Err() != nil {
+			t.Fatalf("Compile(%q) failed: %v", expr, iss.Err())
+		}
+		prg, err := env.Program(ast)
+		if err != nil {
+			t.Fatalf("Program(%q) failed: %v", expr, err)
+		}
+		out, _, err := prg.Eval(vars)
+		if err != nil || out != types.True {
+			t.Fatalf("Eval(%q) got (%v, %v), want true", expr, out, err)
+		}
+	}
+}
+
+func BenchmarkNewDynamicList(b *testing.B) {
+	env := testNativeEnv(
+		b,
+		cel.Variable("ptrList", cel.ListType(cel.ObjectType("types_test.TestAllTypes"))),
+		cel.Variable("valList", cel.ListType(cel.ObjectType("types_test.TestAllTypes"))),
+		cel.Variable("strList", cel.ListType(cel.StringType)),
+		cel.Variable("entity", cel.ObjectType("types_test.TestAllTypes")),
+	)
+	adapter := env.CELTypeAdapter()
+
+	var ptrArr [10]*TestAllTypes
+	var valArr [10]TestAllTypes
+	var strArr [10]string
+	ptrSlice := make([]*TestAllTypes, 10)
+	valSlice := make([]TestAllTypes, 10)
+	strSlice := make([]string, 10)
+	nestedPtrs := make([]*TestNestedType, 10)
+	nestedVals := make([]TestNestedSliceType, 10)
+
+	for i := 0; i < 10; i++ {
+		s := fmt.Sprintf("item-%d", i)
+		tVal := TestAllTypes{Int32Val: int32(i), StringVal: s}
+		valArr[i] = tVal
+		valSlice[i] = tVal
+		ptrArr[i] = &valSlice[i]
+		ptrSlice[i] = &valSlice[i]
+		strArr[i] = s
+		strSlice[i] = s
+		nestedPtrs[i] = &TestNestedType{NestedCustomName: s}
+		nestedVals[i] = TestNestedSliceType{Value: s}
+	}
+
+	entity := &TestAllTypes{
+		ListVal:        nestedPtrs,
+		CustomSliceVal: nestedVals,
+	}
+
+	// Compare legacy reflection-backed baseList (NewLegacyDynamicList) against
+	// the adapted NewDynamicList (backed by NewList / sliceList) on identical slices.
+	ptrSliceList := types.NewDynamicList(adapter, ptrSlice)
+	valSliceList := types.NewDynamicList(adapter, valSlice)
+	strSliceList := types.NewDynamicList(adapter, strSlice)
+
+	compileBench := func(expr string) cel.Program {
+		ast, iss := env.Compile(expr)
+		if iss.Err() != nil {
+			b.Fatalf("Compile(%q) failed: %v", expr, iss.Err())
+		}
+		prg, err := env.Program(ast, cel.EvalOptions(cel.OptOptimize))
+		if err != nil {
+			b.Fatalf("Program(%q) failed: %v", expr, err)
+		}
+		return prg
+	}
+
+	prgPtrFold := compileBench("ptrList.exists(x, x.Int32Val == 9)")
+	prgPtrIter := compileBench("ptrList.all(x, x.Int32Val >= 0 && x.Int32Val < 10)")
+	prgPtrIdx := compileBench("ptrList[9].Int32Val == 9")
+
+	prgValFold := compileBench("valList.exists(x, x.Int32Val == 9)")
+	prgValIter := compileBench("valList.all(x, x.Int32Val >= 0 && x.Int32Val < 10)")
+	prgValIdx := compileBench("valList[9].Int32Val == 9")
+
+	prgStrFold := compileBench("strList.exists(x, x == 'item-9')")
+
+	prgFieldPtrFold := compileBench("entity.ListVal.exists(x, x.NestedCustomName == 'item-9')")
+	prgFieldPtrIdx := compileBench("entity.ListVal[9].NestedCustomName == 'item-9'")
+	prgFieldValFold := compileBench("entity.CustomSliceVal.exists(x, x.Value == 'item-9')")
+	prgFieldValIdx := compileBench("entity.CustomSliceVal[9].Value == 'item-9'")
+
+	cases := []struct {
+		name string
+		prg  cel.Program
+		vars map[string]any
+	}{
+		{"PtrStruct_Fold_NewDynamicList", prgPtrFold, map[string]any{"ptrList": ptrSliceList}},
+		{"PtrStruct_Iter_NewDynamicList", prgPtrIter, map[string]any{"ptrList": ptrSliceList}},
+		{"PtrStruct_Index_NewDynamicList", prgPtrIdx, map[string]any{"ptrList": ptrSliceList}},
+		{"ValStruct_Fold_NewDynamicList", prgValFold, map[string]any{"valList": valSliceList}},
+		{"ValStruct_Iter_NewDynamicList", prgValIter, map[string]any{"valList": valSliceList}},
+		{"ValStruct_Index_NewDynamicList", prgValIdx, map[string]any{"valList": valSliceList}},
+		{"String_Fold_NewDynamicList", prgStrFold, map[string]any{"strList": strSliceList}},
+		{"StructField_PtrSlice_Fold", prgFieldPtrFold, map[string]any{"entity": entity}},
+		{"StructField_PtrSlice_Index", prgFieldPtrIdx, map[string]any{"entity": entity}},
+		{"StructField_ValSlice_Fold", prgFieldValFold, map[string]any{"entity": entity}},
+		{"StructField_ValSlice_Index", prgFieldValIdx, map[string]any{"entity": entity}},
+	}
+
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ResetTimer()
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				out, _, err := tc.prg.Eval(tc.vars)
+				if err != nil || out != types.True {
+					b.Fatalf("Eval got (%v, %v), want true", out, err)
+				}
+			}
+		})
+	}
+	b.Run("ConstructAndFold_PtrSlice_NewDynamicList", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			l := types.NewDynamicList(adapter, ptrSlice)
+			out, _, err := prgPtrFold.Eval(map[string]any{"ptrList": l})
+			if err != nil || out != types.True {
+				b.Fatalf("Eval got (%v, %v), want true", out, err)
+			}
+		}
+	})
+	b.Run("ConstructAndFold_ValSlice_NewDynamicList", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			l := types.NewDynamicList(adapter, valSlice)
+			out, _, err := prgValFold.Eval(map[string]any{"valList": l})
+			if err != nil || out != types.True {
+				b.Fatalf("Eval got (%v, %v), want true", out, err)
+			}
+		}
+	})
+}

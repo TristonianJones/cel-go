@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
@@ -167,17 +168,28 @@ func (t *NativeType) Adapt(adapter Adapter, value any) ref.Val {
 		return NullValue
 	}
 	refVal := reflect.ValueOf(value)
+	var structPtr unsafe.Pointer
 	if refVal.Kind() == reflect.Ptr {
 		if refVal.IsNil() {
 			return NullValue
 		}
+		structPtr = unsafe.Pointer(refVal.Pointer())
 		refVal = refVal.Elem()
+	} else if refVal.Kind() == reflect.Struct {
+		if !isDirectIface(t.refType) {
+			structPtr = (*emptyInterface)(unsafe.Pointer(&value)).ptr
+		} else {
+			ptr := reflect.New(t.refType)
+			ptr.Elem().Set(refVal)
+			structPtr = unsafe.Pointer(ptr.Pointer())
+		}
 	}
 	return &nativeObj{
-		Adapter:  adapter,
-		val:      value,
-		valType:  t,
-		refValue: refVal,
+		Adapter:   adapter,
+		val:       value,
+		valType:   t,
+		refValue:  refVal,
+		structPtr: structPtr,
 	}
 }
 
@@ -254,17 +266,9 @@ func (t *NativeType) FindFieldType(fieldName string) (*FieldType, bool) {
 		return nil, false
 	}
 	return &FieldType{
-		Type: celType,
-		IsSet: func(obj any) bool {
-			refVal := reflect.Indirect(reflect.ValueOf(obj))
-			refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
-			return refFieldVal.IsValid() && !refFieldVal.IsZero()
-		},
-		GetFrom: func(obj any) (any, error) {
-			refVal := reflect.Indirect(reflect.ValueOf(obj))
-			refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
-			return getFieldValue(refFieldVal), nil
-		},
+		Type:    celType,
+		IsSet:   t.makeFieldTester(refField),
+		GetFrom: t.makeFieldGetter(refField),
 	}, true
 }
 
@@ -292,10 +296,11 @@ func (t *NativeType) NewValue(adapter Adapter, fields map[string]ref.Val) ref.Va
 
 type nativeObj struct {
 	Adapter
-	val      any
-	valType  *NativeType
-	refValue reflect.Value
-	aggSize  uint32
+	val       any
+	valType   *NativeType
+	refValue  reflect.Value
+	structPtr unsafe.Pointer
+	aggSize   uint32
 }
 
 func (o *nativeObj) ConvertToNative(typeDesc reflect.Type) (any, error) {
@@ -652,18 +657,759 @@ func safeGetFieldByIndex(v reflect.Value, index []int) reflect.Value {
 	return v
 }
 
+func structFieldOffset(rootType reflect.Type, index []int) (uintptr, bool) {
+	var offset uintptr
+	cur := rootType
+	for i, idx := range index {
+		if cur.Kind() != reflect.Struct || idx >= cur.NumField() {
+			return 0, false
+		}
+		sf := cur.Field(idx)
+		offset += sf.Offset
+		if i < len(index)-1 {
+			cur = sf.Type
+		}
+	}
+	return offset, true
+}
+
+func (t *NativeType) structPtrFrom(obj any, expectedPtrTyp, expectedStructTyp unsafe.Pointer) (unsafe.Pointer, bool) {
+	e := (*emptyInterface)(unsafe.Pointer(&obj))
+	if e.typ == expectedPtrTyp {
+		return e.ptr, e.ptr != nil
+	}
+	if expectedStructTyp != nil && e.typ == expectedStructTyp {
+		return e.ptr, e.ptr != nil
+	}
+	if no, ok := obj.(*nativeObj); ok && no.valType == t {
+		return no.structPtr, no.structPtr != nil
+	}
+	return nil, false
+}
+
+func unwrapStruct(obj any) reflect.Value {
+	if no, ok := obj.(*nativeObj); ok {
+		return no.refValue
+	}
+	return reflect.Indirect(reflect.ValueOf(obj))
+}
+
+func fieldTesterFor[T comparable](t *NativeType, refField reflect.StructField, offset uintptr, expectedPtrTyp, expectedStructTyp unsafe.Pointer) func(obj any) bool {
+	var zero T
+	return func(obj any) bool {
+		if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+			return *(*T)(unsafe.Add(ptr, offset)) != zero
+		}
+		refVal := unwrapStruct(obj)
+		refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+		return refFieldVal.IsValid() && !refFieldVal.IsZero()
+	}
+}
+
+func intFieldGetter[T ~int | ~int8 | ~int16 | ~int32 | ~int64](t *NativeType, refField reflect.StructField, offset uintptr, expectedPtrTyp, expectedStructTyp unsafe.Pointer) func(obj any) (any, error) {
+	return func(obj any) (any, error) {
+		if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+			return Int(*(*T)(unsafe.Add(ptr, offset))), nil
+		}
+		refVal := unwrapStruct(obj)
+		refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+		if !refFieldVal.IsValid() {
+			return nil, nil
+		}
+		return Int(refFieldVal.Int()), nil
+	}
+}
+
+func uintFieldGetter[T ~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64](t *NativeType, refField reflect.StructField, offset uintptr, expectedPtrTyp, expectedStructTyp unsafe.Pointer) func(obj any) (any, error) {
+	return func(obj any) (any, error) {
+		if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+			return Uint(*(*T)(unsafe.Add(ptr, offset))), nil
+		}
+		refVal := unwrapStruct(obj)
+		refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+		if !refFieldVal.IsValid() {
+			return nil, nil
+		}
+		return Uint(refFieldVal.Uint()), nil
+	}
+}
+
+func floatFieldGetter[T ~float32 | ~float64](t *NativeType, refField reflect.StructField, offset uintptr, expectedPtrTyp, expectedStructTyp unsafe.Pointer) func(obj any) (any, error) {
+	return func(obj any) (any, error) {
+		if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+			return Double(*(*T)(unsafe.Add(ptr, offset))), nil
+		}
+		refVal := unwrapStruct(obj)
+		refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+		if !refFieldVal.IsValid() {
+			return nil, nil
+		}
+		return Double(refFieldVal.Float()), nil
+	}
+}
+
+func sliceFieldGetter[T any](t *NativeType, refField reflect.StructField, offset uintptr, expectedPtrTyp, expectedStructTyp unsafe.Pointer) func(obj any) (any, error) {
+	return func(obj any) (any, error) {
+		if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+			return NewList(DefaultTypeAdapter, *(*[]T)(unsafe.Add(ptr, offset))), nil
+		}
+		refVal := unwrapStruct(obj)
+		refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+		if !refFieldVal.IsValid() {
+			return nil, nil
+		}
+		return NewList(DefaultTypeAdapter, refFieldVal.Interface().([]T)), nil
+	}
+}
+
+func mapFieldGetter[K comparable, V any](t *NativeType, refField reflect.StructField, offset uintptr, expectedPtrTyp, expectedStructTyp unsafe.Pointer) func(obj any) (any, error) {
+	return func(obj any) (any, error) {
+		if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+			return NewMap(DefaultTypeAdapter, *(*map[K]V)(unsafe.Add(ptr, offset))), nil
+		}
+		refVal := unwrapStruct(obj)
+		refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+		if !refFieldVal.IsValid() {
+			return nil, nil
+		}
+		return NewMap(DefaultTypeAdapter, refFieldVal.Interface().(map[K]V)), nil
+	}
+}
+
+func (t *NativeType) makeFieldTester(refField reflect.StructField) func(obj any) bool {
+	if offset, ok := structFieldOffset(t.refType, refField.Index); ok {
+		ptrZero := reflect.Zero(reflect.PointerTo(t.refType)).Interface()
+		expectedPtrTyp := (*emptyInterface)(unsafe.Pointer(&ptrZero)).typ
+		var expectedStructTyp unsafe.Pointer
+		if !isDirectIface(t.refType) {
+			structZero := reflect.Zero(t.refType).Interface()
+			expectedStructTyp = (*emptyInterface)(unsafe.Pointer(&structZero)).typ
+		}
+		switch refField.Type.Kind() {
+		case reflect.Bool:
+			return fieldTesterFor[bool](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+		case reflect.Int:
+			return fieldTesterFor[int](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+		case reflect.Int8:
+			return fieldTesterFor[int8](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+		case reflect.Int16:
+			return fieldTesterFor[int16](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+		case reflect.Int32:
+			return fieldTesterFor[int32](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+		case reflect.Int64:
+			return fieldTesterFor[int64](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+		case reflect.Uint:
+			return fieldTesterFor[uint](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+		case reflect.Uint8:
+			return fieldTesterFor[uint8](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+		case reflect.Uint16:
+			return fieldTesterFor[uint16](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+		case reflect.Uint32, reflect.Float32:
+			return fieldTesterFor[uint32](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+		case reflect.Uint64, reflect.Float64:
+			return fieldTesterFor[uint64](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+		case reflect.String:
+			return fieldTesterFor[string](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+		case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Chan, reflect.Func, reflect.UnsafePointer:
+			return fieldTesterFor[unsafe.Pointer](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+		case reflect.Struct:
+			if refField.Type == timestampType {
+				return func(obj any) bool {
+					if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+						return !(*time.Time)(unsafe.Add(ptr, offset)).IsZero()
+					}
+					refVal := unwrapStruct(obj)
+					refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+					return refFieldVal.IsValid() && !refFieldVal.IsZero()
+				}
+			}
+			return func(obj any) bool {
+				if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+					return !reflect.NewAt(refField.Type, unsafe.Add(ptr, offset)).Elem().IsZero()
+				}
+				refVal := unwrapStruct(obj)
+				refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+				return refFieldVal.IsValid() && !refFieldVal.IsZero()
+			}
+		}
+	}
+	return func(obj any) bool {
+		refVal := unwrapStruct(obj)
+		refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+		return refFieldVal.IsValid() && !refFieldVal.IsZero()
+	}
+}
+
+func (t *NativeType) makeFieldGetter(refField reflect.StructField) func(obj any) (any, error) {
+	if offset, ok := structFieldOffset(t.refType, refField.Index); ok {
+		ptrZero := reflect.Zero(reflect.PointerTo(t.refType)).Interface()
+		expectedPtrTyp := (*emptyInterface)(unsafe.Pointer(&ptrZero)).typ
+		var expectedStructTyp unsafe.Pointer
+		if !isDirectIface(t.refType) {
+			structZero := reflect.Zero(t.refType).Interface()
+			expectedStructTyp = (*emptyInterface)(unsafe.Pointer(&structZero)).typ
+		}
+		switch refField.Type.Kind() {
+		case reflect.Bool:
+			return func(obj any) (any, error) {
+				if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+					if *(*bool)(unsafe.Add(ptr, offset)) {
+						return True, nil
+					}
+					return False, nil
+				}
+				refVal := unwrapStruct(obj)
+				refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+				if !refFieldVal.IsValid() {
+					return nil, nil
+				}
+				if refFieldVal.Bool() {
+					return True, nil
+				}
+				return False, nil
+			}
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			if refField.Type == durationType {
+				return func(obj any) (any, error) {
+					if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+						return Duration{Duration: *(*time.Duration)(unsafe.Add(ptr, offset))}, nil
+					}
+					refVal := unwrapStruct(obj)
+					refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+					if !refFieldVal.IsValid() {
+						return nil, nil
+					}
+					return Duration{Duration: time.Duration(refFieldVal.Int())}, nil
+				}
+			}
+			switch refField.Type.Kind() {
+			case reflect.Int:
+				return intFieldGetter[int](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.Int8:
+				return intFieldGetter[int8](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.Int16:
+				return intFieldGetter[int16](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.Int32:
+				return intFieldGetter[int32](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.Int64:
+				return intFieldGetter[int64](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			}
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			switch refField.Type.Kind() {
+			case reflect.Uint:
+				return uintFieldGetter[uint](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.Uint8:
+				return uintFieldGetter[uint8](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.Uint16:
+				return uintFieldGetter[uint16](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.Uint32:
+				return uintFieldGetter[uint32](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.Uint64:
+				return uintFieldGetter[uint64](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			}
+		case reflect.Float32:
+			return floatFieldGetter[float32](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+		case reflect.Float64:
+			return floatFieldGetter[float64](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+		case reflect.String:
+			return func(obj any) (any, error) {
+				if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+					return String(*(*string)(unsafe.Add(ptr, offset))), nil
+				}
+				refVal := unwrapStruct(obj)
+				refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+				if !refFieldVal.IsValid() {
+					return nil, nil
+				}
+				return String(refFieldVal.String()), nil
+			}
+		case reflect.Slice:
+			if refField.Type.Elem() == reflect.TypeOf(byte(0)) {
+				return func(obj any) (any, error) {
+					if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+						return Bytes(*(*[]byte)(unsafe.Add(ptr, offset))), nil
+					}
+					refVal := unwrapStruct(obj)
+					refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+					if !refFieldVal.IsValid() {
+						return nil, nil
+					}
+					return Bytes(refFieldVal.Bytes()), nil
+				}
+			}
+			switch refField.Type {
+			case reflect.TypeFor[[]string]():
+				return sliceFieldGetter[string](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.TypeFor[[]ref.Val]():
+				return sliceFieldGetter[ref.Val](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.TypeFor[[]int]():
+				return sliceFieldGetter[int](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.TypeFor[[]int64]():
+				return sliceFieldGetter[int64](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.TypeFor[[]float64]():
+				return sliceFieldGetter[float64](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.TypeFor[[]bool]():
+				return sliceFieldGetter[bool](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.TypeFor[[]int32]():
+				return sliceFieldGetter[int32](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.TypeFor[[]uint]():
+				return sliceFieldGetter[uint](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.TypeFor[[]uint64]():
+				return sliceFieldGetter[uint64](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.TypeFor[[]uint32]():
+				return sliceFieldGetter[uint32](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.TypeFor[[]float32]():
+				return sliceFieldGetter[float32](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.TypeFor[[]time.Time]():
+				return sliceFieldGetter[time.Time](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.TypeFor[[]time.Duration]():
+				return sliceFieldGetter[time.Duration](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.TypeFor[[]any]():
+				return sliceFieldGetter[any](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			default:
+				if meta := getDynamicSliceMeta(refField.Type); meta.supported {
+					if meta.isPtrElem {
+						return func(obj any) (any, error) {
+							if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+								elems := *(*[]unsafe.Pointer)(unsafe.Add(ptr, offset))
+								return &sliceList[unsafe.Pointer]{
+									Adapter:       DefaultTypeAdapter,
+									elems:         elems,
+									elemTypePtr:   meta.elemTypePtr,
+									meta:          meta,
+									qualifyRawVal: meta.qualifyRawVal,
+									isNilSlice:    elems == nil,
+								}, nil
+							}
+							refVal := unwrapStruct(obj)
+							refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+							if !refFieldVal.IsValid() {
+								return nil, nil
+							}
+							return NewDynamicList(DefaultTypeAdapter, refFieldVal.Interface()), nil
+						}
+					}
+					return func(obj any) (any, error) {
+						if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+							hdr := *(*unsafeSlice)(unsafe.Add(ptr, offset))
+							var bytes []byte
+							if hdr.Data != nil && hdr.Len > 0 {
+								bytes = unsafe.Slice((*byte)(hdr.Data), uintptr(hdr.Len)*meta.elemStride)
+							}
+							return &sliceList[byte]{
+								Adapter:       DefaultTypeAdapter,
+								elems:         bytes,
+								elemTypePtr:   meta.elemTypePtr,
+								meta:          meta,
+								qualifyRawVal: meta.qualifyRawVal,
+								isNilSlice:    hdr.Data == nil,
+							}, nil
+						}
+						refVal := unwrapStruct(obj)
+						refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+						if !refFieldVal.IsValid() {
+							return nil, nil
+						}
+						return NewDynamicList(DefaultTypeAdapter, refFieldVal.Interface()), nil
+					}
+				}
+			}
+		case reflect.Map:
+			switch refField.Type {
+			case reflect.TypeFor[map[string]string]():
+				return mapFieldGetter[string, string](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.TypeFor[map[string]any]():
+				return mapFieldGetter[string, any](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.TypeFor[map[ref.Val]ref.Val]():
+				return mapFieldGetter[ref.Val, ref.Val](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.TypeFor[map[int64]bool]():
+				return mapFieldGetter[int64, bool](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.TypeFor[map[string]int64]():
+				return mapFieldGetter[string, int64](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.TypeFor[map[string]int]():
+				return mapFieldGetter[string, int](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.TypeFor[map[string]bool]():
+				return mapFieldGetter[string, bool](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			case reflect.TypeFor[map[string]float64]():
+				return mapFieldGetter[string, float64](t, refField, offset, expectedPtrTyp, expectedStructTyp)
+			}
+		case reflect.Struct:
+			if refField.Type == timestampType {
+				return func(obj any) (any, error) {
+					if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+						tm := *(*time.Time)(unsafe.Add(ptr, offset))
+						if tm.IsZero() {
+							return Timestamp{Time: time.Unix(0, 0)}, nil
+						}
+						return Timestamp{Time: tm}, nil
+					}
+					refVal := unwrapStruct(obj)
+					refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+					return getFieldValue(refFieldVal), nil
+				}
+			}
+			if !refField.Type.Implements(refValType) && !refField.Type.Implements(pbMsgInterfaceType) {
+				fieldPtrZero := reflect.Zero(reflect.PointerTo(refField.Type)).Interface()
+				expectedFieldPtrTyp := (*emptyInterface)(unsafe.Pointer(&fieldPtrZero)).typ
+				return func(obj any) (any, error) {
+					if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+						var out any
+						e := (*emptyInterface)(unsafe.Pointer(&out))
+						e.typ = expectedFieldPtrTyp
+						e.ptr = unsafe.Add(ptr, offset)
+						return out, nil
+					}
+					refVal := unwrapStruct(obj)
+					refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+					return getFieldValue(refFieldVal), nil
+				}
+			}
+		case reflect.Pointer:
+			elemType := refField.Type.Elem()
+			switch elemType.Kind() {
+			case reflect.Bool:
+				return func(obj any) (any, error) {
+					if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+						elemPtr := *(*unsafe.Pointer)(unsafe.Add(ptr, offset))
+						if elemPtr == nil || !*(*bool)(elemPtr) {
+							return False, nil
+						}
+						return True, nil
+					}
+					refVal := unwrapStruct(obj)
+					refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+					return getFieldValue(refFieldVal), nil
+				}
+			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+				if elemType == durationType {
+					return func(obj any) (any, error) {
+						if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+							elemPtr := *(*unsafe.Pointer)(unsafe.Add(ptr, offset))
+							if elemPtr == nil {
+								return Duration{Duration: 0}, nil
+							}
+							return Duration{Duration: *(*time.Duration)(elemPtr)}, nil
+						}
+						refVal := unwrapStruct(obj)
+						refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+						return getFieldValue(refFieldVal), nil
+					}
+				}
+				switch elemType.Kind() {
+				case reflect.Int:
+					return func(obj any) (any, error) {
+						if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+							elemPtr := *(*unsafe.Pointer)(unsafe.Add(ptr, offset))
+							if elemPtr == nil {
+								return IntZero, nil
+							}
+							return Int(*(*int)(elemPtr)), nil
+						}
+						refVal := unwrapStruct(obj)
+						refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+						return getFieldValue(refFieldVal), nil
+					}
+				case reflect.Int8:
+					return func(obj any) (any, error) {
+						if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+							elemPtr := *(*unsafe.Pointer)(unsafe.Add(ptr, offset))
+							if elemPtr == nil {
+								return IntZero, nil
+							}
+							return Int(*(*int8)(elemPtr)), nil
+						}
+						refVal := unwrapStruct(obj)
+						refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+						return getFieldValue(refFieldVal), nil
+					}
+				case reflect.Int16:
+					return func(obj any) (any, error) {
+						if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+							elemPtr := *(*unsafe.Pointer)(unsafe.Add(ptr, offset))
+							if elemPtr == nil {
+								return IntZero, nil
+							}
+							return Int(*(*int16)(elemPtr)), nil
+						}
+						refVal := unwrapStruct(obj)
+						refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+						return getFieldValue(refFieldVal), nil
+					}
+				case reflect.Int32:
+					return func(obj any) (any, error) {
+						if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+							elemPtr := *(*unsafe.Pointer)(unsafe.Add(ptr, offset))
+							if elemPtr == nil {
+								return IntZero, nil
+							}
+							return Int(*(*int32)(elemPtr)), nil
+						}
+						refVal := unwrapStruct(obj)
+						refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+						return getFieldValue(refFieldVal), nil
+					}
+				case reflect.Int64:
+					return func(obj any) (any, error) {
+						if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+							elemPtr := *(*unsafe.Pointer)(unsafe.Add(ptr, offset))
+							if elemPtr == nil {
+								return IntZero, nil
+							}
+							return Int(*(*int64)(elemPtr)), nil
+						}
+						refVal := unwrapStruct(obj)
+						refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+						return getFieldValue(refFieldVal), nil
+					}
+				}
+			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+				switch elemType.Kind() {
+				case reflect.Uint:
+					return func(obj any) (any, error) {
+						if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+							elemPtr := *(*unsafe.Pointer)(unsafe.Add(ptr, offset))
+							if elemPtr == nil {
+								return Uint(0), nil
+							}
+							return Uint(*(*uint)(elemPtr)), nil
+						}
+						refVal := unwrapStruct(obj)
+						refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+						return getFieldValue(refFieldVal), nil
+					}
+				case reflect.Uint8:
+					return func(obj any) (any, error) {
+						if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+							elemPtr := *(*unsafe.Pointer)(unsafe.Add(ptr, offset))
+							if elemPtr == nil {
+								return Uint(0), nil
+							}
+							return Uint(*(*uint8)(elemPtr)), nil
+						}
+						refVal := unwrapStruct(obj)
+						refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+						return getFieldValue(refFieldVal), nil
+					}
+				case reflect.Uint16:
+					return func(obj any) (any, error) {
+						if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+							elemPtr := *(*unsafe.Pointer)(unsafe.Add(ptr, offset))
+							if elemPtr == nil {
+								return Uint(0), nil
+							}
+							return Uint(*(*uint16)(elemPtr)), nil
+						}
+						refVal := unwrapStruct(obj)
+						refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+						return getFieldValue(refFieldVal), nil
+					}
+				case reflect.Uint32:
+					return func(obj any) (any, error) {
+						if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+							elemPtr := *(*unsafe.Pointer)(unsafe.Add(ptr, offset))
+							if elemPtr == nil {
+								return Uint(0), nil
+							}
+							return Uint(*(*uint32)(elemPtr)), nil
+						}
+						refVal := unwrapStruct(obj)
+						refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+						return getFieldValue(refFieldVal), nil
+					}
+				case reflect.Uint64:
+					return func(obj any) (any, error) {
+						if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+							elemPtr := *(*unsafe.Pointer)(unsafe.Add(ptr, offset))
+							if elemPtr == nil {
+								return Uint(0), nil
+							}
+							return Uint(*(*uint64)(elemPtr)), nil
+						}
+						refVal := unwrapStruct(obj)
+						refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+						return getFieldValue(refFieldVal), nil
+					}
+				}
+			case reflect.Float32, reflect.Float64:
+				if elemType.Kind() == reflect.Float32 {
+					return func(obj any) (any, error) {
+						if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+							elemPtr := *(*unsafe.Pointer)(unsafe.Add(ptr, offset))
+							if elemPtr == nil {
+								return Double(0), nil
+							}
+							return Double(*(*float32)(elemPtr)), nil
+						}
+						refVal := unwrapStruct(obj)
+						refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+						return getFieldValue(refFieldVal), nil
+					}
+				}
+				return func(obj any) (any, error) {
+					if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+						elemPtr := *(*unsafe.Pointer)(unsafe.Add(ptr, offset))
+						if elemPtr == nil {
+							return Double(0), nil
+						}
+						return Double(*(*float64)(elemPtr)), nil
+					}
+					refVal := unwrapStruct(obj)
+					refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+					return getFieldValue(refFieldVal), nil
+				}
+			case reflect.String:
+				return func(obj any) (any, error) {
+					if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+						elemPtr := *(*unsafe.Pointer)(unsafe.Add(ptr, offset))
+						if elemPtr == nil {
+							return String(""), nil
+						}
+						return String(*(*string)(elemPtr)), nil
+					}
+					refVal := unwrapStruct(obj)
+					refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+					return getFieldValue(refFieldVal), nil
+				}
+			case reflect.Struct:
+				if elemType == timestampType {
+					return func(obj any) (any, error) {
+						if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+							elemPtr := *(*unsafe.Pointer)(unsafe.Add(ptr, offset))
+							if elemPtr == nil {
+								return Timestamp{Time: time.Unix(0, 0)}, nil
+							}
+							tm := *(*time.Time)(elemPtr)
+							if tm.IsZero() {
+								return Timestamp{Time: time.Unix(0, 0)}, nil
+							}
+							return Timestamp{Time: tm}, nil
+						}
+						refVal := unwrapStruct(obj)
+						refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+						return getFieldValue(refFieldVal), nil
+					}
+				}
+				if !refField.Type.Implements(refValType) && !refField.Type.Implements(pbMsgInterfaceType) {
+					fieldPtrZero := reflect.Zero(refField.Type).Interface()
+					expectedFieldPtrTyp := (*emptyInterface)(unsafe.Pointer(&fieldPtrZero)).typ
+					zeroFieldPtr := reflect.New(elemType).Interface()
+					return func(obj any) (any, error) {
+						if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+							elemPtr := *(*unsafe.Pointer)(unsafe.Add(ptr, offset))
+							if elemPtr == nil {
+								return zeroFieldPtr, nil
+							}
+							var out any
+							e := (*emptyInterface)(unsafe.Pointer(&out))
+							e.typ = expectedFieldPtrTyp
+							e.ptr = elemPtr
+							return out, nil
+						}
+						refVal := unwrapStruct(obj)
+						refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+						return getFieldValue(refFieldVal), nil
+					}
+				}
+			}
+		}
+		return func(obj any) (any, error) {
+			if ptr, ok := t.structPtrFrom(obj, expectedPtrTyp, expectedStructTyp); ok {
+				return getFieldValue(reflect.NewAt(refField.Type, unsafe.Add(ptr, offset)).Elem()), nil
+			}
+			refVal := unwrapStruct(obj)
+			refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+			return getFieldValue(refFieldVal), nil
+		}
+	}
+	return func(obj any) (any, error) {
+		refVal := unwrapStruct(obj)
+		refFieldVal := safeGetFieldByIndex(refVal, refField.Index)
+		return getFieldValue(refFieldVal), nil
+	}
+}
+
 func getFieldValue(refField reflect.Value) any {
 	if !refField.IsValid() {
 		return nil
 	}
-	if refField.IsZero() {
-		switch refField.Kind() {
-		case reflect.Struct:
-			if refField.Type() == timestampType {
-				return time.Unix(0, 0)
+	switch refField.Kind() {
+	case reflect.Bool:
+		if refField.Bool() {
+			return True
+		}
+		return False
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if refField.Type() == durationType {
+			return Duration{Duration: time.Duration(refField.Int())}
+		}
+		return Int(refField.Int())
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return Uint(refField.Uint())
+	case reflect.Float32, reflect.Float64:
+		return Double(refField.Float())
+	case reflect.String:
+		return String(refField.String())
+	case reflect.Slice:
+		if refField.Type().Elem() == reflect.TypeOf(byte(0)) {
+			return Bytes(refField.Bytes())
+		}
+		if refField.Type() == reflect.TypeFor[[]string]() {
+			return NewStringList(DefaultTypeAdapter, refField.Interface().([]string))
+		}
+		if refField.Type() == reflect.TypeFor[[]ref.Val]() {
+			return NewRefValList(DefaultTypeAdapter, refField.Interface().([]ref.Val))
+		}
+	case reflect.Map:
+		if refField.Type() == reflect.TypeFor[map[string]string]() {
+			return NewStringStringMap(DefaultTypeAdapter, refField.Interface().(map[string]string))
+		}
+		if refField.Type() == reflect.TypeFor[map[string]any]() {
+			return NewStringInterfaceMap(DefaultTypeAdapter, refField.Interface().(map[string]any))
+		}
+		if refField.Type() == reflect.TypeFor[map[ref.Val]ref.Val]() {
+			return NewRefValMap(DefaultTypeAdapter, refField.Interface().(map[ref.Val]ref.Val))
+		}
+	case reflect.Struct:
+		if refField.Type() == timestampType {
+			if refField.IsZero() {
+				return Timestamp{Time: time.Unix(0, 0)}
 			}
-		case reflect.Pointer:
-			return reflect.New(refField.Type().Elem()).Interface()
+			return Timestamp{Time: refField.Interface().(time.Time)}
+		}
+	case reflect.Pointer:
+		if refField.IsZero() {
+			elemType := refField.Type().Elem()
+			switch elemType.Kind() {
+			case reflect.Bool:
+				return False
+			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+				if elemType == durationType {
+					return Duration{Duration: 0}
+				}
+				return IntZero
+			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+				return Uint(0)
+			case reflect.Float32, reflect.Float64:
+				return Double(0)
+			case reflect.String:
+				return String("")
+			case reflect.Struct:
+				if elemType == timestampType {
+					return Timestamp{Time: time.Unix(0, 0)}
+				}
+			}
+			return reflect.New(elemType).Interface()
+		}
+		elemType := refField.Type().Elem()
+		switch elemType.Kind() {
+		case reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+			reflect.Float32, reflect.Float64, reflect.String:
+			return getFieldValue(refField.Elem())
+		case reflect.Struct:
+			if elemType == timestampType {
+				return getFieldValue(refField.Elem())
+			}
 		}
 	}
 	return refField.Interface()
