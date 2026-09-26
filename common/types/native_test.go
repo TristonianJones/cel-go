@@ -3519,16 +3519,54 @@ func TestNativeTypeCoverageBoost(t *testing.T) {
 		t.Errorf("ConvertToNative(*TestAllTypes) = %v, %v", vPtr, err)
 	}
 
-	// 17. FindFieldType on interface field (isSupportedType returns true, convertToCelType returns false)
+	// 17. FindFieldType on interface field (maps to DynType)
 	type StructWithInterfaceField struct {
 		AnyField any
 	}
-	ntIface, err := types.NewNativeType(reflect.TypeFor[StructWithInterfaceField]())
+	ntIface, err := types.NewNativeType(
+		reflect.TypeFor[StructWithInterfaceField](),
+		types.NativeTypeAdapter(types.DefaultTypeAdapter),
+	)
 	if err != nil {
 		t.Fatalf("NewNativeType for StructWithInterfaceField failed: %v", err)
 	}
-	if _, ok := ntIface.FindFieldType("AnyField"); ok {
-		t.Errorf("expected false for AnyField in FindFieldType")
+	fIface, ok := ntIface.FindFieldType("AnyField")
+	if !ok {
+		t.Fatalf("expected true for AnyField in FindFieldType")
+	}
+	if fIface.Type != types.DynType {
+		t.Errorf("expected DynType for AnyField, got %v", fIface.Type)
+	}
+	if val, err := fIface.GetFrom(&StructWithInterfaceField{AnyField: "dyn-val"}); err != nil || val != types.String("dyn-val") {
+		t.Errorf("GetFrom on AnyField got (%v, %v), want 'dyn-val'", val, err)
+	}
+	if !fIface.IsSet(&StructWithInterfaceField{AnyField: "dyn-val"}) {
+		t.Errorf("IsSet on non-nil AnyField got false, want true")
+	}
+	if fIface.IsSet(&StructWithInterfaceField{AnyField: nil}) {
+		t.Errorf("IsSet on nil AnyField got true, want false")
+	}
+	if ntIface.NativeToValue(123) != types.Int(123) {
+		t.Errorf("ntIface.NativeToValue(123) failed")
+	}
+
+	// Test NativeType.Clone
+	clonedNT, err := ntIface.Clone()
+	if err != nil || clonedNT == nil {
+		t.Fatalf("ntIface.Clone() failed: %v", err)
+	}
+	aliasedNT, err := ntIface.Clone(types.NativeTypeAlias("custom.Alias"))
+	if err != nil || aliasedNT.TypeName() != "custom.Alias" {
+		t.Fatalf("ntIface.Clone(NativeTypeAlias) failed: %v", err)
+	}
+	taggedNT, err := ntIface.Clone(types.ParseStructTags(true))
+	if err != nil || taggedNT == nil {
+		t.Fatalf("ntIface.Clone(ParseStructTags) failed: %v", err)
+	}
+	var nilNT *types.NativeType
+	nilCloned, err := nilNT.Clone()
+	if err != nil || nilCloned != nil {
+		t.Fatalf("nilNT.Clone() failed: %v", err)
 	}
 
 	// 18. FieldType.GetFrom and IsSet fallback paths across all supported types
@@ -3998,6 +4036,96 @@ func TestNativeCustomAdapterSliceMapExpressions(t *testing.T) {
 			t.Fatalf("Program(%q) failed: %v", tc.expr, err)
 		}
 		out, _, err := prg.Eval(map[string]any{"container": container})
+		if err != nil {
+			t.Fatalf("Eval(%q) failed: %v", tc.expr, err)
+		}
+		got := out.Value()
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("Eval(%q) = %v (%T), want %v (%T)", tc.expr, got, got, tc.want, tc.want)
+		}
+	}
+	type MapKeyStruct struct {
+		KeyID string
+	}
+	type StructWithMapKey struct {
+		MapField map[MapKeyStruct]string
+	}
+	reg, err := types.NewRegistry(reflect.TypeFor[StructWithMapKey]())
+	if err != nil {
+		t.Fatalf("NewRegistry failed: %v", err)
+	}
+	if _, found := reg.FindStructType("types_test.MapKeyStruct"); !found {
+		t.Errorf("expected types_test.MapKeyStruct to be registered in NewRegistry")
+	}
+}
+
+type StructWithDynamicFields struct {
+	DynamicField   any
+	NilField       any
+	RefValField    ref.Val
+	SliceOfAny     []any
+	MapOfAny       map[string]any
+	CustomIface    fmt.Stringer
+}
+
+type customStringer struct {
+	Val string
+}
+
+func (c customStringer) String() string {
+	return c.Val
+}
+
+func TestNativeInterfaceFieldsExpressions(t *testing.T) {
+	env, err := cel.NewEnv(
+		ext.NativeTypes(
+			reflect.TypeFor[StructWithDynamicFields](),
+			reflect.TypeFor[customStringer](),
+		),
+		cel.Variable("msg", cel.ObjectType("types_test.StructWithDynamicFields")),
+	)
+	if err != nil {
+		t.Fatalf("cel.NewEnv failed: %v", err)
+	}
+
+	msg := &StructWithDynamicFields{
+		DynamicField: "dynamic-string",
+		NilField:     nil,
+		RefValField:  types.Int(100),
+		SliceOfAny:   []any{int64(1), "two", true},
+		MapOfAny:     map[string]any{"num": int64(42), "str": "hello"},
+		CustomIface:  customStringer{Val: "stringer-val"},
+	}
+
+	tests := []struct {
+		expr string
+		want any
+	}{
+		{expr: `msg.DynamicField == 'dynamic-string'`, want: true},
+		{expr: `has(msg.DynamicField)`, want: true},
+		{expr: `msg.NilField == null`, want: true},
+		{expr: `has(msg.NilField)`, want: false},
+		{expr: `msg.RefValField == 100`, want: true},
+		{expr: `has(msg.RefValField)`, want: true},
+		{expr: `msg.SliceOfAny[0] == 1 && msg.SliceOfAny[1] == 'two'`, want: true},
+		{expr: `msg.SliceOfAny.size() == 3`, want: true},
+		{expr: `msg.MapOfAny['num'] == 42 && msg.MapOfAny['str'] == 'hello'`, want: true},
+		{expr: `'num' in msg.MapOfAny`, want: true},
+		{expr: `msg.CustomIface != null`, want: true},
+		{expr: `has(msg.CustomIface)`, want: true},
+		{expr: `msg.CustomIface.Val == 'stringer-val'`, want: true},
+	}
+
+	for _, tc := range tests {
+		ast, iss := env.Compile(tc.expr)
+		if iss.Err() != nil {
+			t.Fatalf("Compile(%q) failed: %v", tc.expr, iss.Err())
+		}
+		prg, err := env.Program(ast)
+		if err != nil {
+			t.Fatalf("Program(%q) failed: %v", tc.expr, err)
+		}
+		out, _, err := prg.Eval(map[string]any{"msg": msg})
 		if err != nil {
 			t.Fatalf("Eval(%q) failed: %v", tc.expr, err)
 		}
