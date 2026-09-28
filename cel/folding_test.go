@@ -40,6 +40,7 @@ func TestConstantFoldingOptimizer(t *testing.T) {
 		expr        string
 		folded      string
 		knownValues map[string]any
+		vars        map[string]any
 	}{
 		{
 			expr:   `[1, 1 + 2, 1 + (2 + 3)]`,
@@ -72,10 +73,12 @@ func TestConstantFoldingOptimizer(t *testing.T) {
 		{
 			expr:   `[1] + [?x] + [2]`,
 			folded: `[1, ?x, 2]`,
+			vars:   map[string]any{"x": types.OptionalOf(types.Int(99))},
 		},
 		{
 			expr:   `[?x, 1] + [2, ?y]`,
 			folded: `[?x, 1, 2, ?y]`,
+			vars:   map[string]any{"x": types.OptionalOf(types.Int(10)), "y": types.OptionalOf(types.Int(20))},
 		},
 		{
 			expr:   `6 in [1, 1 + 2, 1 + (2 + 3)]`,
@@ -88,30 +91,67 @@ func TestConstantFoldingOptimizer(t *testing.T) {
 		{
 			expr:   `x in [1, 1 + 2, 1 + (2 + 3)]`,
 			folded: `x in [1, 3, 6]`,
+			vars:   map[string]any{"x": int64(3)},
 		},
 		{
 			expr:   `1 in [1, x + 2, 1 + (2 + 3)]`,
 			folded: `true`,
+			vars:   map[string]any{"x": int64(10)},
 		},
 		{
 			expr:   `1 in [x, x + 2, 1 + (2 + 3)]`,
 			folded: `1 in [x, x + 2, 6]`,
+			vars:   map[string]any{"x": int64(10)},
 		},
 		{
 			expr:   `x in []`,
+			folded: `false`,
+			vars:   map[string]any{"x": int64(1)},
+		},
+		{
+			expr:   `optional.none() in [?optional.none()]`,
+			folded: `false`,
+		},
+		{
+			expr:   `1 in [?optional.of(1), 2]`,
+			folded: `true`,
+		},
+		{
+			expr:   `3 in [?optional.of(1), 2]`,
+			folded: `false`,
+		},
+		{
+			expr:   `x in [?optional.of(1), 2]`,
+			folded: `x in [1, 2]`,
+			vars:   map[string]any{"x": int64(3)},
+		},
+		{
+			expr:   `3 in [?optional.of(1), x]`,
+			folded: `3 in [1, x]`,
+			vars:   map[string]any{"x": int64(10)},
+		},
+		{
+			expr:   `optional.of(1) in [optional.of(1)]`,
+			folded: `true`,
+		},
+		{
+			expr:   `optional.none() in [optional.of(1)]`,
 			folded: `false`,
 		},
 		{
 			expr:   `{'hello': 'world'}.hello == x`,
 			folded: `"world" == x`,
+			vars:   map[string]any{"x": "world"},
 		},
 		{
 			expr:   `{'hello': 'world'}.?hello.orValue('default') == x`,
 			folded: `"world" == x`,
+			vars:   map[string]any{"x": "world"},
 		},
 		{
 			expr:   `{'hello': 'world'}['hello'] == x`,
 			folded: `"world" == x`,
+			vars:   map[string]any{"x": "world"},
 		},
 		{
 			expr:   `optional.of("hello")`,
@@ -124,6 +164,7 @@ func TestConstantFoldingOptimizer(t *testing.T) {
 		{
 			expr:   `{?'hello': optional.of('world')}['hello'] == x`,
 			folded: `"world" == x`,
+			vars:   map[string]any{"x": "world"},
 		},
 		{
 			expr:   `duration(string(7 * 24) + 'h')`,
@@ -152,14 +193,17 @@ func TestConstantFoldingOptimizer(t *testing.T) {
 		{
 			expr:   `[1, 2, 3].map(i, [1, 2, 3].map(j, i * j).filter(k, k % 2 == x))`,
 			folded: `[1, 2, 3].map(i, [1, 2, 3].map(j, i * j).filter(k, k % 2 == x))`,
+			vars:   map[string]any{"x": int64(0)},
 		},
 		{
 			expr:   `[(x - 1 > 3) ? 1 : 2].all(x, x < .x)`,
 			folded: `[(x - 1 > 3) ? 1 : 2].all(x, x < .x)`,
+			vars:   map[string]any{"x": int64(10)},
 		},
 		{
 			expr:   `[(x - 1 > 3) ? (x - 1) : 5].exists(x, x - 1 > 3)`,
 			folded: `[(x - 1 > 3) ? (x - 1) : 5].exists(x, x - 1 > 3)`,
+			vars:   map[string]any{"x": int64(10)},
 		},
 		{
 			expr:   `[{}, {"a": 1}, {"b": 2}].filter(m, has(m.a))`,
@@ -204,14 +248,17 @@ func TestConstantFoldingOptimizer(t *testing.T) {
 		{
 			expr:   `x.filter(e, false)`,
 			folded: `x.filter(e, false)`,
+			vars:   map[string]any{"x": []int{1, 2}},
 		},
 		{
 			expr:   `x.exists(e, false)`,
 			folded: `x.exists(e, false)`,
+			vars:   map[string]any{"x": []int{1, 2}},
 		},
 		{
 			expr:   `x.all(e, true)`,
 			folded: `x.all(e, true)`,
+			vars:   map[string]any{"x": []int{1, 2}},
 		},
 		{
 			expr:   `type(1)`,
@@ -232,142 +279,177 @@ func TestConstantFoldingOptimizer(t *testing.T) {
 		{
 			expr:   `[optional.none(), ?x]`,
 			folded: `[optional.none(), ?x]`,
+			vars:   map[string]any{"x": types.OptionalOf(types.Int(42))},
 		},
 		{
 			expr:   `[?optional.none(), ?x]`,
 			folded: `[?x]`,
+			vars:   map[string]any{"x": types.OptionalOf(types.Int(42))},
 		},
 		{
 			expr:   `[?optional.of(1), ?x]`,
 			folded: `[1, ?x]`,
+			vars:   map[string]any{"x": types.OptionalOf(types.Int(42))},
 		},
 		{
 			expr:   `[1, x, ?optional.ofNonZeroValue(0), ?x.?y]`,
 			folded: `[1, x, ?x.?y]`,
+			vars:   map[string]any{"x": map[string]any{"y": "val"}},
 		},
 		{
 			expr:   `[1, x, ?optional.ofNonZeroValue(3), ?x.?y]`,
 			folded: `[1, x, 3, ?x.?y]`,
+			vars:   map[string]any{"x": map[string]any{"y": "val"}},
 		},
 		{
 			expr:   `[1, x, ?optional.ofNonZeroValue(3), ?x.?y].size() > 3`,
 			folded: `[1, x, 3, ?x.?y].size() > 3`,
+			vars:   map[string]any{"x": map[string]any{"y": "val"}},
 		},
 		{
 			expr:   `{?'a': optional.of('hello'), ?x : optional.of(1), ?'b': optional.none()}`,
 			folded: `{"a": "hello", ?x: optional.of(1)}`,
+			vars:   map[string]any{"x": types.OptionalOf(types.String("k"))},
 		},
 		{
 			expr:   `true ? x + 1 : x + 2`,
 			folded: `x + 1`,
+			vars:   map[string]any{"x": int64(10)},
 		},
 		{
 			expr:   `false ? x + 1 : x + 2`,
 			folded: `x + 2`,
+			vars:   map[string]any{"x": int64(10)},
 		},
 		{
 			expr:   `false ? x + 'world' : 'hello' + 'world'`,
 			folded: `"helloworld"`,
+			vars:   map[string]any{"x": "test"},
 		},
 		{
 			expr:   `x == true`,
 			folded: `x == true`,
+			vars:   map[string]any{"x": true},
 		},
 		{
 			expr:   `true == x`,
 			folded: `true == x`,
+			vars:   map[string]any{"x": true},
 		},
 		{
 			expr:   `x != false`,
 			folded: `x != false`,
+			vars:   map[string]any{"x": false},
 		},
 		{
 			expr:   `false != x`,
 			folded: `false != x`,
+			vars:   map[string]any{"x": false},
 		},
 		{
 			expr:   `x ? 1 + 2 : 3 + 4`,
 			folded: `x ? 3 : 7`,
+			vars:   map[string]any{"x": true},
 		},
 		{
 			expr:   `true && x`,
 			folded: `true && x`,
+			vars:   map[string]any{"x": true},
 		},
 		{
 			expr:   `x && true`,
 			folded: `x && true`,
+			vars:   map[string]any{"x": true},
 		},
 		{
 			expr:   `false && x`,
 			folded: `false`,
+			vars:   map[string]any{"x": true},
 		},
 		{
 			expr:   `x && false`,
 			folded: `false`,
+			vars:   map[string]any{"x": true},
 		},
 		{
 			expr:   `true || x`,
 			folded: `true`,
+			vars:   map[string]any{"x": false},
 		},
 		{
 			expr:   `x || true`,
 			folded: `true`,
+			vars:   map[string]any{"x": false},
 		},
 		{
 			expr:   `false || x`,
 			folded: `false || x`,
+			vars:   map[string]any{"x": false},
 		},
 		{
 			expr:   `x || false`,
 			folded: `x || false`,
+			vars:   map[string]any{"x": false},
 		},
 		{
 			expr:   `true && b`,
 			folded: `b`,
+			vars:   map[string]any{"b": true},
 		},
 		{
 			expr:   `b && true`,
 			folded: `b`,
+			vars:   map[string]any{"b": true},
 		},
 		{
 			expr:   `false || b`,
 			folded: `b`,
+			vars:   map[string]any{"b": false},
 		},
 		{
 			expr:   `b || false`,
 			folded: `b`,
+			vars:   map[string]any{"b": false},
 		},
 		{
 			expr:   `false || x`,
 			folded: `false || x`,
+			vars:   map[string]any{"x": false},
 		},
 		{
 			expr:   `x || false`,
 			folded: `x || false`,
+			vars:   map[string]any{"x": false},
 		},
 		{
 			expr:   `true && x`,
 			folded: `true && x`,
+			vars:   map[string]any{"x": true},
 		},
 		{
 			expr:   `x && true`,
 			folded: `x && true`,
+			vars:   map[string]any{"x": true},
 		},
 		{
 			expr:   `true && x && true && x`,
 			folded: `true && x && true && x`,
+			vars:   map[string]any{"x": true},
 		},
 		{
 			expr:   `false || x || false || x`,
 			folded: `false || x || false || x`,
+			vars:   map[string]any{"x": false},
 		},
 		{
 			expr:   `true && b && true && b`,
 			folded: `b && b`,
+			vars:   map[string]any{"b": true},
 		},
 		{
 			expr:   `false || b || false || b`,
 			folded: `b || b`,
+			vars:   map[string]any{"b": false},
 		},
 		{
 			expr:   `true && true`,
@@ -408,10 +490,12 @@ func TestConstantFoldingOptimizer(t *testing.T) {
 		{
 			expr:   `google.expr.proto3.test.TestAllTypes{single_int32: x, repeated_int32: [1, 2, 3]}`,
 			folded: `google.expr.proto3.test.TestAllTypes{single_int32: x, repeated_int32: [1, 2, 3]}`,
+			vars:   map[string]any{"x": int32(5)},
 		},
 		{
 			expr:   `x + dyn([1, 2] + [3, 4])`,
 			folded: `x + [1, 2, 3, 4]`,
+			vars:   map[string]any{"x": []int{0}},
 		},
 		{
 			expr:   `dyn([1, 2]) + [3.0, 4.0]`,
@@ -420,10 +504,12 @@ func TestConstantFoldingOptimizer(t *testing.T) {
 		{
 			expr:   `{'a': dyn([1, 2]), 'b': x}`,
 			folded: `{"a": [1, 2], "b": x}`,
+			vars:   map[string]any{"x": 10},
 		},
 		{
 			expr:   `1 + x + 2 == 2 + x + 1`,
 			folded: `1 + x + 2 == 2 + x + 1`,
+			vars:   map[string]any{"x": int64(5)},
 		},
 		{
 			// The order of operations makes it such that the appearance of x in the first means that
@@ -432,6 +518,7 @@ func TestConstantFoldingOptimizer(t *testing.T) {
 			// and more easily observed as a result of common subexpression eliminiation)
 			expr:   `1 + 2 + x ==  x + 2 + 1`,
 			folded: `3 + x == x + 2 + 1`,
+			vars:   map[string]any{"x": int64(5)},
 		},
 		{
 			expr:        `google.expr.proto3.test.ImportedGlobalEnum.IMPORT_BAR`,
@@ -481,18 +568,22 @@ func TestConstantFoldingOptimizer(t *testing.T) {
 		{
 			expr:   `false || x || false || y`,
 			folded: `false || x || false || y`,
+			vars:   map[string]any{"x": false, "y": true},
 		},
 		{
 			expr:   `false || b || false || b`,
 			folded: `b || b`,
+			vars:   map[string]any{"b": false},
 		},
 		{
 			expr:   `true ? (false ? x + 1 : x + 2) : x`,
 			folded: `x + 2`,
+			vars:   map[string]any{"x": int64(10)},
 		},
 		{
 			expr:   `false ? x : (true ? x + 1 : x + 2)`,
 			folded: `x + 1`,
+			vars:   map[string]any{"x": int64(10)},
 		},
 		{
 			expr:   `1 in []`,
@@ -501,6 +592,7 @@ func TestConstantFoldingOptimizer(t *testing.T) {
 		{
 			expr:   `x in [1, 2, x]`,
 			folded: `x in [1, 2, x]`,
+			vars:   map[string]any{"x": int64(3)},
 		},
 		{
 			expr:   `[1, 2].filter(x, x in [1, 2])`,
@@ -509,10 +601,12 @@ func TestConstantFoldingOptimizer(t *testing.T) {
 		{
 			expr:   `5 in [1, x, y, 5]`,
 			folded: `true`,
+			vars:   map[string]any{"x": int64(2), "y": int64(3)},
 		},
 		{
 			expr:   `!(5 in [1, x, y, 5])`,
 			folded: `false`,
+			vars:   map[string]any{"x": int64(2), "y": int64(3)},
 		},
 		{
 			expr:   `[1, ?optional.of(3)]`,
@@ -533,6 +627,7 @@ func TestConstantFoldingOptimizer(t *testing.T) {
 		{
 			expr:   `[?optional.of(x)]`,
 			folded: `[?optional.of(x)]`,
+			vars:   map[string]any{"x": int64(10)},
 		},
 		{
 			expr:   `[?optional.ofNonZeroValue(3)]`,
@@ -545,6 +640,7 @@ func TestConstantFoldingOptimizer(t *testing.T) {
 		{
 			expr:   `[optional.of(x)]`,
 			folded: `[optional.of(x)]`,
+			vars:   map[string]any{"x": int64(10)},
 		},
 		{
 			expr:   `[optional.ofNonZeroValue(1 + 2 + 3)]`,
@@ -561,6 +657,7 @@ func TestConstantFoldingOptimizer(t *testing.T) {
 		{
 			expr:   `google.expr.proto3.test.TestAllTypes{single_int64: 1 + 2 + 3 + x}`,
 			folded: `google.expr.proto3.test.TestAllTypes{single_int64: 6 + x}`,
+			vars:   map[string]any{"x": int64(10)},
 		},
 		{
 			expr:   `google.expr.proto3.test.TestAllTypes{single_nested_message: google.expr.proto3.test.TestAllTypes.NestedMessage{bb: 42}}.single_nested_message.bb`,
@@ -593,8 +690,8 @@ func TestConstantFoldingOptimizer(t *testing.T) {
 		{
 			expr:   `[1] + [x]`,
 			folded: `[1, x]`,
+			vars:   map[string]any{"x": int64(2)},
 		},
-
 		{
 			expr:   `duration("1h") - duration("60m")`,
 			folded: `duration("0s")`,
@@ -610,6 +707,276 @@ func TestConstantFoldingOptimizer(t *testing.T) {
 		{
 			expr:   `[1 + 1, 1 + 2].exists(i, i < 10)`,
 			folded: `true`,
+		},
+		{
+			expr:   `[1, 2, 3].map(e, e * 2)`,
+			folded: `[2, 4, 6]`,
+		},
+		{
+			expr:   `[1, 2, 3].exists_one(e, e == 2)`,
+			folded: `true`,
+		},
+		{
+			expr:   `[1, 2, 3].exists_one(e, e > 1)`,
+			folded: `false`,
+		},
+		{
+			expr:   `[1, 2, 3].exists_one(e, e > 5)`,
+			folded: `false`,
+		},
+		{
+			expr:   `[1, 2, 3].all(e, e > 0)`,
+			folded: `true`,
+		},
+		{
+			expr:   `[1, 2, 3].all(e, e < 2)`,
+			folded: `false`,
+		},
+		{
+			expr:   `[1, 2, 3].filter(e, e > 1)`,
+			folded: `[2, 3]`,
+		},
+		{
+			expr:   `{'a': 1, 'b': 2}.exists(k, k == 'b')`,
+			folded: `true`,
+		},
+		{
+			expr:   `{'a': 1, 'b': 2}.all(k, {'a': 1, 'b': 2}[k] > 0)`,
+			folded: `true`,
+		},
+		{
+			expr:   `{'a': 1}.filter(k, k == 'a')`,
+			folded: `["a"]`,
+		},
+		{
+			expr:   `{'a': 1}.map(k, {'a': 1}[k] * 2)`,
+			folded: `[2]`,
+		},
+		{
+			expr:   `optional.of(1).orValue(2)`,
+			folded: `1`,
+		},
+		{
+			expr:   `optional.none().orValue(2)`,
+			folded: `2`,
+		},
+		{
+			expr:   `optional.of(1).hasValue()`,
+			folded: `true`,
+		},
+		{
+			expr:   `optional.none().hasValue()`,
+			folded: `false`,
+		},
+		{
+			expr:   `optional.of(1).value()`,
+			folded: `1`,
+		},
+		{
+			expr:   `optional.of(optional.of(1)).optMap(x, x.orValue(0))`,
+			folded: `optional.of(1)`,
+		},
+		{
+			expr:   `optional.none().optMap(x, x + 1)`,
+			folded: `optional.none()`,
+		},
+		{
+			expr:   `optional.of(1).optFlatMap(x, optional.of(x + 1))`,
+			folded: `optional.of(2)`,
+		},
+		{
+			expr:   `optional.of(1).optFlatMap(x, optional.none())`,
+			folded: `optional.none()`,
+		},
+		{
+			expr:   `optional.of(1).or(optional.of(2))`,
+			folded: `optional.of(1)`,
+		},
+		{
+			expr:   `optional.none().or(optional.of(2))`,
+			folded: `optional.of(2)`,
+		},
+		{
+			expr:   `size([1, 2, 3])`,
+			folded: `3`,
+		},
+		{
+			expr:   `string(123)`,
+			folded: `"123"`,
+		},
+		{
+			expr:   `'hello'.contains('ell')`,
+			folded: `true`,
+		},
+		{
+			expr:   `'hello'.startsWith('he')`,
+			folded: `true`,
+		},
+		{
+			expr:   `'hello'.endsWith('lo')`,
+			folded: `true`,
+		},
+		{
+			expr:   `size('hello')`,
+			folded: `5`,
+		},
+		{
+			expr:   `'hello' + ' ' + 'world'`,
+			folded: `"hello world"`,
+		},
+		{
+			expr:   `1 + 2 * 3 - 4 / 2`,
+			folded: `5`,
+		},
+		{
+			expr:   `10 % 3`,
+			folded: `1`,
+		},
+		{
+			expr:   `-(5)`,
+			folded: `-5`,
+		},
+		{
+			expr:   `!true`,
+			folded: `false`,
+		},
+		{
+			expr:   `!false`,
+			folded: `true`,
+		},
+		{
+			expr:   `[10, 20, 30][1]`,
+			folded: `20`,
+		},
+		{
+			expr:   `{'a': 10, 'b': 20}['b']`,
+			folded: `20`,
+		},
+		{
+			expr:   `{'a': 10, 'b': 20}.a`,
+			folded: `10`,
+		},
+		{
+			expr:   `has({'a': 1}.a)`,
+			folded: `true`,
+		},
+		{
+			expr:   `has({'a': 1}.b)`,
+			folded: `false`,
+		},
+		{
+			expr:   `has(google.expr.proto3.test.TestAllTypes{single_int32: 1}.single_int32)`,
+			folded: `true`,
+		},
+		{
+			expr:   `has(google.expr.proto3.test.TestAllTypes{}.single_int32)`,
+			folded: `false`,
+		},
+		{
+			expr:   `timestamp("2023-01-01T00:00:00Z").getFullYear()`,
+			folded: `2023`,
+		},
+		{
+			expr:   `duration("2h").getHours()`,
+			folded: `2`,
+		},
+		{
+			expr:   `x in {}`,
+			folded: `false`,
+			vars:   map[string]any{"x": "a"},
+		},
+		{
+			expr:   `1 in {}`,
+			folded: `false`,
+		},
+		{
+			expr:   `'a' in {'a': x, 'b': y}`,
+			folded: `true`,
+			vars:   map[string]any{"x": 1, "y": 2},
+		},
+		{
+			expr:   `'a' in {?'a': optional.of(1), 'b': x}`,
+			folded: `true`,
+			vars:   map[string]any{"x": 2},
+		},
+		{
+			expr:   `'a' in {?'a': optional.none(), 'b': x}`,
+			folded: `"a" in {"b": x}`,
+			vars:   map[string]any{"x": 2},
+		},
+		{
+			expr:   `'a' in {?'a': optional.none()}`,
+			folded: `false`,
+		},
+		{
+			expr:   `'a' in {?'a': optional.of(1)}`,
+			folded: `true`,
+		},
+		{
+			expr:   `'b' in {?'a': optional.of(1)}`,
+			folded: `false`,
+		},
+		{
+			expr:   `'foo' in {'foo': 1, 'bar': 2}`,
+			folded: `true`,
+		},
+		{
+			expr:   `'baz' in {'foo': 1, 'bar': 2}`,
+			folded: `false`,
+		},
+		{
+			expr:   `google.expr.proto3.test.TestAllTypes{?single_int32: optional.of(1), single_int64: x}`,
+			folded: `google.expr.proto3.test.TestAllTypes{single_int32: 1, single_int64: x}`,
+			vars:   map[string]any{"x": int64(10)},
+		},
+		{
+			expr:   `google.expr.proto3.test.TestAllTypes{?single_int32: optional.none(), single_int64: x}`,
+			folded: `google.expr.proto3.test.TestAllTypes{single_int64: x}`,
+			vars:   map[string]any{"x": int64(10)},
+		},
+		{
+			expr:   `google.expr.proto3.test.TestAllTypes{?single_int32: optional.of(1), ?single_int64: optional.none()}`,
+			folded: `google.expr.proto3.test.TestAllTypes{single_int32: 1}`,
+		},
+		{
+			expr:   `google.expr.proto3.test.TestAllTypes{?single_int32: optional.none(), ?single_int64: optional.none()}`,
+			folded: `google.expr.proto3.test.TestAllTypes{}`,
+		},
+		{
+			expr:   `has(google.expr.proto3.test.TestAllTypes{?single_int32: optional.of(1)}.single_int32)`,
+			folded: `true`,
+		},
+		{
+			expr:   `has(google.expr.proto3.test.TestAllTypes{?single_int32: optional.none()}.single_int32)`,
+			folded: `false`,
+		},
+		{
+			expr:   `google.expr.proto3.test.TestAllTypes{?single_int32: optional.of(42)}.single_int32`,
+			folded: `42`,
+		},
+		{
+			expr:   `google.expr.proto3.test.TestAllTypes{?single_nested_message: optional.of(google.expr.proto3.test.TestAllTypes.NestedMessage{bb: 42})}.single_nested_message.bb`,
+			folded: `42`,
+		},
+		{
+			expr:   `google.expr.proto3.test.TestAllTypes{?single_nested_message: optional.none()}`,
+			folded: `google.expr.proto3.test.TestAllTypes{}`,
+		},
+		{
+			expr:   `has({?'a': optional.of(1)}.a)`,
+			folded: `true`,
+		},
+		{
+			expr:   `has({?'a': optional.none()}.a)`,
+			folded: `false`,
+		},
+		{
+			expr:   `{?'a': optional.of(1)}.?a`,
+			folded: `optional.of(1)`,
+		},
+		{
+			expr:   `{?'a': optional.none()}.?a`,
+			folded: `optional.none()`,
 		},
 	}
 	e, err := NewEnv(
@@ -667,6 +1034,132 @@ func TestConstantFoldingOptimizer(t *testing.T) {
 			}
 			if folded != tc.folded {
 				t.Errorf("got %q, wanted %q", folded, tc.folded)
+			}
+
+			evalVars := map[string]any{
+				"x": map[string]any{"y": "val", "b": 2},
+				"y": "world",
+				"b": true,
+				"l": []string{"foo", "bar", "baz"},
+				"o": &proto3pb.TestAllTypes{SingleInt64: 42, NestedType: &proto3pb.TestAllTypes_SingleNestedMessage{SingleNestedMessage: &proto3pb.TestAllTypes_NestedMessage{Bb: 42}}, RepeatedInt32: []int32{1, 2, 3}},
+			}
+			if tc.knownValues != nil {
+				for k, v := range tc.knownValues {
+					evalVars[k] = v
+				}
+			}
+			if tc.vars != nil {
+				for k, v := range tc.vars {
+					evalVars[k] = v
+				}
+			}
+			prg, err := e.Program(checked)
+			if err != nil {
+				t.Fatalf("Program(checked) failed: %v", err)
+			}
+			fprg, err := e.Program(optimized)
+			if err != nil {
+				t.Fatalf("Program(optimized) failed: %v", err)
+			}
+			plainOut, _, plainErr := prg.Eval(evalVars)
+			foldedOut, _, foldedErr := fprg.Eval(evalVars)
+			if (plainErr != nil) != (foldedErr != nil) {
+				t.Errorf("error status mismatch: plainErr=%v, foldedErr=%v", plainErr, foldedErr)
+			} else if plainErr != nil {
+				if plainErr.Error() != foldedErr.Error() {
+					t.Errorf("error mismatch: plainErr=%v, foldedErr=%v", plainErr, foldedErr)
+				}
+			} else {
+				if plainOut.Equal(foldedOut) != types.True {
+					t.Errorf("evaluation mismatch: plain=%v (%T), folded=%v (%T)", plainOut, plainOut, foldedOut, foldedOut)
+				}
+			}
+		})
+	}
+}
+
+// TestConstantFoldingInMapIdent checks which identifier needles may be matched against a map
+// key by name.
+func TestConstantFoldingInMapIdent(t *testing.T) {
+	nan := math.NaN()
+	tests := []struct {
+		expr   string
+		folded string
+		vars   map[string]any
+	}{
+		// Scalar types which cannot hold a NaN.
+		{expr: `b in {b: 1}`, folded: `true`},
+		{expr: `by in {by: 1}`, folded: `true`},
+		{expr: `du in {du: 1}`, folded: `true`},
+		{expr: `i in {1: 1, 2: 2, i: 3}`, folded: `true`},
+		{expr: `s in {s: 1}`, folded: `true`},
+		{expr: `ts in {ts: 1}`, folded: `true`},
+		{expr: `ty in {ty: 1}`, folded: `true`},
+		{expr: `u in {u: 1}`, folded: `true`},
+		// Double and dyn may be a NaN directly.
+		{expr: `d in {d: 1}`, folded: `d in {d: 1}`, vars: map[string]any{"d": nan}},
+		{expr: `x in {1: 1, 2: 2, x: 3}`, folded: `x in {1: 1, 2: 2, x: 3}`, vars: map[string]any{"x": types.Double(nan)}},
+		// Literal needles
+		{expr: `'a' in {'a': 1, 'b': 2}`, folded: `true`},
+		{expr: `1 in {1: 1, 2: 2}`, folded: `true`},
+		{expr: `1.0 in {d: 1, 1.0: 2}`, folded: `true`},
+	}
+	env, err := NewEnv(
+		OptionalTypes(),
+		Types(&proto3pb.TestAllTypes{}),
+		Variable("b", BoolType),
+		Variable("by", BytesType),
+		Variable("du", DurationType),
+		Variable("i", IntType),
+		Variable("s", StringType),
+		Variable("ts", TimestampType),
+		Variable("ty", TypeType),
+		Variable("u", UintType),
+		Variable("d", DoubleType),
+		Variable("x", DynType),
+	)
+	if err != nil {
+		t.Fatalf("NewEnv() failed: %v", err)
+	}
+	for _, tst := range tests {
+		tc := tst
+		t.Run(tc.expr, func(t *testing.T) {
+			checked, iss := env.Compile(tc.expr)
+			if iss.Err() != nil {
+				t.Fatalf("Compile() failed: %v", iss.Err())
+			}
+			folder, err := NewConstantFoldingOptimizer()
+			if err != nil {
+				t.Fatalf("NewConstantFoldingOptimizer() failed: %v", err)
+			}
+			opt, err := NewStaticOptimizer(folder)
+			if err != nil {
+				t.Fatalf("NewStaticOptimizer() failed: %v", err)
+			}
+			optimized, iss := opt.Optimize(env, checked)
+			if iss.Err() != nil {
+				t.Fatalf("Optimize() generated an invalid AST: %v", iss.Err())
+			}
+			folded, err := AstToString(optimized)
+			if err != nil {
+				t.Fatalf("AstToString() failed: %v", err)
+			}
+			if folded != tc.folded {
+				t.Errorf("got %q, wanted %q", folded, tc.folded)
+			}
+			if tc.vars == nil {
+				return
+			}
+			prg, err := env.Program(optimized)
+			if err != nil {
+				t.Fatalf("Program() failed: %v", err)
+			}
+			out, _, err := prg.Eval(tc.vars)
+			if err != nil {
+				t.Fatalf("Eval() failed: %v", err)
+			}
+			if out != types.False {
+				t.Errorf("got %v, wanted false since NaN is not equal to itself", out)
 			}
 		})
 	}

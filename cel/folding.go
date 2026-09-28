@@ -240,19 +240,71 @@ func maybePruneBranches(ctx *OptimizerContext, a *ast.AST, expr ast.NavigableExp
 			delete(a.ReferenceMap(), expr.ID())
 			return true
 		}
+		if haystack.Kind() == ast.MapKind && haystack.AsMap().Size() == 0 {
+			ctx.UpdateExpr(expr, ctx.NewLiteral(types.False))
+			delete(a.ReferenceMap(), expr.ID())
+			return true
+		}
 		needle := args[0]
-		if (needle.Kind() == ast.LiteralKind || isSelfEqualIdent(needle)) && haystack.Kind() == ast.ListKind {
-			needleIsLit := needle.Kind() == ast.LiteralKind
-			needleLitVal := needle.AsLiteral()
-			needleIdentVal := needle.AsIdent()
+		needleIsLit := needle.Kind() == ast.LiteralKind
+		needleLitVal := needle.AsLiteral()
+		needleIdentVal := needle.AsIdent()
+		if (needleIsLit || isSelfEqualIdent(needle)) && haystack.Kind() == ast.ListKind {
 			list := haystack.AsList()
-			for _, elem := range list.Elements() {
+			for i, elem := range list.Elements() {
+				if list.IsOptional(int32(i)) {
+					if needleIsLit && elem.Kind() == ast.LiteralKind {
+						if optElemVal, ok := elem.AsLiteral().(*types.Optional); ok && optElemVal.HasValue() {
+							if optElemVal.GetValue().Equal(needleLitVal) == types.True {
+								ctx.UpdateExpr(expr, ctx.NewLiteral(types.True))
+								delete(a.ReferenceMap(), expr.ID())
+								return true
+							}
+						}
+					}
+					continue
+				}
 				if needleIsLit && elem.Kind() == ast.LiteralKind && elem.AsLiteral().Equal(needleLitVal) == types.True {
 					ctx.UpdateExpr(expr, ctx.NewLiteral(types.True))
 					delete(a.ReferenceMap(), expr.ID())
 					return true
 				}
 				if !needleIsLit && elem.Kind() == ast.IdentKind && elem.AsIdent() == needleIdentVal {
+					ctx.UpdateExpr(expr, ctx.NewLiteral(types.True))
+					delete(a.ReferenceMap(), expr.ID())
+					return true
+				}
+			}
+		}
+		if (needleIsLit || isSelfEqualIdent(needle)) && haystack.Kind() == ast.MapKind {
+			m := haystack.AsMap()
+			for _, entryExpr := range m.Entries() {
+				entry := entryExpr.AsMapEntry()
+				key := entry.Key()
+				val := entry.Value()
+				if entry.IsOptional() {
+					if val.Kind() == ast.LiteralKind {
+						if optVal, ok := val.AsLiteral().(*types.Optional); ok && optVal.HasValue() {
+							if needleIsLit && key.Kind() == ast.LiteralKind && key.AsLiteral().Equal(needleLitVal) == types.True {
+								ctx.UpdateExpr(expr, ctx.NewLiteral(types.True))
+								delete(a.ReferenceMap(), expr.ID())
+								return true
+							}
+							if !needleIsLit && key.Kind() == ast.IdentKind && key.AsIdent() == needleIdentVal {
+								ctx.UpdateExpr(expr, ctx.NewLiteral(types.True))
+								delete(a.ReferenceMap(), expr.ID())
+								return true
+							}
+						}
+					}
+					continue
+				}
+				if needleIsLit && key.Kind() == ast.LiteralKind && key.AsLiteral().Equal(needleLitVal) == types.True {
+					ctx.UpdateExpr(expr, ctx.NewLiteral(types.True))
+					delete(a.ReferenceMap(), expr.ID())
+					return true
+				}
+				if !needleIsLit && key.Kind() == ast.IdentKind && key.AsIdent() == needleIdentVal {
 					ctx.UpdateExpr(expr, ctx.NewLiteral(types.True))
 					delete(a.ReferenceMap(), expr.ID())
 					return true
@@ -666,17 +718,57 @@ func constantCallMatcher(e ast.NavigableExpr) bool {
 		if haystack.Kind() == ast.ListKind && haystack.AsList().Size() == 0 {
 			return true
 		}
+		if haystack.Kind() == ast.MapKind && haystack.AsMap().Size() == 0 {
+			return true
+		}
 		needle := children[0]
-		if (needle.Kind() == ast.LiteralKind || isSelfEqualIdent(needle)) && haystack.Kind() == ast.ListKind {
-			needleIsLit := needle.Kind() == ast.LiteralKind
-			needleLitVal := needle.AsLiteral()
-			needleIdentVal := needle.AsIdent()
+		needleIsLit := needle.Kind() == ast.LiteralKind
+		needleLitVal := needle.AsLiteral()
+		needleIdentVal := needle.AsIdent()
+		if (needleIsLit || isSelfEqualIdent(needle)) && haystack.Kind() == ast.ListKind {
 			list := haystack.AsList()
-			for _, elem := range list.Elements() {
+			for i, elem := range list.Elements() {
+				if list.IsOptional(int32(i)) {
+					if needleIsLit && elem.Kind() == ast.LiteralKind {
+						if optElemVal, ok := elem.AsLiteral().(*types.Optional); ok && optElemVal.HasValue() {
+							if optElemVal.GetValue().Equal(needleLitVal) == types.True {
+								return true
+							}
+						}
+					}
+					continue
+				}
 				if needleIsLit && elem.Kind() == ast.LiteralKind && elem.AsLiteral().Equal(needleLitVal) == types.True {
 					return true
 				}
 				if !needleIsLit && elem.Kind() == ast.IdentKind && elem.AsIdent() == needleIdentVal {
+					return true
+				}
+			}
+		}
+		if (needleIsLit || isSelfEqualIdent(needle)) && haystack.Kind() == ast.MapKind {
+			m := haystack.AsMap()
+			for _, entryExpr := range m.Entries() {
+				entry := entryExpr.AsMapEntry()
+				key := entry.Key()
+				val := entry.Value()
+				if entry.IsOptional() {
+					if val.Kind() == ast.LiteralKind {
+						if optVal, ok := val.AsLiteral().(*types.Optional); ok && optVal.HasValue() {
+							if needleIsLit && key.Kind() == ast.LiteralKind && key.AsLiteral().Equal(needleLitVal) == types.True {
+								return true
+							}
+							if !needleIsLit && key.Kind() == ast.IdentKind && key.AsIdent() == needleIdentVal {
+								return true
+							}
+						}
+					}
+					continue
+				}
+				if needleIsLit && key.Kind() == ast.LiteralKind && key.AsLiteral().Equal(needleLitVal) == types.True {
+					return true
+				}
+				if !needleIsLit && key.Kind() == ast.IdentKind && key.AsIdent() == needleIdentVal {
 					return true
 				}
 			}
