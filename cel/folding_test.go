@@ -170,6 +170,50 @@ func TestConstantFoldingOptimizer(t *testing.T) {
 			folded: `[{}, {"a": 1}, {"b": 2}]`,
 		},
 		{
+			expr:   `[1, 2].filter(e, false)`,
+			folded: `[]`,
+		},
+		{
+			expr:   `[1, 2].filter(e, true)`,
+			folded: `[1, 2]`,
+		},
+		{
+			expr:   `[1, 2].exists(e, false)`,
+			folded: `false`,
+		},
+		{
+			expr:   `[1, 2].exists(e, true)`,
+			folded: `true`,
+		},
+		{
+			expr:   `[1].all(e, true)`,
+			folded: `true`,
+		},
+		{
+			expr:   `[1].all(e, false)`,
+			folded: `false`,
+		},
+		{
+			expr:   `{1: 'a'}.filter(e, false)`,
+			folded: `[]`,
+		},
+		{
+			expr:   `{1: 'a'}.filter(e, true)`,
+			folded: `[1]`,
+		},
+		{
+			expr:   `x.filter(e, false)`,
+			folded: `x.filter(e, false)`,
+		},
+		{
+			expr:   `x.exists(e, false)`,
+			folded: `x.exists(e, false)`,
+		},
+		{
+			expr:   `x.all(e, true)`,
+			folded: `x.all(e, true)`,
+		},
+		{
 			expr:   `type(1)`,
 			folded: `int`,
 		},

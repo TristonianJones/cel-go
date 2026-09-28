@@ -162,6 +162,7 @@ func (opt *constantFoldingOptimizer) tryFold(ctx *OptimizerContext, a *ast.AST, 
 	}
 	// Update the fold expression to be a literal.
 	ctx.UpdateExpr(expr, ctx.NewLiteral(out))
+	delete(a.ReferenceMap(), expr.ID())
 	return nil
 }
 
@@ -226,14 +227,17 @@ func maybePruneBranches(ctx *OptimizerContext, a *ast.AST, expr ast.NavigableExp
 		}
 		if cond.AsLiteral() == types.True {
 			ctx.UpdateExpr(expr, truthy)
+			updateMetadata(a, expr.ID(), truthy.ID())
 		} else {
 			ctx.UpdateExpr(expr, falsy)
+			updateMetadata(a, expr.ID(), falsy.ID())
 		}
 		return true
 	case operators.In:
 		haystack := args[1]
 		if haystack.Kind() == ast.ListKind && haystack.AsList().Size() == 0 {
 			ctx.UpdateExpr(expr, ctx.NewLiteral(types.False))
+			delete(a.ReferenceMap(), expr.ID())
 			return true
 		}
 		needle := args[0]
@@ -245,10 +249,12 @@ func maybePruneBranches(ctx *OptimizerContext, a *ast.AST, expr ast.NavigableExp
 			for _, elem := range list.Elements() {
 				if needleIsLit && elem.Kind() == ast.LiteralKind && elem.AsLiteral().Equal(needleLitVal) == types.True {
 					ctx.UpdateExpr(expr, ctx.NewLiteral(types.True))
+					delete(a.ReferenceMap(), expr.ID())
 					return true
 				}
 				if !needleIsLit && elem.Kind() == ast.IdentKind && elem.AsIdent() == needleIdentVal {
 					ctx.UpdateExpr(expr, ctx.NewLiteral(types.True))
+					delete(a.ReferenceMap(), expr.ID())
 					return true
 				}
 			}
@@ -271,6 +277,7 @@ func maybePruneBranches(ctx *OptimizerContext, a *ast.AST, expr ast.NavigableExp
 
 			combinedList := ctx.NewList(elems, optIndices)
 			ctx.UpdateExpr(expr, combinedList)
+			delete(a.ReferenceMap(), expr.ID())
 			return true
 		}
 	}
@@ -295,6 +302,7 @@ func maybeShortcircuitLogic(ctx *OptimizerContext, a *ast.AST, function string, 
 		}
 		if arg.AsLiteral() == shortcircuit {
 			ctx.UpdateExpr(expr, arg)
+			updateMetadata(a, expr.ID(), arg.ID())
 			return true
 		}
 	}
@@ -309,10 +317,25 @@ func maybeShortcircuitLogic(ctx *OptimizerContext, a *ast.AST, function string, 
 			return false
 		}
 		ctx.UpdateExpr(expr, newArgs[0])
+		updateMetadata(a, expr.ID(), newArgs[0].ID())
 		return true
 	}
 	ctx.UpdateExpr(expr, ctx.NewCall(function, newArgs...))
 	return true
+}
+
+func updateMetadata(a *ast.AST, targetID, updatedID int64) {
+	if a == nil {
+		return
+	}
+	if ref, found := a.ReferenceMap()[updatedID]; found {
+		a.ReferenceMap()[targetID] = ref
+	} else {
+		delete(a.ReferenceMap(), targetID)
+	}
+	if t, found := a.TypeMap()[updatedID]; found {
+		a.TypeMap()[targetID] = t
+	}
 }
 
 func isBoolType(a *ast.AST, e ast.Expr) bool {
