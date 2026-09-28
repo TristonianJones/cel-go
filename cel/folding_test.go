@@ -1457,3 +1457,182 @@ func TestConstantFoldingOptimizer_VariadicShortcircuitLogic(t *testing.T) {
 		t.Errorf("got %q, wanted %q", folded, "x && y")
 	}
 }
+
+func TestNewConstantFoldingOptimizer_Options(t *testing.T) {
+	errOption := func(opt *constantFoldingOptimizer) (*constantFoldingOptimizer, error) {
+		return nil, errors.New("option error")
+	}
+	_, err := NewConstantFoldingOptimizer(errOption)
+	if err == nil {
+		t.Errorf("expected error, got nil")
+	}
+
+	folder, err := NewConstantFoldingOptimizer(FoldKnownValues(nil), MaxConstantFoldIterations(10))
+	if err != nil {
+		t.Fatalf("NewConstantFoldingOptimizer() failed: %v", err)
+	}
+	if folder == nil {
+		t.Errorf("expected non-nil folder")
+	}
+}
+
+type unadaptableVal struct {
+	valType *types.Type
+}
+
+func (u *unadaptableVal) ConvertToNative(typeDesc reflect.Type) (any, error) {
+	return nil, errors.New("cannot convert")
+}
+func (u *unadaptableVal) ConvertToType(typeVal ref.Type) ref.Val {
+	return types.NewErr("cannot convert")
+}
+func (u *unadaptableVal) Equal(other ref.Val) ref.Val { return types.False }
+func (u *unadaptableVal) Type() ref.Type             { return u.valType }
+func (u *unadaptableVal) Value() any                 { return u }
+
+func TestAdaptLiteral(t *testing.T) {
+	env, err := NewEnv(
+		OptionalTypes(),
+		Types(&proto3pb.TestAllTypes{}),
+	)
+	if err != nil {
+		t.Fatalf("NewEnv() failed: %v", err)
+	}
+	optCtx := &OptimizerContext{
+		Env: env,
+		optimizerExprFactory: &optimizerExprFactory{
+			idGenerator: newIDGenerator(0),
+			fac:         ast.NewExprFactory(),
+			sourceInfo:  ast.NewSourceInfo(nil),
+		},
+		Issues: NewIssues(nil),
+	}
+
+	adapter := types.DefaultTypeAdapter
+
+	// Test scalars
+	scalars := []ref.Val{
+		types.True,
+		types.Bytes("abc"),
+		types.Double(3.14),
+		types.Int(42),
+		types.NullValue,
+		types.String("hello"),
+		types.Uint(100),
+		types.DurationType, // TypeType
+	}
+	for _, val := range scalars {
+		expr, err := adaptLiteral(optCtx, val)
+		if err != nil {
+			t.Errorf("adaptLiteral(%v) failed: %v", val, err)
+		}
+		if expr == nil {
+			t.Errorf("adaptLiteral(%v) returned nil expr", val)
+		}
+	}
+
+	// Test Optional
+	optNone := types.OptionalNone
+	if expr, err := adaptLiteral(optCtx, optNone); err != nil || expr == nil {
+		t.Errorf("adaptLiteral(OptionalNone) failed: %v", err)
+	}
+	optVal := types.OptionalOf(types.String("world"))
+	if expr, err := adaptLiteral(optCtx, optVal); err != nil || expr == nil {
+		t.Errorf("adaptLiteral(OptionalOf) failed: %v", err)
+	}
+
+	// Test List
+	listVal := adapter.NativeToValue([]string{"a", "b", "c"})
+	if expr, err := adaptLiteral(optCtx, listVal); err != nil || expr == nil {
+		t.Errorf("adaptLiteral(List) failed: %v", err)
+	}
+
+	// Test Map
+	mapVal := adapter.NativeToValue(map[string]int64{"key": 1})
+	if expr, err := adaptLiteral(optCtx, mapVal); err != nil || expr == nil {
+		t.Errorf("adaptLiteral(Map) failed: %v", err)
+	}
+
+	// Test Struct (with field set)
+	protoMsg := &proto3pb.TestAllTypes{SingleInt64: 123}
+	structVal := env.TypeAdapter().NativeToValue(protoMsg)
+	if expr, err := adaptLiteral(optCtx, structVal); err != nil || expr == nil {
+		t.Errorf("adaptLiteral(Struct) failed: %v", err)
+	}
+
+	// Error branch: ListType on non-Lister
+	badList := &unadaptableVal{valType: types.ListType}
+	if _, err := adaptLiteral(optCtx, badList); err == nil {
+		t.Errorf("expected error adapting bad list, got nil")
+	}
+
+	// Error branch: MapType on non-Mapper
+	badMap := &unadaptableVal{valType: types.MapType}
+	if _, err := adaptLiteral(optCtx, badMap); err == nil {
+		t.Errorf("expected error adapting bad map, got nil")
+	}
+
+	// Error branch: StructType not found
+	badStruct := &unadaptableVal{valType: types.NewObjectType("unknown.Type")}
+	if _, err := adaptLiteral(optCtx, badStruct); err == nil {
+		t.Errorf("expected error adapting unknown struct, got nil")
+	}
+
+	// Error branch: Optional containing unadaptable value
+	badOpt := types.OptionalOf(badStruct)
+	if _, err := adaptLiteral(optCtx, badOpt); err == nil {
+		t.Errorf("expected error adapting bad optional, got nil")
+	}
+
+	// Error branch: List containing unadaptable element
+	badElemList := types.NewRefValList(adapter, []ref.Val{badStruct})
+	if _, err := adaptLiteral(optCtx, badElemList); err == nil {
+		t.Errorf("expected error adapting list with bad element, got nil")
+	}
+
+	// Error branch: Map containing unadaptable value
+	badValMap := types.NewRefValMap(adapter, map[ref.Val]ref.Val{types.String("key"): badStruct})
+	if _, err := adaptLiteral(optCtx, badValMap); err == nil {
+		t.Errorf("expected error adapting map with bad val, got nil")
+	}
+
+	// Error branch: Map containing unadaptable key
+	badKeyMap := types.NewRefValMap(adapter, map[ref.Val]ref.Val{badStruct: types.String("val")})
+	if _, err := adaptLiteral(optCtx, badKeyMap); err == nil {
+		t.Errorf("expected error adapting map with bad key, got nil")
+	}
+
+	// Error branch: Non-*types.Type
+	nonCelType := &unadaptableVal{valType: nil}
+	if _, err := adaptLiteral(optCtx, nonCelType); err == nil {
+		t.Errorf("expected error adapting non-CEL type, got nil")
+	}
+}
+
+func TestUpdateMetadata(t *testing.T) {
+	// updateMetadata with nil AST does not panic
+	updateMetadata(nil, 1, 2)
+
+	fac := ast.NewExprFactory()
+	e1 := fac.NewIdent(1, "x")
+	info := ast.NewSourceInfo(nil)
+	a := ast.NewAST(e1, info)
+	checked := ast.NewCheckedAST(a, map[int64]*types.Type{2: types.IntType}, map[int64]*ast.ReferenceInfo{
+		2: ast.NewIdentReference("y", nil),
+	})
+
+	// When updatedID has reference and type info
+	updateMetadata(checked, 1, 2)
+	if ref, found := checked.ReferenceMap()[1]; !found || ref.Name != "y" {
+		t.Errorf("expected ref 'y' on target ID 1, got %v", ref)
+	}
+	if typ, found := checked.TypeMap()[1]; !found || typ != types.IntType {
+		t.Errorf("expected type IntType on target ID 1, got %v", typ)
+	}
+
+	// When updatedID is not in ReferenceMap
+	updateMetadata(checked, 1, 3)
+	if _, found := checked.ReferenceMap()[1]; found {
+		t.Errorf("expected target ID 1 to be removed from ReferenceMap")
+	}
+}
