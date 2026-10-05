@@ -61,21 +61,7 @@ func (defaultSizingStrategy) EstimateSize(ctx EstimateContext, node AstNode) (Si
 func estimateDefaultListSize(ctx EstimateContext, node AstNode) (SizeEstimate, bool) {
 	elemType := listElemType(node.Type())
 	listSize, elemSize := estimateListExpr(ctx, node, elemType)
-
-	if listSize == nil && ctx != nil && ctx.Estimator() != nil {
-		listSize = ctx.Estimator().EstimateSize(node)
-	}
-	if elemSize == nil && listSize != nil && listSize.Elem != nil {
-		e := *listSize.Elem
-		elemSize = &e
-	}
-	if elemSize == nil && (listSize == nil || listSize.Max > 0) {
-		elemSize = estimateSubpath(ctx, node.Path(), "@items", elemType)
-	}
-	if listSize == nil && elemSize == nil && node.Expr() != nil {
-		u := UnknownSizeEstimate()
-		listSize = &u
-	}
+	listSize, elemSize = resolveListSizes(ctx, node, elemType, listSize, elemSize)
 	return combineListSize(listSize, elemSize)
 }
 
@@ -83,44 +69,108 @@ func estimateDefaultListSize(ctx EstimateContext, node AstNode) (SizeEstimate, b
 func estimateDefaultMapSize(ctx EstimateContext, node AstNode) (SizeEstimate, bool) {
 	keyType, valType := mapKeyValueTypes(node.Type())
 	mapSize, keySize, valSize := estimateMapExpr(ctx, node, keyType, valType)
+	mapSize, keySize, valSize = resolveMapSizes(ctx, node, keyType, valType, mapSize, keySize, valSize)
+	return combineMapSize(mapSize, keySize, valSize)
+}
 
+// resolveListSizes resolves a list node's container size and element size using the estimator,
+// subpath hints ("@items"), and type fallbacks when not already determined from the expression.
+func resolveListSizes(ctx EstimateContext, node AstNode, elemType *types.Type, listSize, elemSize *SizeEstimate) (*SizeEstimate, *SizeEstimate) {
+	if listSize == nil && ctx != nil && ctx.Estimator() != nil {
+		listSize = ctx.Estimator().EstimateSize(node)
+	}
+	if elemSize == nil && listSize != nil {
+		elemSize = cloneSizeEstimate(listSize.Elem)
+	}
+	if listSize == nil || listSize.Max > 0 {
+		elemSize = resolveChildSize(ctx, node.Path(), "@items", elemType, elemSize)
+	}
+	// If neither the list length nor element size is known for an AST expression node
+	// (e.g. an unhinted list<string> variable), default listSize to unknown so the
+	// strategy computes the worst-case bound.
+	if listSize == nil && elemSize == nil && node.Expr() != nil {
+		u := UnknownSizeEstimate()
+		listSize = &u
+	}
+	return listSize, elemSize
+}
+
+// resolveMapSizes resolves a map node's container size, key size, and value size using the
+// estimator, subpath hints ("@keys", "@values"), and type fallbacks.
+func resolveMapSizes(ctx EstimateContext, node AstNode, keyType, valType *types.Type, mapSize, keySize, valSize *SizeEstimate) (*SizeEstimate, *SizeEstimate, *SizeEstimate) {
 	if mapSize == nil && ctx != nil && ctx.Estimator() != nil {
 		mapSize = ctx.Estimator().EstimateSize(node)
 	}
-	if keySize == nil && mapSize != nil && mapSize.Key != nil {
-		k := *mapSize.Key
-		keySize = &k
-	}
-	if valSize == nil && mapSize != nil && mapSize.Elem != nil {
-		v := *mapSize.Elem
-		valSize = &v
-	}
-	if mapSize == nil || mapSize.Max > 0 {
+	if mapSize != nil {
 		if keySize == nil {
-			keySize = estimateSubpath(ctx, node.Path(), "@keys", keyType)
+			keySize = cloneSizeEstimate(mapSize.Key)
 		}
 		if valSize == nil {
-			valSize = estimateSubpath(ctx, node.Path(), "@values", valType)
+			valSize = cloneSizeEstimate(mapSize.Elem)
 		}
 	}
+	// Query subpaths @keys and @values if hints were not provided on the parent map node.
+	if mapSize == nil || mapSize.Max > 0 {
+		keySize = resolveChildSize(ctx, node.Path(), "@keys", keyType, keySize)
+		valSize = resolveChildSize(ctx, node.Path(), "@values", valType, valSize)
+	}
+	// If no map, key, or value sizes are known for an AST expression node (e.g. an unhinted
+	// map<string, string>), default mapSize to unknown to compute the worst-case bound.
 	if mapSize == nil && keySize == nil && valSize == nil && node.Expr() != nil {
 		u := UnknownSizeEstimate()
 		mapSize = &u
 	}
-	return combineMapSize(mapSize, keySize, valSize)
+	return mapSize, keySize, valSize
 }
 
-// estimateSubpath attempts to estimate the size of a nested child node by path, falling back to
-// primitive type size.
-func estimateSubpath(ctx EstimateContext, basePath []string, subpath string, t *types.Type) *SizeEstimate {
-	if len(basePath) > 0 && ctx != nil && ctx.Estimator() != nil {
-		childPath := append(slices.Clone(basePath), subpath)
-		childNode := NewAstNode(nil, childPath, t, nil)
-		if sz := ctx.Estimator().EstimateSize(childNode); sz != nil {
-			return sz
+// resolveChildSize looks up child size estimates on the given subPath (e.g. "@items", "@keys", "@values")
+// when the current estimate is missing or lacks nested container details, falling back to primitive/type hints.
+func resolveChildSize(ctx EstimateContext, parentPath []string, subPath string, childType *types.Type, current *SizeEstimate) *SizeEstimate {
+	if current == nil || (current.Elem == nil && isContainerKind(childType.Kind())) {
+		if len(parentPath) > 0 && ctx != nil {
+			childPath := append(slices.Clone(parentPath), subPath)
+			sz := ctx.Size(NewAstNode(nil, childPath, childType, nil))
+			if !sz.IsUnknown() {
+				if current == nil {
+					current = &sz
+				} else {
+					current.Elem = sz.Elem
+					current.Key = sz.Key
+				}
+			}
 		}
 	}
-	return computeTypeSize(t)
+	if current == nil {
+		current = fallbackElemSize(ctx, childType)
+	}
+	return current
+}
+
+// isContainerKind reports whether kind is a list or map container type.
+func isContainerKind(kind types.Kind) bool {
+	return kind == types.ListKind || kind == types.MapKind
+}
+
+// fallbackElemSize resolves fixed-width primitive type sizes via computeTypeSize,
+// or queries the estimator with an untyped/pathless node for type-level hints.
+func fallbackElemSize(ctx EstimateContext, elemType *types.Type) *SizeEstimate {
+	if sz := computeTypeSize(elemType); sz != nil {
+		return sz
+	}
+	if ctx != nil && ctx.Estimator() != nil {
+		elemNode := NewAstNode(nil, nil, elemType, nil)
+		return ctx.Estimator().EstimateSize(elemNode)
+	}
+	return nil
+}
+
+// cloneSizeEstimate makes a copy of a SizeEstimate to prevent in-place mutation of cached/shared estimates.
+func cloneSizeEstimate(se *SizeEstimate) *SizeEstimate {
+	if se == nil {
+		return nil
+	}
+	clone := *se
+	return &clone
 }
 
 // TrackSize computes the actual runtime size of a value.

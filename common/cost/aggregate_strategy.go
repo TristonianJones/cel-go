@@ -16,7 +16,6 @@ package cost
 
 import (
 	"math"
-	"slices"
 
 	"cel.dev/cel-go/common/ast"
 	"cel.dev/cel-go/common/operators"
@@ -99,14 +98,8 @@ func estimateAggregateListSize(ctx EstimateContext, node AstNode) (SizeEstimate,
 		if call.FunctionName() == operators.Add && len(call.Args()) == 2 {
 			// Concatenation of two lists: (1 + left) + (1 + right) = 2 + left + right.
 			// Subtract 1 to correct for the single resulting list container header.
-			minVal := SafeSubtract(listSize.Min, 1)
-			if minVal == 0 {
-				minVal = 1
-			}
-			maxVal := SafeSubtract(listSize.Max, 1)
-			if maxVal == 0 {
-				maxVal = 1
-			}
+			minVal := max(SafeSubtract(listSize.Min, 1), 1)
+			maxVal := max(SafeSubtract(listSize.Max, 1), 1)
 			res := RangedSizeEstimate(minVal, maxVal)
 			res.Elem = elemSize
 			return res, true
@@ -116,57 +109,16 @@ func estimateAggregateListSize(ctx EstimateContext, node AstNode) (SizeEstimate,
 		return *listSize, true
 	}
 
-	if listSize == nil && ctx != nil && ctx.Estimator() != nil {
-		listSize = ctx.Estimator().EstimateSize(node)
-	}
-	if elemSize == nil && listSize != nil && listSize.Elem != nil {
-		e := *listSize.Elem
-		elemSize = &e
-	}
-	if listSize == nil || listSize.Max > 0 {
-		// If element size is missing or incomplete for nested containers, query child path @items.
-		if elemSize == nil || (elemSize.Elem == nil && isContainerKind(elemType.Kind())) {
-			if len(node.Path()) > 0 && ctx != nil {
-				elemPath := append(slices.Clone(node.Path()), "@items")
-				elemNode := NewAstNode(nil, elemPath, elemType, nil)
-				sz := ctx.Size(elemNode)
-				if sz != UnknownSizeEstimate() {
-					if elemSize == nil {
-						elemSize = &sz
-					} else {
-						elemSize.Elem = sz.Elem
-						elemSize.Key = sz.Key
-					}
-				}
-			}
-		}
-		if elemSize == nil {
-			elemSize = fallbackElemSize(ctx, elemType)
-		}
-	}
-	if listSize == nil && elemSize == nil && node.Expr() != nil {
-		u := UnknownSizeEstimate()
-		listSize = &u
-	}
+	listSize, elemSize = resolveListSizes(ctx, node, elemType, listSize, elemSize)
+	// The list length may be unknown (listSize == nil) while elemSize is known—for example,
+	// when the list has fixed-width primitive elements (e.g. list<int> where elemSize is [1, 1])
+	// or when a size hint was provided on the "@items" subpath without a hint on the list itself.
+	// combineListSize returns an unknown container size [0, MaxUint64] while preserving Elem so
+	// downstream operations (such as indexing or comprehensions) can still use the known element size.
 	if listSize == nil {
-		if elemSize != nil {
-			res := UnknownSizeEstimate()
-			res.Elem = elemSize
-			return res, true
-		}
-		return SizeEstimate{}, false
+		return combineListSize(nil, elemSize)
 	}
-	// For variable-width elements with no hint (elemSize == nil), lower bound is 1 unit and
-	// upper bound is math.MaxUint64 to ensure upper-bound safety.
-	minElem := uint64(1)
-	maxElem := uint64(math.MaxUint64)
-	if elemSize != nil {
-		minElem = elemSize.Min
-		maxElem = elemSize.Max
-	} else if listSize.Max > 0 {
-		u := UnknownSizeEstimate()
-		elemSize = &u
-	}
+	minElem, maxElem, elemSize := resolveElemBounds(elemSize, listSize.Max > 0)
 	aggMin := SafeAdd(1, SafeMultiply(listSize.Min, minElem))
 	aggMax := SafeAdd(1, SafeMultiply(listSize.Max, maxElem))
 	return SizeEstimate{
@@ -189,88 +141,15 @@ func estimateAggregateMapSize(ctx EstimateContext, node AstNode) (SizeEstimate, 
 		return *mapSize, true
 	}
 
-	if mapSize == nil && ctx != nil && ctx.Estimator() != nil {
-		mapSize = ctx.Estimator().EstimateSize(node)
-	}
-	if keySize == nil && mapSize != nil && mapSize.Key != nil {
-		k := *mapSize.Key
-		keySize = &k
-	}
-	if valSize == nil && mapSize != nil && mapSize.Elem != nil {
-		v := *mapSize.Elem
-		valSize = &v
-	}
-	// Query subpaths @keys and @values if hints were not provided on the parent map node.
-	if mapSize == nil || mapSize.Max > 0 {
-		if len(node.Path()) > 0 && ctx != nil {
-			if keySize == nil || (keySize.Elem == nil && isContainerKind(keyType.Kind())) {
-				kPath := append(slices.Clone(node.Path()), "@keys")
-				kSz := ctx.Size(NewAstNode(nil, kPath, keyType, nil))
-				if kSz != UnknownSizeEstimate() {
-					if keySize == nil {
-						keySize = &kSz
-					} else {
-						keySize.Elem = kSz.Elem
-						keySize.Key = kSz.Key
-					}
-				}
-			}
-			if valSize == nil || (valSize.Elem == nil && isContainerKind(valType.Kind())) {
-				vPath := append(slices.Clone(node.Path()), "@values")
-				vSz := ctx.Size(NewAstNode(nil, vPath, valType, nil))
-				if vSz != UnknownSizeEstimate() {
-					if valSize == nil {
-						valSize = &vSz
-					} else {
-						valSize.Elem = vSz.Elem
-						valSize.Key = vSz.Key
-					}
-				}
-			}
-		}
-		if keySize == nil {
-			keySize = fallbackElemSize(ctx, keyType)
-		}
-		if valSize == nil {
-			valSize = fallbackElemSize(ctx, valType)
-		}
-	}
-	if mapSize == nil && keySize == nil && valSize == nil && node.Expr() != nil {
-		u := UnknownSizeEstimate()
-		mapSize = &u
-	}
+	mapSize, keySize, valSize = resolveMapSizes(ctx, node, keyType, valType, mapSize, keySize, valSize)
+	// The map entry count may be unknown (mapSize == nil) while keySize or valSize is known
+	// (e.g. fixed-width key/value types like int, or hints provided only on "@keys"/"@values").
+	// combineMapSize returns an unknown container size while preserving Key and Elem estimates.
 	if mapSize == nil {
-		if keySize != nil || valSize != nil {
-			if keySize == nil {
-				u := UnknownSizeEstimate()
-				keySize = &u
-			}
-			if valSize == nil {
-				u := UnknownSizeEstimate()
-				valSize = &u
-			}
-			res := UnknownSizeEstimate()
-			res.Key = keySize
-			res.Elem = valSize
-			return res, true
-		}
-		return SizeEstimate{}, false
+		return combineMapSize(nil, keySize, valSize)
 	}
-	// For variable-width keys/values with no hint, lower bound is 1 unit and upper bound is math.MaxUint64.
-	minKey, maxKey := uint64(1), uint64(math.MaxUint64)
-	if keySize != nil {
-		minKey, maxKey = keySize.Min, keySize.Max
-	} else if mapSize.Max > 0 {
-		u := UnknownSizeEstimate()
-		keySize = &u
-	}
-	minVal, maxVal := uint64(1), uint64(math.MaxUint64)
-	if valSize != nil {
-		minVal, maxVal = valSize.Min, valSize.Max
-	} else if mapSize.Max > 0 {
-		u := UnknownSizeEstimate()
-		valSize = &u
-	}
+	minKey, maxKey, keySize := resolveElemBounds(keySize, mapSize.Max > 0)
+	minVal, maxVal, valSize := resolveElemBounds(valSize, mapSize.Max > 0)
 	entryMin := SafeAdd(minKey, minVal)
 	entryMax := SafeAdd(maxKey, maxVal)
 	aggMin := SafeAdd(1, SafeMultiply(mapSize.Min, entryMin))
@@ -283,22 +162,19 @@ func estimateAggregateMapSize(ctx EstimateContext, node AstNode) (SizeEstimate, 
 	}, true
 }
 
-// isContainerKind reports whether kind is a list or map container type.
-func isContainerKind(kind types.Kind) bool {
-	return kind == types.ListKind || kind == types.MapKind
-}
-
-// fallbackElemSize resolves fixed-width primitive type sizes via computeTypeSize,
-// or queries the estimator with an untyped/pathless node for type-level hints.
-func fallbackElemSize(ctx EstimateContext, elemType *types.Type) *SizeEstimate {
-	if sz := computeTypeSize(elemType); sz != nil {
-		return sz
+// resolveElemBounds returns the [min, max] bounds for a child element/key/value in aggregate size
+// calculation. For variable-width elements with no hint (sz == nil), the lower bound is 1 unit and
+// the upper bound is math.MaxUint64; if the parent container can be non-empty, sz is populated with
+// UnknownSizeEstimate().
+func resolveElemBounds(sz *SizeEstimate, nonEmptyContainer bool) (uint64, uint64, *SizeEstimate) {
+	if sz != nil {
+		return sz.Min, sz.Max, sz
 	}
-	if ctx != nil && ctx.Estimator() != nil {
-		elemNode := NewAstNode(nil, nil, elemType, nil)
-		return ctx.Estimator().EstimateSize(elemNode)
+	if nonEmptyContainer {
+		u := UnknownSizeEstimate()
+		sz = &u
 	}
-	return nil
+	return 1, math.MaxUint64, sz
 }
 
 var defaultAggregateSizing SizingStrategy = &aggregateSizingStrategy{calc: types.NewSizeCalculator(types.SizeCalculatorStringUnitLength(1))}

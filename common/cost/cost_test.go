@@ -302,6 +302,19 @@ func TestSizeEstimate(t *testing.T) {
 			}
 		})
 	}
+
+	if !cost.UnknownSizeEstimate().IsUnknown() {
+		t.Errorf("UnknownSizeEstimate().IsUnknown() = false, want true")
+	}
+	if cost.FixedSizeEstimate(5).IsUnknown() {
+		t.Errorf("FixedSizeEstimate(5).IsUnknown() = true, want false")
+	}
+	if !cost.UnknownCostEstimate().IsUnknown() {
+		t.Errorf("UnknownCostEstimate().IsUnknown() = false, want true")
+	}
+	if cost.FixedCostEstimate(5).IsUnknown() {
+		t.Errorf("FixedCostEstimate(5).IsUnknown() = true, want false")
+	}
 }
 
 // TestSizeEstimateCarriesMetadata holds the arithmetic operations to one rule. Multiply used to be

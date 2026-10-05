@@ -308,6 +308,11 @@ func (se SizeEstimate) AsCost() CostEstimate {
 	return se.MultiplyByCostFactor(1)
 }
 
+// IsUnknown returns true if the size estimate represents an unknown size (0 to math.MaxUint64 with no key or element sizes).
+func (se SizeEstimate) IsUnknown() bool {
+	return se == unknownSizeEstimate
+}
+
 // CostEstimate represents an estimated cost range and provides add and multiply operations
 // that do not overflow.
 type CostEstimate struct {
@@ -317,6 +322,11 @@ type CostEstimate struct {
 // UnknownCostEstimate returns a cost with an unknown impact.
 func UnknownCostEstimate() CostEstimate {
 	return unknownCostEstimate
+}
+
+// IsUnknown returns true if the cost estimate represents an unknown cost (0 to math.MaxUint64).
+func (ce CostEstimate) IsUnknown() bool {
+	return ce == unknownCostEstimate
 }
 
 // FixedCostEstimate returns a cost with a fixed min and max range.
