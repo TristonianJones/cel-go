@@ -1162,6 +1162,230 @@ func TestNativeStructHiddenField(t *testing.T) {
 	}
 }
 
+// Types used to verify that a skipped struct cannot be read through its promoted fields.
+type SkipCreds struct {
+	APIKey string
+}
+
+type SkipDeepCreds struct {
+	SkipCreds // APIKey is promoted through two levels of embedding
+	Token     string
+}
+
+type SkipPublic struct {
+	Label string
+}
+
+type SkipEmbeddedCEL struct {
+	SkipCreds `cel:"-"`
+	SkipPublic
+	Path string `cel:"path"`
+}
+
+type SkipEmbeddedPtrCEL struct {
+	*SkipCreds `cel:"-"`
+	Path       string `cel:"path"`
+}
+
+type SkipFieldCEL struct {
+	Creds SkipCreds `cel:"-"`
+	Path  string    `cel:"path"`
+}
+
+type SkipNestedCEL struct {
+	SkipDeepCreds `cel:"-"`
+	Path          string `cel:"path"`
+}
+
+type SkipEmbeddedBoth struct {
+	SkipCreds `cel:"-" json:"-"`
+	Path      string `cel:"path" json:"path"`
+}
+
+type SkipEmbeddedJSON struct {
+	SkipCreds `json:"-"`
+	SkipPublic
+	Path string `json:"path"`
+}
+
+type SkipEmbeddedPtrJSON struct {
+	*SkipCreds `json:"-"`
+	Path       string `json:"path"`
+}
+
+type SkipFieldJSON struct {
+	Creds SkipCreds `json:"-"`
+	Path  string    `json:"path"`
+}
+
+type SkipNestedJSON struct {
+	SkipDeepCreds `json:"-"`
+	Path          string `json:"path"`
+}
+
+// TestNativeStructSkippedEmbeddedField verifies that a skipped struct cannot be reached through
+// its promoted fields. CEL visibility is governed by the configured tag and JSON serialization by
+// the `json` tag; each applies the same rule, so a field hidden from CEL by `cel:"-"` is still
+// serialized unless it also carries `json:"-"`.
+func TestNativeStructSkippedEmbeddedField(t *testing.T) {
+	creds := SkipCreds{APIKey: "sk-SKIP"}
+	tests := []struct {
+		name    string
+		tag     string
+		typ     reflect.Type
+		in      any
+		hidden  []string
+		visible map[string]any
+		json    map[string]any
+	}{
+		{
+			name:    "cel embedded",
+			tag:     "cel",
+			typ:     reflect.TypeFor[SkipEmbeddedCEL](),
+			in:      SkipEmbeddedCEL{SkipCreds: creds, SkipPublic: SkipPublic{Label: "pub"}, Path: "/v1"},
+			hidden:  []string{"SkipCreds", "APIKey"},
+			visible: map[string]any{"path": "/v1", "Label": "pub"},
+			json:    map[string]any{"path": "/v1", "Label": "pub", "APIKey": "sk-SKIP"},
+		},
+		{
+			name:    "cel embedded pointer",
+			tag:     "cel",
+			typ:     reflect.TypeFor[SkipEmbeddedPtrCEL](),
+			in:      SkipEmbeddedPtrCEL{SkipCreds: &creds, Path: "/v1"},
+			hidden:  []string{"SkipCreds", "APIKey"},
+			visible: map[string]any{"path": "/v1"},
+			json:    map[string]any{"path": "/v1", "APIKey": "sk-SKIP"},
+		},
+		{
+			name:    "cel non-embedded",
+			tag:     "cel",
+			typ:     reflect.TypeFor[SkipFieldCEL](),
+			in:      SkipFieldCEL{Creds: creds, Path: "/v1"},
+			hidden:  []string{"Creds", "APIKey"},
+			visible: map[string]any{"path": "/v1"},
+			json:    map[string]any{"path": "/v1", "Creds": map[string]any{"APIKey": "sk-SKIP"}},
+		},
+		{
+			name:    "cel nested embedded",
+			tag:     "cel",
+			typ:     reflect.TypeFor[SkipNestedCEL](),
+			in:      SkipNestedCEL{SkipDeepCreds: SkipDeepCreds{SkipCreds: creds, Token: "tok"}, Path: "/v1"},
+			hidden:  []string{"SkipDeepCreds", "SkipCreds", "APIKey", "Token"},
+			visible: map[string]any{"path": "/v1"},
+			json:    map[string]any{"path": "/v1", "APIKey": "sk-SKIP", "Token": "tok"},
+		},
+		{
+			name:    "cel and json embedded",
+			tag:     "cel",
+			typ:     reflect.TypeFor[SkipEmbeddedBoth](),
+			in:      SkipEmbeddedBoth{SkipCreds: creds, Path: "/v1"},
+			hidden:  []string{"SkipCreds", "APIKey"},
+			visible: map[string]any{"path": "/v1"},
+			json:    map[string]any{"path": "/v1"},
+		},
+		{
+			name:    "json embedded",
+			tag:     "json",
+			typ:     reflect.TypeFor[SkipEmbeddedJSON](),
+			in:      SkipEmbeddedJSON{SkipCreds: creds, SkipPublic: SkipPublic{Label: "pub"}, Path: "/v1"},
+			hidden:  []string{"SkipCreds", "APIKey"},
+			visible: map[string]any{"path": "/v1", "Label": "pub"},
+			json:    map[string]any{"path": "/v1", "Label": "pub"},
+		},
+		{
+			name:    "json embedded pointer",
+			tag:     "json",
+			typ:     reflect.TypeFor[SkipEmbeddedPtrJSON](),
+			in:      SkipEmbeddedPtrJSON{SkipCreds: &creds, Path: "/v1"},
+			hidden:  []string{"SkipCreds", "APIKey"},
+			visible: map[string]any{"path": "/v1"},
+			json:    map[string]any{"path": "/v1"},
+		},
+		{
+			name:    "json non-embedded",
+			tag:     "json",
+			typ:     reflect.TypeFor[SkipFieldJSON](),
+			in:      SkipFieldJSON{Creds: creds, Path: "/v1"},
+			hidden:  []string{"Creds", "APIKey"},
+			visible: map[string]any{"path": "/v1"},
+			json:    map[string]any{"path": "/v1"},
+		},
+		{
+			name:    "json nested embedded",
+			tag:     "json",
+			typ:     reflect.TypeFor[SkipNestedJSON](),
+			in:      SkipNestedJSON{SkipDeepCreds: SkipDeepCreds{SkipCreds: creds, Token: "tok"}, Path: "/v1"},
+			hidden:  []string{"SkipDeepCreds", "SkipCreds", "APIKey", "Token"},
+			visible: map[string]any{"path": "/v1"},
+			json:    map[string]any{"path": "/v1"},
+		},
+	}
+	for _, tst := range tests {
+		tc := tst
+		t.Run(tc.name, func(t *testing.T) {
+			env, err := cel.NewEnv(
+				NativeTypes(tc.typ, ParseStructTag(tc.tag)),
+				cel.Variable("req", cel.ObjectType(tc.typ.String())),
+			)
+			if err != nil {
+				t.Fatalf("cel.NewEnv() failed: %v", err)
+			}
+			in := map[string]any{"req": tc.in}
+			eval := func(expr string) (ref.Val, error) {
+				ast, iss := env.Compile(expr)
+				if iss.Err() != nil {
+					return nil, iss.Err()
+				}
+				prg, err := env.Program(ast)
+				if err != nil {
+					t.Fatalf("env.Program(%s) failed: %v", expr, err)
+				}
+				out, _, err := prg.Eval(in)
+				return out, err
+			}
+			for _, field := range tc.hidden {
+				// Static reference must fail type-checking.
+				expr := "req." + field
+				if _, iss := env.Compile(expr); iss.Err() == nil {
+					t.Errorf("env.Compile(%s) succeeded, expected error for skipped field", expr)
+				}
+				// Dynamic reference must fail at runtime.
+				expr = "dyn(req)." + field
+				if out, err := eval(expr); err == nil {
+					t.Errorf("eval(%s) got %v, expected runtime error for skipped field", expr, out)
+				}
+				expr = "has(dyn(req)." + field + ")"
+				if out, err := eval(expr); err == nil {
+					t.Errorf("eval(%s) got %v, expected runtime error for skipped field", expr, out)
+				}
+			}
+			for field, want := range tc.visible {
+				expr := "req." + field
+				out, err := eval(expr)
+				if err != nil {
+					t.Errorf("eval(%s) failed: %v", expr, err)
+					continue
+				}
+				if !reflect.DeepEqual(out.Value(), want) {
+					t.Errorf("eval(%s) got %v, wanted %v", expr, out.Value(), want)
+				}
+			}
+			// JSON conversion must not leak the skipped fields either.
+			out, err := eval("req")
+			if err != nil {
+				t.Fatalf("eval(req) failed: %v", err)
+			}
+			jsonOut, err := out.ConvertToNative(reflect.TypeFor[*structpb.Struct]())
+			if err != nil {
+				t.Fatalf("ConvertToNative(*structpb.Struct) failed: %v", err)
+			}
+			if got := jsonOut.(*structpb.Struct).AsMap(); !reflect.DeepEqual(got, tc.json) {
+				t.Errorf("JSON conversion got %v, wanted %v", got, tc.json)
+			}
+		})
+	}
+}
+
 type TestNestedStruct struct {
 	ListVal []*TestNestedType
 }
@@ -1385,6 +1609,7 @@ type TestRefValFieldType struct {
 	OptionalName *types.Optional `cel:"optional_name"`
 	IntVal       types.Int
 	CELTime      types.Timestamp `cel:"time"`
+	Skipped      string          `cel:"-"`
 }
 
 // registeredNativeStruct is registered with NativeTypes in the delegation test.

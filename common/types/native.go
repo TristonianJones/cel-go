@@ -114,6 +114,16 @@ func NativeTypeFor[T any](opts ...NativeTypeOption) *NativeTypeDesc {
 //
 // A tag starting with "-" (e.g. `cel:"-"` or `cel:"-,"`) marks the field as skipped.
 // A literal "-" can be specified by single-quoting the name (e.g. `cel:"'-'"`).
+//
+// Skipping an embedded struct also skips the fields promoted from it, so they cannot be
+// reached through the enclosing struct.
+//
+// The configured tag only governs what is visible to CEL expressions. Serialization, whether
+// via `ConvertToNative` to a protobuf `Struct`/`Value` or via the `json.encode` and
+// `yaml.encode` extension functions, is governed by the `json` tag. A field tagged
+// `cel:"-"` is therefore still serialized unless it is also tagged `json:"-"`, and a field
+// tagged `json:"-"` is still visible to CEL unless it is also tagged `cel:"-"`.
+// Configuring ParseStructTag("json") makes CEL visibility and serialization agree.
 func ParseStructTags(enabled bool) NativeTypeOption {
 	if enabled {
 		return ParseStructTag("cel")
@@ -125,6 +135,12 @@ func ParseStructTags(enabled bool) NativeTypeOption {
 //
 // A tag starting with "-" (e.g. `cel:"-"` or `cel:"-,"`) marks the field as skipped.
 // A literal "-" can be specified by single-quoting the name (e.g. `cel:"'-'"`).
+//
+// Skipping an embedded struct also skips the fields promoted from it, so they cannot be
+// reached through the enclosing struct.
+//
+// The configured tag only governs what is visible to CEL expressions; serialization is always
+// governed by the `json` tag. See ParseStructTags for details.
 func ParseStructTag(tag string) NativeTypeOption {
 	return ParseStructField(fieldNameByTag(tag))
 }
@@ -623,52 +639,63 @@ func newNativeType(rawType reflect.Type, options NativeTypeOptions) (*NativeType
 	if !isValidObjectType(refType) {
 		return nil, fmt.Errorf("unsupported reflect.Type %v, must be reflect.Struct", rawType)
 	}
+	fieldsByName, err := celFieldsByName(refType, options.fieldNameHandler)
+	if err != nil {
+		return nil, err
+	}
+	return &NativeType{
+		typeName:     getNativeTypeName(refType, options.typeName),
+		refType:      refType,
+		fieldsByName: fieldsByName,
+		jsonFields:   jsonFieldsOf(refType, options.fieldNameHandler),
+		adapter:      options.adapter,
+	}, nil
+}
 
+// celFieldsByName determines the fields of a struct which are visible to CEL authors, keyed by
+// their CEL field name.
+//
+// A field is visible unless it is skipped according to the configured field name handler, which
+// consults the configured struct tag (e.g. `cel:"-"`).
+func celFieldsByName(refType reflect.Type, handler NativeTypesFieldNameHandler) (map[string]reflect.StructField, error) {
+	skipped := func(f reflect.StructField) bool {
+		return isSkippedFieldName(toFieldName(f, handler))
+	}
 	fieldsByName := make(map[string]reflect.StructField)
-	for _, field := range reflect.VisibleFields(refType) {
-		if !field.IsExported() || !isSupportedType(field.Type) {
-			continue
-		}
-		fieldName := toFieldName(field, options.fieldNameHandler)
-		if isSkippedFieldName(fieldName) {
-			continue
-		}
+	for _, field := range visibleFields(refType, skipped) {
+		fieldName := toFieldName(field, handler)
 		if _, found := fieldsByName[fieldName]; found {
 			return nil, fmt.Errorf("invalid field name `%s` in struct `%s`: %w", fieldName, refType.Name(), errDuplicatedFieldName)
 		}
 		fieldsByName[fieldName] = field
 	}
+	return fieldsByName, nil
+}
 
+// jsonFieldsOf determines the fields of a struct which are included when serializing to JSON
+// (and by extension YAML), along with their serialized names.
+//
+// A field is serialized unless it is skipped according to the `json` struct tag (`json:"-"`).
+// Embedded structs follow encoding/json conventions: those without a json name are serialized
+// inline via their promoted fields, those with a json name are serialized as a nested object.
+// The serialized name is the json tag name when present, otherwise the CEL field name.
+func jsonFieldsOf(refType reflect.Type, handler NativeTypesFieldNameHandler) []nativeJSONField {
+	skipped := func(f reflect.StructField) bool {
+		return parseStructTag(f, "json", "").Skip
+	}
 	var jsonFields []nativeJSONField
-	for _, field := range reflect.VisibleFields(refType) {
-		if !field.IsExported() || !isSupportedType(field.Type) {
+	for _, field := range visibleFields(refType, skipped) {
+		if field.Anonymous && !hasJSONName(field) {
 			continue
 		}
-		fieldName := toFieldName(field, options.fieldNameHandler)
-		if isSkippedFieldName(fieldName) {
+		if isPromotedThroughNamedJSONField(refType, field) {
 			continue
 		}
-		// If anonymous embedded field without explicit tag, skip
-		if field.Anonymous {
-			tagInfo := parseStructTag(field, "json", fieldName)
-			if !tagInfo.HasTag || tagInfo.Skip || tagInfo.Name == "" {
-				continue
-			}
+		defaultName := toFieldName(field, handler)
+		if isSkippedFieldName(defaultName) {
+			defaultName = field.Name
 		}
-		// If promoted subfield from embedded struct (len(Index) > 1), check if parent has tag
-		if len(field.Index) > 1 {
-			parentField := refType.Field(field.Index[0])
-			if parentField.Anonymous {
-				tagInfo := parseStructTag(parentField, "json", "")
-				if tagInfo.HasTag && !tagInfo.Skip && tagInfo.Name != "" {
-					continue
-				}
-			}
-		}
-		tagInfo := parseStructTag(field, "json", fieldName)
-		if tagInfo.Skip {
-			continue
-		}
+		tagInfo := parseStructTag(field, "json", defaultName)
 		jsonFields = append(jsonFields, nativeJSONField{
 			index:     field.Index,
 			jsonName:  tagInfo.Name,
@@ -676,14 +703,80 @@ func newNativeType(rawType reflect.Type, options NativeTypeOptions) (*NativeType
 			hasTag:    tagInfo.HasTag,
 		})
 	}
+	return jsonFields
+}
 
-	return &NativeType{
-		typeName:     getNativeTypeName(refType, options.typeName),
-		refType:      refType,
-		fieldsByName: fieldsByName,
-		jsonFields:   jsonFields,
-		adapter:      options.adapter,
-	}, nil
+// visibleFields returns the exported, supported fields of a struct which are not skipped.
+//
+// A field is skipped when the predicate holds for the field itself or for any embedded struct
+// through which the field is promoted, so that a skipped embedded struct cannot be reached via
+// its members.
+func visibleFields(refType reflect.Type, skipped func(reflect.StructField) bool) []reflect.StructField {
+	var fields []reflect.StructField
+	for _, field := range reflect.VisibleFields(refType) {
+		if !field.IsExported() || !isSupportedType(field.Type) {
+			continue
+		}
+		if isSkippedField(refType, field, skipped) {
+			continue
+		}
+		fields = append(fields, field)
+	}
+	return fields
+}
+
+// isSkippedField reports whether the field, or any embedded struct through which it is
+// promoted, satisfies the skip predicate.
+func isSkippedField(refType reflect.Type, field reflect.StructField, skipped func(reflect.StructField) bool) bool {
+	if skipped(field) {
+		return true
+	}
+	for _, parent := range embeddedAncestors(refType, field) {
+		if skipped(parent) {
+			return true
+		}
+	}
+	return false
+}
+
+// embeddedAncestors returns the chain of embedded struct fields through which a promoted
+// field is reached, from outermost to innermost. The result is empty for direct fields.
+func embeddedAncestors(refType reflect.Type, field reflect.StructField) []reflect.StructField {
+	if len(field.Index) <= 1 {
+		return nil
+	}
+	ancestors := make([]reflect.StructField, 0, len(field.Index)-1)
+	cur := refType
+	for _, idx := range field.Index[:len(field.Index)-1] {
+		if cur.Kind() == reflect.Pointer {
+			cur = cur.Elem()
+		}
+		if cur.Kind() != reflect.Struct || idx >= cur.NumField() {
+			return ancestors
+		}
+		parent := cur.Field(idx)
+		ancestors = append(ancestors, parent)
+		cur = parent.Type
+	}
+	return ancestors
+}
+
+// hasJSONName reports whether the field carries a json tag with an explicit name.
+func hasJSONName(field reflect.StructField) bool {
+	tagInfo := parseStructTag(field, "json", "")
+	return tagInfo.HasTag && tagInfo.Name != ""
+}
+
+// isPromotedThroughNamedJSONField reports whether a promoted field is reached through an
+// embedded struct with a json name, in which case the field is serialized within that
+// struct's nested object rather than inline.
+func isPromotedThroughNamedJSONField(refType reflect.Type, field reflect.StructField) bool {
+	for _, parent := range embeddedAncestors(refType, field) {
+		if hasJSONName(parent) {
+			return true
+		}
+	}
+	return false
 }
 
 func adaptFieldValue(adapter Adapter, refField reflect.Value) ref.Val {
