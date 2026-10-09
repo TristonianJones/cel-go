@@ -336,6 +336,11 @@ func (r *runner) setup(t testing.TB, env *cel.Env, ast *cel.Ast) {
 	if r.expr != "" && normalize(pExpr) != normalize(r.expr) {
 		t.Errorf("cel.AstToString() got %s, wanted %s", pExpr, r.expr)
 	}
+	wantBlockExt := strings.Contains(pExpr, "cel.@block")
+	hasBlockExt := ast.NativeRep().SourceInfo().HasExtension(celBlockExt.ID, celBlockExt.Version)
+	if hasBlockExt != wantBlockExt {
+		t.Errorf("SourceInfo().HasExtension('cel_block', 1.1) got %v, wanted %v", hasBlockExt, wantBlockExt)
+	}
 	prg, err := env.Program(ast, cel.EvalOptions(cel.OptOptimize))
 	if err != nil {
 		t.Fatalf("env.Program() failed: %v", err)
@@ -787,6 +792,12 @@ rule:
 			}
 			if tc.expectedUnparsed != "" && normalize(unparsed) != normalize(tc.expectedUnparsed) {
 				t.Errorf("cel.AstToString() got %s, wanted %s", unparsed, tc.expectedUnparsed)
+			}
+
+			wantBlockExt := strings.Contains(unparsed, "cel.@block")
+			hasBlockExt := ast.NativeRep().SourceInfo().HasExtension(celBlockExt.ID, celBlockExt.Version)
+			if hasBlockExt != wantBlockExt {
+				t.Errorf("SourceInfo().HasExtension('cel_block', 1.1) got %v, wanted %v", hasBlockExt, wantBlockExt)
 			}
 
 			_, err = cel.AstToCheckedExpr(ast)
