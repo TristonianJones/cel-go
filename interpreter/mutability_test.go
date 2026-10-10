@@ -127,7 +127,6 @@ func TestIsMutableAccuSafe(t *testing.T) {
 		{expr: `compre(i, a, [1], [], true, a.size() > 0 ? a + [i] : a, a)`, safe: true},
 		{expr: `compre(i, a, [1], [], true, i > 0 ? a + [i] : [a], a)`, safe: true},
 		{expr: `compre2(k, v, a, {1: 2}, {}, true, insert(a, k, a), a)`, safe: true},
-		{expr: `compre2(k, v, a, {1: 2}, {'x': 1}, true, insert(a, k, v), a)`, safe: true},
 
 		// cel.bind style comprehensions where the result is not the bare accumulator.
 		{expr: `bind(x, [], [x + [1], x + [2]])`, safe: false},
@@ -137,9 +136,10 @@ func TestIsMutableAccuSafe(t *testing.T) {
 		{expr: `compre(i, a, [1], [], true, a + [i], [a, a])`, safe: false},
 		{expr: `compre(i, a, [1], [], true, a + [i], a.size())`, safe: false},
 		{expr: `compre(i, a, [1], [], true, a + [i], 1)`, safe: false},
-		// Accumulator initializer must be an empty list literal.
+		// Accumulator initializer must be an empty list or map literal.
 		{expr: `compre(i, a, [1], [0], true, a + [i], a)`, safe: false},
 		{expr: `compre(i, a, [1], dyn([]), true, a + [i], a)`, safe: false},
+		{expr: `compre2(k, v, a, {1: 2}, {'x': 1}, true, insert(a, k, v), a)`, safe: false},
 		// Loop step must be `accu + [elem]`, optionally as the true branch of a ternary.
 		{expr: `compre(i, a, [1], [], true, [i], a)`, safe: false},
 		{expr: `compre(i, a, [1], [], true, a + a, a)`, safe: false},
