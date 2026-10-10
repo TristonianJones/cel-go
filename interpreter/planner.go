@@ -785,7 +785,7 @@ func isOptimizableMapInsert(fold ast.ComprehensionExpr) bool {
 	if accuVar == "" || !isIdentNamed(fold.Result(), accuVar) {
 		return false
 	}
-	if fold.AccuInit().Kind() != ast.MapKind {
+	if fold.AccuInit().Kind() != ast.MapKind || fold.AccuInit().AsMap().Size() != 0 {
 		return false
 	}
 	step := fold.LoopStep()
