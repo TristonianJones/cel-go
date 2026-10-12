@@ -147,12 +147,20 @@ var StandardOverloadModels = []OverloadModel{
 			Scale(Sum(Arg(0), Const(1)), StringTraversalCostFactor),
 			Scale(Arg(1), RegexStringLengthCostFactor),
 		)),
+		BeforeVersion(1, EvalCost(Mul(
+			roundScale(Sum(Arg(0), Const(1)), StringTraversalCostFactor),
+			roundScale(Arg(1), RegexStringLengthCostFactor),
+		))),
 	),
 	MemberOverload(overloads.MatchesString,
 		EvalCost(Mul(
 			Scale(Sum(Target(), Const(1)), StringTraversalCostFactor),
 			Scale(Arg(0), RegexStringLengthCostFactor),
 		)),
+		BeforeVersion(1, EvalCost(Mul(
+			roundScale(Sum(Target(), Const(1)), StringTraversalCostFactor),
+			roundScale(Arg(0), RegexStringLengthCostFactor),
+		))),
 	),
 
 	// O(nm) substring contains
@@ -161,6 +169,10 @@ var StandardOverloadModels = []OverloadModel{
 			Scale(Target(), StringTraversalCostFactor),
 			Scale(Arg(0), StringTraversalCostFactor),
 		)),
+		BeforeVersion(1, EvalCost(Mul(
+			roundScale(Target(), StringTraversalCostFactor),
+			roundScale(Arg(0), StringTraversalCostFactor),
+		))),
 	),
 
 	// The arg cost for logical and conditional operators is special-cased for
@@ -175,6 +187,13 @@ var StandardOverloadModels = []OverloadModel{
 		EvalCost(Const(0)),
 		ResultSize(Union(Arg(1), Arg(2))),
 	),
+}
+
+// roundScale scales e by f and rounds before any outer multiplication, reproducing the version 0
+// rounding of products of scaled factors.
+func roundScale(e QuantityExpr, f float64) QuantityExpr {
+	s := Scale(e, f)
+	return Ranged(s, s)
 }
 
 // StandardOverloadEstimators returns the map of FunctionEstimator instances for standard overloads.

@@ -14,10 +14,11 @@ AST form.
 
 * [1. Overview & Motivation](#1-overview--motivation)
 * [2. Core Concepts & Architecture](#2-core-concepts--architecture)
-* [3. Cost Model AST Primitives & Combinators Reference](#3-cost-model-ast-primitives--combinators-reference)
-* [4. Cost Model Examples & Use Cases](#4-cost-model-examples--use-cases)
-* [5. Practical Integration Guide](#5-practical-integration-guide)
-* [6. Best Practices](#6-best-practices)
+* [3. Formal Specification](#3-formal-specification)
+* [4. Cost Model AST Primitives & Combinators Reference](#4-cost-model-ast-primitives--combinators-reference)
+* [5. Cost Model Examples & Use Cases](#5-cost-model-examples--use-cases)
+* [6. Practical Integration Guide](#6-practical-integration-guide)
+* [7. Best Practices & Limitations](#7-best-practices--limitations)
 
 ---
 
@@ -267,7 +268,294 @@ via [`cost.ModelVersionOf(estimator)`](https://github.com/cel-expr/cel-go/blob/m
 
 ---
 
-## 3. Cost Model AST Primitives & Combinators Reference
+## 3. Formal Specification
+
+This section specifies the quantity algebra as of [model version 1](#model-revisions).
+The algebraic laws in §3.7 and the soundness property in §3.6 are checked by
+[`algebra_test.go`](https://github.com/cel-expr/cel-go/blob/master/common/cost/algebra_test.go).
+
+### 3.1 Goals
+
+A cost model must be able to express a call's cost in terms of:
+
+1. **The function**: a constant per-call charge.
+2. **Its arguments**: the size, element size, key size, or integer value of
+   each argument and of the receiver.
+3. **Allocations**: a fixed charge for creating a container, plus a charge
+   proportional to what it holds.
+4. **Its growth**: linear, product, and polynomial growth in the quantities
+   above.
+5. **Its result**: the size of what the call returns, so that later calls can
+   be priced, and so that a cost can depend on it.
+
+### 3.2 Domain
+
+Let $\mathbb{U} = \{0, 1, \ldots, 2^{64} - 1\}$ and write $\top = 2^{64} - 1$.
+$\top$ stands for an unbounded or unknown quantity.
+
+* A **tracked value** is an element of $\mathbb{U}$.
+* An **estimate** is a
+  [`SizeEstimate`](https://github.com/cel-expr/cel-go/blob/master/common/cost/cost.go):
+  an interval $[lo, hi] \subseteq \mathbb{U}$ with $lo \le hi$, plus optional
+  `Key` and `Elem` estimates which describe the keys and elements of a
+  container. `UnknownSizeEstimate()` is $[0, \top]$.
+
+The primitive operations on $\mathbb{U}$ saturate rather than wrap:
+
+| Operation | Definition | Helper |
+|---|---|---|
+| $x \oplus y$ | $\min(x + y, \top)$ | `SafeAdd` |
+| $x \ominus y$ | $\top$ if $x = \top$, else $\max(x - y, 0)$ | `SafeSubtract` |
+| $x \otimes y$ | $\min(x \cdot y, \top)$ | `SafeMultiply` |
+| $x \odot f$ | $\lceil x \cdot f \rceil$, clamped to $\mathbb{U}$; see below | `Scale` |
+
+$\oplus$ and $\otimes$ are commutative and associative, and $\otimes$
+distributes over $\oplus$. $\ominus$ is truncated subtraction:
+$(x \ominus y) \oplus y = \max(x, y)$.
+
+**Scaling changed in version 1.** `Scale(e, f)` is the only operator whose
+arithmetic changed between the model released in `v0.32.0` and version 1:
+
+| | `v0.32.0` | Version 1 |
+|---|---|---|
+| Factor | the `float64` value of `f` | the simplest rational $p/q$ with the same `float64` value, so `0.1` is exactly $1/10$; a factor whose simplest form needs $q > 2^{32}$ is applied in `float64` |
+| Product | `float64` multiplication, then ceiling (`SafeMultiplyByFactor`) | exact: $\lceil x \cdot p / q \rceil$ in 128-bit integer arithmetic |
+| $x = \top$ | $\lceil \top \cdot f \rceil$, finite for $f < 1$ | $\top$ for every $f > 0$ |
+| Nested factors | each `Scale` rounds separately | factors are combined before rounding (§3.5) |
+
+The combinators themselves are not versioned: every model is evaluated with the
+version 1 arithmetic at every revision. A model which must keep an earlier
+price at earlier revisions states it with `BeforeVersion`, as the standard
+`contains` and `matches` models do (§2, [Model Revisions](#model-revisions)).
+
+The arithmetic operations preserve $\top$: a sum, a product by a non-zero
+quantity, a positive scaling, or a difference whose minuend is $\top$ is
+$\top$. Only operations which select or discard an operand, such as `Min`, a
+product by $0$, or a difference whose subtrahend is $\top$, may produce a
+finite value from an operand of $\top$.
+
+### 3.3 Sizes and Units
+
+A size is a non-negative integer that the configured
+[`SizingStrategy`](#sizing-strategies) assigns to a value. The same strategy
+sizes values for estimation and for tracking, so a model's `Arg`, `Target`,
+`Result`, and projections always mean the same thing in both interpretations:
+
+| Value | `DefaultSizingStrategy` | `AggregateSizingStrategy` |
+|---|---|---|
+| `string` | Unicode code points ($0$ for `''`) | UTF-8 bytes ($1$ for `''`) |
+| `bytes` | bytes ($0$ for `b''`) | bytes ($1$ for `b''`) |
+| `list` | elements | $1$ plus the sum of the elements' sizes |
+| `map` | entries | $1$ plus the sum of the keys' and values' sizes |
+| message | $1$ | $1$ plus the sum of the set fields' sizes |
+| optional | the size of its value; $0$ when empty | the size of its value; $0$ when empty |
+| other value with a `Size()`, such as an IP or CIDR | its `Size()` | its `Size()` |
+| any other value | $1$ | $1$ |
+
+### 3.4 Atoms
+
+Argument indices count from $0$ and exclude the receiver of a member overload.
+
+| Atom | Estimate | Track |
+|---|---|---|
+| `Const(k)` | $[k, k]$ | $k$ |
+| `Arg(i)` | size of argument $i$; $[0, \top]$ if absent | size of argument $i$; $0$ if absent |
+| `Target()` | size of the receiver | size of the receiver |
+| `Result()` | size of the result, from the model's `ResultSize`; $[0, \top]$ if it has none | size of the result |
+| `IntArg(i, d)` | $[v, v]$ for a literal $v$; $[0, \top]$ for a non-literal | value of argument $i$, or `d` if it is not an integer |
+| `IntTarget(d)` | as `IntArg`, for the receiver | as `IntArg`, for the receiver |
+
+Negative integers read as $0$.
+
+### 3.5 Combinators
+
+For estimates $A = [a_l, a_h]$ and $B = [b_l, b_h]$, and tracked values $a, b$:
+
+| Combinator | Estimate | Track |
+|---|---|---|
+| `Sum(A, B, ...)` | $[a_l \oplus b_l, a_h \oplus b_h]$ | $a \oplus b$ |
+| `Sub(A, B)` | $[a_l \ominus b_h, a_h \ominus b_l]$ | $a \ominus b$ |
+| `Mul(A, B, ...)` | $[a_l \otimes b_l, a_h \otimes b_h]$ | $a \otimes b$ |
+| `Square(A)` | `Mul(A, A)` | $a \otimes a$ |
+| `Scale(A, f)` | $[a_l \odot f, a_h \odot f]$ | $a \odot f$ |
+| `Min(A, B)` | $[\min(a_l, b_l), \min(a_h, b_h)]$ | $\min(a, b)$ |
+| `Max(A, B)` | $[\max(a_l, b_l), \max(a_h, b_h)]$ | $\max(a, b)$ |
+| `Union(A, B, ...)` | $[\min(a_l, b_l), \max(a_h, b_h)]$ | $\max(a, b)$ |
+| `Ranged(A, B)` | $[\min(a_l, b_h), b_h]$ | $b$ |
+| `AtMost(A)` | `Ranged(Const(0), A)` | $a$ |
+| `AtLeastOneQuantity(A)` | $[\max(a_l, 1), \max(a_h, 1)]$ | $\max(a, 1)$ |
+
+The empty `Sum` is $0$, the empty `Mul` is $1$, and the empty `Union` is $0$.
+
+**Scale normalization.** When a model is compiled at version 1, scale factors
+are moved outward, and combined as exact rationals, so that each product is
+rounded once:
+
+* `Scale(Scale(A, f), g)` becomes `Scale(A, f·g)`.
+* `Mul(Scale(A, f), Scale(B, g), C)` becomes `Scale(Mul(A, B, C), f·g)`.
+* `Sum(Scale(A, f), Scale(B, f))` becomes `Scale(Sum(A, B), f)`.
+
+A `Sum` is factored only when every term is scaled by the same factor. A sum
+with an unscaled term, such as a constant, or with terms of different factors,
+rounds once per scaled term: `Sum(Const(1), Scale(A, f), Scale(B, f))` rounds
+`A` and `B` separately. Factors whose product has no exact rational form
+within the supported range are left nested, and round separately.
+
+**Interval dependency.** Because estimates are intervals, an operand that
+appears twice is treated as two independent quantities. `Sub(A, A)` estimates
+$[0, a_h - a_l]$ rather than $0$, and `Sub(Sum(A, B), B)` is wider than `A`.
+This over-approximates, so it is sound, and the track is exact.
+
+### 3.6 Soundness
+
+For every model and every assignment of values whose sizes lie within the
+argument estimates:
+
+$$\text{track} \le \text{estimate}.hi$$
+
+and, except for `Ranged` and `AtMost`, which charge their upper bound:
+
+$$\text{estimate}.lo \le \text{track}$$
+
+The upper bound is the property every model must preserve. An estimate below
+the tracked cost lets an expression pass static admission and then exceed its
+budget at runtime. For a whole expression, the upper bound assumes:
+
+* size hints consistent with the values, in the units of §3.3;
+* under the aggregate strategy, values within its depth and traversal limits;
+* strings which are valid UTF-8 and IP addresses without a zone, when the host
+  supplies such values directly;
+* the default short-circuiting evaluation (`cel.OptExhaustiveEval` evaluates
+  and charges both branches of a conditional).
+
+### 3.7 Algebraic Laws
+
+Models which are equal as expressions over $\mathbb{U}$ yield the same
+estimate and the same track, so that the form an author chooses does not
+change the price.
+
+| Law | Statement |
+|---|---|
+| Commutativity | `Sum`, `Mul`, `Min`, `Max`, and `Union` are independent of operand order |
+| Associativity | the same five combinators may be regrouped, and nested `Sum` or `Mul` flattened |
+| Identity | `Sum(A, Const(0)) = A`; `Mul(A, Const(1)) = A`; `Sub(A, Const(0)) = A`; `Scale(A, 1) = A` |
+| Annihilation | `Mul(A, Const(0)) = Const(0)` |
+| Distributivity | `Mul(A, Sum(B, C)) = Sum(Mul(A, B), Mul(A, C))` |
+| Lattice | `Min` and `Max` are idempotent and absorb each other; `Sum` and `Mul` distribute over them |
+| Truncated subtraction | `Sub(A, Sum(B, C)) = Sub(Sub(A, B), C)` |
+| Scaling | `Scale(Sum(A, B), f) = Sum(Scale(A, f), Scale(B, f))`; `Scale(Mul(A, B), f) = Mul(Scale(A, f), B)`; `Scale(Scale(A, f), g) = Scale(A, f·g)`, where $f \cdot g$ is the exact product of the factors' rational forms |
+| Saturation | `Sum`, `Mul` by a non-zero operand, `Scale` by a positive factor, and `Sub` with a minuend of $\top$ yield $\top$ |
+
+The laws hold as stated for operands without `Scale`. With `Scale`,
+normalization (§3.5) makes the scaling laws hold, but it rounds a sum once only
+when every term shares a factor, so regrouping or distributing over a `Sum` of
+scaled terms can move the rounding: `Sum(Scale(A, 0.1), Scale(B, 0.1))` costs
+$1$ for $A = B = 5$, while `Sum(Scale(A, 0.1), Scale(B, 0.1), Const(0))` costs
+$2$. Both are sound; they differ only in where they round.
+
+### 3.8 Metadata and Container Sizes
+
+A container estimate carries `Elem`, and a map estimate also carries `Key`.
+
+**Container sizes follow the sizing strategy.** `List(len, elem)` and
+`Map(n, key, val)` describe a result container by its length and its entry
+sizes, and report the size the active strategy assigns to it:
+
+| Strategy | `List(len, elem)` | `Map(n, key, val)` |
+|---|---|---|
+| `DefaultSizingStrategy` | $len$ | $n$ |
+| `AggregateSizingStrategy` | $1 \oplus len \otimes \max(elem, 1)$ | $1 \oplus n \otimes (\max(key, 1) \oplus \max(val, 1))$ |
+| any other strategy | $[0, \top]$ | $[0, \top]$ |
+
+`List` sets `Elem` and clears `Key`; `Map` sets both. They are the only way to
+describe a result whose entries differ from the operands'. Their track is the
+length, which is at most the size under either built-in strategy, so they are
+meant for `ResultSize`: inside a cost under the aggregate strategy, their lower
+bound exceeds what they charge.
+
+Under the aggregate strategy, a model's result size has an upper bound of at
+least $1$, the size of an empty string, bytes value, list, or map, so that a
+result which may be empty, such as `'abc'.substring(3)`, is not estimated
+below its size.
+
+**Absent metadata.** Whether an absent (`nil`) `Elem` or `Key` means
+"unknown" or "none" depends on what the operand is:
+
+* **Scalars** never carry metadata: `Const`, `IntArg`, `IntTarget`, and
+  `ElemTotal` (§3.9). (`Const(k)` represents a numeric scalar $k$; a
+  constant-length list or map is written `List(Const(k), elem)` or
+  `Map(Const(k), key, val)`.)
+* **Values** (`Arg`, `Target`, `Result`, `ElemOf`, `KeyOf`) and combinators of
+  them may be containers. Such an operand which may be non-empty and states
+  neither `Elem` nor `Key` may hold anything, so its element and key sizes are
+  unknown. One which states `Elem` but not `Key` is a list, which has no keys.
+  An `Arg` or `Target` which the checker typed as a value without elements,
+  such as a string, bytes, or a number, is a scalar.
+* **Empty containers** hold nothing. A container may be non-empty when its size
+  can exceed $0$ under the default strategy, or $1$ under the aggregate
+  strategy, which sizes an empty container as $1$.
+
+Combinators propagate metadata as follows:
+
+* `Sum`, `Mul`, `Min`, `Max`, `Union`, and `Ranged` attach metadata when any
+  operand states some. They attach the union of the operands' metadata, where
+  an operand whose metadata is unknown contributes $[0, \top]$ and a scalar or
+  empty container contributes nothing. The result is independent of operand
+  order.
+* `Sub(A, B)` carries `A`'s metadata, since a difference holds some of `A`'s
+  elements and none of `B`'s.
+* `Scale(A, f)` and `AtLeastOneQuantity(A)` carry `A`'s metadata.
+* `ElemTotal` is a scalar and carries none.
+
+### 3.9 Projections
+
+`ElemOf(X)`, `KeyOf(X)`, and `ElemTotal(X)` read the value they apply to, so
+they are defined only where `X` denotes a value: `Arg(i)`, `Target()`,
+`Result()`, or an `ElemOf` or `KeyOf` of those. `Validate` rejects other
+operands at every version.
+
+| Projection | Estimate | Track |
+|---|---|---|
+| `ElemOf(X)` | `X.Elem`, or $[0, \top]$ | size of the largest element |
+| `KeyOf(X)` | `X.Key`, or $[0, \top]$ | size of the largest key |
+| `ElemTotal(X)` | $x \otimes p$ (where $x$ is the size of `X` and $p$ its element size) | sum of the element sizes |
+
+### 3.10 Overloads
+
+An `OverloadModel` pairs an overload ID with a cost expression and an optional
+result size expression:
+
+* A **member** overload's receiver is `Target()`, and its arguments are
+  indexed from $0$ after the receiver. A **global** overload has no receiver.
+* The result size is estimated before the cost, and is available to the cost
+  through `Result()` in both interpretations.
+* The model's cost covers the call itself. Argument costs are charged
+  separately: the estimator adds the arguments' estimated costs. For the
+  short-circuiting operators, an operand which may not run counts toward $Max$
+  but not $Min$: `&&` and `||` add only the first operand to $Min$; `?:` adds
+  the condition and the cheaper branch to $Min$ and the costlier branch to
+  $Max$; optional `or` adds the alternative to $Max$ only.
+
+[`OverloadModel.Validate`](https://github.com/cel-expr/cel-go/blob/master/common/cost/validate.go)
+rejects a model which cannot be priced consistently. `cel.CostModel` and
+`cost.Model` call it at every model version so that a malformed model is
+rejected at registration rather than mispriced at evaluation. A model is
+rejected when:
+
+* it has no ID, or neither an `EvalCost` expression nor `ManualCost`, or
+  combines `ManualCost` with `EvalCost` or `ResultSize`;
+* an `Arg`, `ArgElem`, `ArgKey`, or `IntArg` index is negative;
+* a projection is applied to something other than a value (§3.9);
+* a global overload references the receiver: `Target()`, `TargetElem()`,
+  `TargetKey()`, or `IntTarget()`;
+* a `Scale` factor is zero, negative, infinite, or `NaN` (use `Const(0)` for a
+  free operation);
+* `Ranged` has constant bounds in the wrong order;
+* the result size expression references `Result()`.
+
+---
+
+## 4. Cost Model AST Primitives & Combinators Reference
 
 The table below catalogs the AST nodes and helper functions provided by
 [`common/cost`](https://github.com/cel-expr/cel-go/blob/master/common/cost/model.go):
@@ -278,22 +566,17 @@ The table below catalogs the AST nodes and helper functions provided by
 | **Arguments** | `Arg(i)` | Size of argument at 0-based index `i`. |
 | | `ArgElem(i)` | Element size of container argument at index `i`. |
 | | `ArgKey(i)` | Key size of map argument at index `i`. |
-| | `IntArg(i, defaultVal)` | Literal / concrete integer value of argument at index `i`. |
+| | `IntArg(i, defaultVal)` | Non-negative integer value of argument at index `i` (`[val, val]` for a literal integer; unbounded `[0, MaxUint64]` when estimating a non-literal; `defaultVal` at runtime if non-integer). |
 | **Receiver / Target** | `Target()` | Size of receiver/target object. |
 | | `TargetElem()` | Element size of receiver container. |
 | | `TargetKey()` | Key size of receiver map. |
-| | `IntTarget(defaultVal)` | Literal / concrete integer value of receiver. |
+| | `IntTarget(defaultVal)` | Non-negative integer value of receiver (`[val, val]` for a literal integer; unbounded `[0, MaxUint64]` when estimating a non-literal; `defaultVal` at runtime if non-integer). |
 | **Result** | `Result()` | Size of the evaluated result value. |
 | **Arithmetic** | `Sum(terms...)` | Saturating addition $\sum t_i$. |
 | | `Sub(lhs, rhs)` | Saturating subtraction $\max(0, lhs - rhs)$. |
 | | `Mul(terms...)` | Saturating multiplication $\prod t_i$. |
 | | `Square(expr)` | Squared quantity $expr^2$. |
-| **Scaling** | `Scale(expr, factor)` | Multiply expression by constant float factor (rounded up). |
-| | `ScaleBy(expr, ScaleFn)` | Dynamically scale expression based on type context. |
-| | `ArgTypeScale(i, fn)` | Dynamic factor derived from argument type. |
-| | `ArgElemTypeScale(i, fn)` | Dynamic factor derived from container argument element type. |
-| | `TargetTypeScale(fn)` | Dynamic factor derived from target type. |
-| | `TargetElemTypeScale(fn)` | Dynamic factor derived from target element type. |
+| **Scaling** | `Scale(expr, factor)` | Multiply expression by constant positive float factor (rounded up). |
 | **Intervals & Bounds** | `Min(lhs, rhs)` | Minimum quantity between two expressions. |
 | | `Max(lhs, rhs)` | Maximum quantity between two expressions. |
 | | `Union(terms...)` | Encompassing interval union $[\min(Min_i), \max(Max_i)]$. |
@@ -306,21 +589,33 @@ The table below catalogs the AST nodes and helper functions provided by
 | | `List(lenExpr, elemExpr)` | Construct list size estimate with element size metadata. |
 | | `Map(sizeExpr, keyExpr, valExpr)` | Construct map size estimate with key and value size metadata. |
 | **Standard Macros** | `StringScan(expr)` | Shorthand for `Scale(expr, 0.1)`. |
-| | `CompareCost(lhs, rhs)` | Comparison cost of two values ($O(1)$ scalars, min-length scaled strings, recursive containers). |
 | | `ListAlloc(elemCount, factor)` | Base allocation cost ($10$) plus scaled element count. |
 | | `AllocList(terms...)` | Call dispatch ($1$) + base list allocation ($10$) plus work terms. |
 | | `Traversal(expr, factor, alloc)` | Traversal cost with optional fixed allocation cost. |
 
 ### Result Size Metadata
 
-A `SizeEstimate` carries a length together with the `Key` and `Elem` sizes of
-what it holds. Every combinator which returns one of its operands, or a scaled
-or combined form of it, carries the union of its operands' metadata through:
-`Sum`, `Sub`, `Mul`, `Square`, `Scale`, `Min`, `Max`, `Union`, `Ranged` and
-`AtMost`. Because a `nil` `Key` or `Elem` is read by `KeyOf` and `ElemOf` as
-`UnknownSizeEstimate()`, attaching operand metadata **narrows** the downstream
-bound relative to leaving it unset; that narrowing is sound whenever the
-result's elements or keys are drawn from the operands.
+A `SizeEstimate` carries a size together with the `Key` and `Elem` sizes of
+what it holds:
+
+* **Combinator union**: `Sum`, `Mul`, `Square`, `Scale`, `Min`, `Max`, `Union`,
+  `Ranged`, `AtMost`, and `AtLeastOneQuantity` merge the `Key` and `Elem`
+  metadata of their operands by taking the interval union across operands that
+  may hold elements.
+* **Subtraction**: `Sub(lhs, rhs)` inherits **only the minuend's (`lhs`)**
+  `Key` and `Elem` metadata, since removing a count or subset of elements
+  retains elements only from `lhs`.
+* **Widening on unstated containers**: Because a `nil` `Key` or `Elem` is read
+  by `KeyOf` and `ElemOf` as `UnknownSizeEstimate()`, attaching operand metadata
+  **narrows** the downstream bound relative to leaving it unset. When merging
+  multiple operands, if one operand states `Key` or `Elem` metadata and another
+  operand is a potentially non-empty container whose metadata is `nil` (for
+  example, an unhinted list variable in `Union(knownList, unknownList)`), the
+  merged metadata is widened to `UnknownSizeEstimate()` so the unstated
+  container cannot under-approximate the combined bound. Scalar expressions
+  (`Const`, `IntArg`, `IntTarget`, `ElemTotal`, or
+  arguments typed as scalars/strings/bytes) and known-empty containers
+  contribute no metadata and do not widen another operand's metadata.
 
 > [!WARNING]
 > Inheritance is right for a result drawn from its operands, and wrong for one
@@ -359,7 +654,7 @@ inputs, such as a flattened list.
 
 ---
 
-## 4. Cost Model Examples & Use Cases
+## 5. Cost Model Examples & Use Cases
 
 The following catalog demonstrates distinct use cases exercising all features
 of the Cost Model AST.
@@ -580,30 +875,36 @@ cost.MemberOverload(overloads.MatchesString,
 ### List Slicing with Literal Integer Bounds
 
 * **CEL Expression**: `items.slice(2, 8)`
-* **Complexity**: $O(1)$ slicing overhead; result size bounded by integer
-  argument delta.
+* **Complexity**: $O(end - start)$ slice allocation; result size bounded by
+  both the integer argument delta and the receiver size.
 * **Cost Model AST**:
 ```go
-cost.MemberOverload("list_slice_int_int",
+sliceList := cost.List(
+    cost.Sub(cost.IntArg(1, 0), cost.IntArg(0, 0)),
+    cost.TargetElem(),
+)
+cost.MemberOverload("list_slice",
     cost.EvalCost(cost.Const(1)),
-    // Result size is bounded by [0, end - start] when literal integer
-    // indices are present
-    cost.ResultSize(cost.AtMost(
-        cost.Sub(cost.IntArg(1, math.MaxUint64), cost.IntArg(0, 0)),
+    cost.ResultSize(cost.Ranged(
+        sliceList,
+        cost.Min(sliceList, cost.Target()),
     )),
 )
 ```
 * **Estimation Behavior**: If arguments are literal integers $2$ and $8$,
-  result size is estimated as $[0, 6]$.
+  `IntArg` estimates them as $[2, 2]$ and $[8, 8]$, so the slice length is
+  $[6, 6]$ (and capped above by `Target()`). If an index is a non-literal
+  expression, `IntArg` estimates it as $[0, \text{MaxUint64}]$, so
+  `Ranged(sliceList, Min(sliceList, Target()))` bounds the result size in
+  $[0, \text{Target}()]$ while preserving `TargetElem()` metadata.
 * **Tracking Behavior**: Extracts runtime integer arguments, computing
   $8 - 2 = 6$.
 
 > [!NOTE]
-> The length here is derived from the integer arguments, not from the target,
-> so nothing carries the target's element size into the result and a slice of
-> strings looks like a list of unbounded elements to whatever consumes it. A
-> model that wants to keep it must say so:
-> `cost.List(cost.AtMost(...), cost.TargetElem())`.
+> Wrapping `Sub(IntArg(1, 0), IntArg(0, 0))` in `cost.List(..., cost.TargetElem())`
+> carries the receiver's element size metadata into the result; without `List`,
+> a slice of strings would look like a list of unbounded elements to whatever
+> consumes it.
 
 ---
 
@@ -622,8 +923,9 @@ cost.MemberOverload("string_repeat_int",
     cost.ResultSize(cost.Mul(cost.Target(), cost.IntArg(0, 1))),
 )
 ```
-* **Estimation Behavior**: Multiplies target size interval by literal
-  multiplier argument.
+* **Estimation Behavior**: Multiplies target size interval by $[count, count]$
+  when `count` is a literal integer, or by $[0, \text{MaxUint64}]$ when `count`
+  is a non-literal expression.
 * **Tracking Behavior**: Multiplies target string length by dynamic runtime
   integer parameter.
 
@@ -729,67 +1031,36 @@ cost.Overload("zip_to_map_list_list",
 
 ---
 
-### Dynamic Type-Aware Serialization
+### Per-Overload Type-Specific Scaling
 
-* **CEL Expression**: `encode(payload)`
-* **Complexity**: Varies by argument type (e.g. primitives are $O(1)$,
-  strings/maps require higher per-byte cost).
+* **CEL Expression**: `items.sort()`
+* **Complexity**: $O(n^2)$ self-comparison; string and bytes overloads incur an
+  additional `StringTraversalCostFactor` ($0.1$) per comparison over scalar
+  overloads ($2.0$).
 * **Cost Model AST**:
 ```go
-cost.Overload("custom_encode",
-    cost.EvalCost(cost.ScaleBy(
-        cost.Arg(0),
-        cost.ArgTypeScale(0, func(t *types.Type) float64 {
-            if t == nil {
-                return 1.0
-            }
-            switch t.Kind() {
-            case types.StringKind, types.BytesKind:
-                return 0.5
-            case types.MapKind, types.StructKind:
-                return 2.0
-            default:
-                return 0.1
-            }
-        }),
+// Scalar element overload (e.g. list(int))
+cost.MemberOverload("list_int_sort",
+    cost.EvalCost(cost.Sum(
+        cost.Const(cost.CallCost+cost.ListCreateBaseCost),
+        cost.Scale(cost.Square(cost.Target()), 2.0),
     )),
-    cost.ResultSize(cost.Scale(cost.Arg(0), 1.5)),
+    cost.ResultSize(cost.Target()),
+)
+
+// String element overload (list(string))
+cost.MemberOverload("list_string_sort",
+    cost.EvalCost(cost.Sum(
+        cost.Const(cost.CallCost+cost.ListCreateBaseCost),
+        cost.Scale(cost.Square(cost.Target()), 2.0+cost.StringTraversalCostFactor),
+    )),
+    cost.ResultSize(cost.Target()),
 )
 ```
-* **Estimation Behavior**: Inspects static type from AST; scales size by the
-  type-specific factor.
-* **Tracking Behavior**: Inspects dynamic type of runtime value and applies
-  corresponding scale factor.
-
----
-
-### Container Element Type-Dependent Hashing
-
-* **CEL Expression**: `items.hashList()`
-* **Complexity**: Traversal cost factor depends on whether list elements are
-  heavy (e.g. strings) or light (integers).
-* **Cost Model AST**:
-```go
-cost.MemberOverload("list_hash",
-    cost.EvalCost(cost.ScaleBy(
-        cost.Target(),
-        cost.TargetElemTypeScale(func(elemType *types.Type) float64 {
-            // Kind() is nil-safe, and reports UnspecifiedKind when the target
-            // type is not a parameterized container.
-            switch elemType.Kind() {
-            case types.StringKind, types.BytesKind:
-                return 0.8
-            default:
-                return 0.2
-            }
-        }),
-    )),
-    cost.ResultSize(cost.Const(32)), // 32-byte digest
-)
-```
-* **Estimation Behavior**: Extracts type parameter $T$ from `list(T)` and
-  applies appropriate multiplier.
-* **Tracking Behavior**: Resolves target container element type at runtime.
+* **Estimation Behavior**: Dispatches to the overload matching the checked list
+  element type and applies its constant rational factor.
+* **Tracking Behavior**: Charges the same per-overload factor against the
+  runtime list length (`Target()`).
 
 ---
 
@@ -853,7 +1124,7 @@ cost.Overload("crypto_encrypt_bytes_bytes",
 
 ---
 
-## 5. Practical Integration Guide
+## 6. Practical Integration Guide
 
 ### Step 1: Registering Overload Models in Custom Extensions
 
@@ -972,7 +1243,9 @@ func ExecuteWithBudget(
 
 ---
 
-## 6. Best Practices
+## 7. Best Practices & Limitations
+
+### Best Practices
 
 1. **Leverage Standard Macros**: Use
    [`StringScan`](https://github.com/cel-expr/cel-go/blob/master/common/cost/model.go)
@@ -995,3 +1268,27 @@ func ExecuteWithBudget(
 4. **Always Rely on Saturating Arithmetic**: Never bypass the `cost.Safe*`
    helpers in custom sizing strategies or quantity expressions to protect
    against overflow vulnerabilities.
+
+### Known Limitations
+
+* **Interval dependency**: Because an estimate is an interval per operand with
+  no record of which operands refer to the same quantity, an expression that
+  uses an operand twice is estimated as if the two uses varied independently
+  (§3.5). The estimate remains a valid upper bound and the runtime charge is
+  exact.
+* **Hand-written estimators under the aggregate strategy**: A custom
+  `FunctionEstimator` that is not an `OverloadModel` may report a synthesized
+  container's length as its size, which understates the container's content size
+  under `AggregateSizingStrategy`. Prefer declarative `OverloadModel`s using
+  `List` and `Map`, or consult `cost.ContainerSizingOf(estimator)`.
+* **Dynamically dispatched calls**: When the checker cannot narrow a call to a
+  single overload (such as `dyn(l).sort()`), the interpreter selects the
+  overload at runtime and the tracker, seeing no static overload ID, charges
+  the call as $O(1)$.
+* **Aggregate size limits**: `AggregateSizingStrategy` charges a value beyond
+  its depth or traversal limits as $2^{32} - 1$ (§3.3), which exceeds estimates
+  derived from finite hints.
+* **Rounding once per term in sums**: Every quantity is a whole number of cost
+  units, so each term of a `Sum` whose terms do not all share a common scale
+  factor rounds up before addition (§3.5).
+

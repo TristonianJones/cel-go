@@ -15,6 +15,7 @@
 package cost
 
 import (
+	"math"
 	"slices"
 	"sync"
 
@@ -128,8 +129,9 @@ func hasTarget(expr QuantityExpr) bool {
 // only a quantity derived from them.
 //
 // Element and key projections read the value they project from, so they are defined only over the
-// expressions implementing this interface: Arg, Target, Result, and projections of those. An
-// expression may denote more than one value, as the elements of a list do.
+// expressions implementing this interface: Arg, Target, Result, and the element and key
+// projections ElemOf and KeyOf. An expression may denote more than one value, as the elements of
+// a list do.
 //
 // OverloadModel.Validate reports a projection over any other expression, so a model which cannot
 // answer a projection at runtime is rejected when it is registered rather than mispriced when it
@@ -240,7 +242,15 @@ type intArgExpr struct {
 }
 
 func (a intArgExpr) estimate(ctx EstimateContext) SizeEstimate {
-	return FixedSizeEstimate(ctx.ArgValue(a.index, a.defaultVal))
+	if versionOf(ctx) < 1 {
+		return FixedSizeEstimate(ctx.ArgValue(a.index, a.defaultVal))
+	}
+	// A literal reports the same value for any default; a non-literal reports the default.
+	lo, hi := ctx.ArgValue(a.index, 0), ctx.ArgValue(a.index, math.MaxUint64)
+	if lo != hi {
+		return UnknownSizeEstimate()
+	}
+	return FixedSizeEstimate(lo)
 }
 
 func (a intArgExpr) track(ctx TrackContext) uint64 {
@@ -249,8 +259,11 @@ func (a intArgExpr) track(ctx TrackContext) uint64 {
 
 func (intArgExpr) hasTarget() bool { return false }
 
-// IntArg creates an expression referencing the integer value of the argument at the given index,
-// falling back to defaultVal if the argument is not a non-negative integer.
+// IntArg creates an expression referencing the integer value of the argument at the given index.
+//
+// At runtime, an argument which is not an integer reads as defaultVal, and a negative integer reads
+// as 0. When estimating, a literal argument reads as its value, and a non-literal argument is
+// unbounded from model version 1 (or FixedSizeEstimate(defaultVal) at version 0).
 func IntArg(index int, defaultVal uint64) QuantityExpr {
 	return intArgExpr{index: index, defaultVal: defaultVal}
 }
@@ -360,10 +373,6 @@ func (e elemTotalExpr) hasTarget() bool {
 
 // ElemTotal creates an expression referencing the combined size of every element of another
 // expression: the length of a flattened list, or the number of bytes held by a list of strings.
-//
-// The estimate is the container length multiplied by the element size, which is the same bound
-// Mul(expr, ElemOf(expr)) reports. The two differ at runtime, where this reports the exact total
-// rather than the length multiplied by the largest element.
 func ElemTotal(expr QuantityExpr) QuantityExpr {
 	return elemTotalExpr{expr: expr}
 }
@@ -379,7 +388,14 @@ type intTargetExpr struct {
 }
 
 func (t intTargetExpr) estimate(ctx EstimateContext) SizeEstimate {
-	return FixedSizeEstimate(ctx.TargetValue(t.defaultVal))
+	if versionOf(ctx) < 1 {
+		return FixedSizeEstimate(ctx.TargetValue(t.defaultVal))
+	}
+	lo, hi := ctx.TargetValue(0), ctx.TargetValue(math.MaxUint64)
+	if lo != hi {
+		return UnknownSizeEstimate()
+	}
+	return FixedSizeEstimate(lo)
 }
 
 func (t intTargetExpr) track(ctx TrackContext) uint64 {
@@ -389,7 +405,7 @@ func (t intTargetExpr) track(ctx TrackContext) uint64 {
 func (intTargetExpr) hasTarget() bool { return true }
 
 // IntTarget creates an expression referencing the integer value of the receiver/target object,
-// falling back to defaultVal if the target is not a non-negative integer.
+// with the same runtime and estimation rules as IntArg.
 func IntTarget(defaultVal uint64) QuantityExpr {
 	return intTargetExpr{defaultVal: defaultVal}
 }
@@ -473,11 +489,7 @@ func (a addExpr) estimate(ctx EstimateContext) SizeEstimate {
 	if len(a.terms) == 0 {
 		return FixedSizeEstimate(0)
 	}
-	sum := a.terms[0].estimate(ctx)
-	for _, term := range a.terms[1:] {
-		sum = sum.Add(term.estimate(ctx))
-	}
-	return sum
+	return foldEstimates(ctx, a.terms, SizeEstimate.Add)
 }
 
 func (a addExpr) track(ctx TrackContext) uint64 {
@@ -505,7 +517,10 @@ type subExpr struct {
 func (s subExpr) estimate(ctx EstimateContext) SizeEstimate {
 	lhsVal := s.lhs.estimate(ctx)
 	rhsVal := s.rhs.estimate(ctx)
-	return lhsVal.Subtract(rhsVal)
+	diff := lhsVal.Subtract(rhsVal)
+	// A difference holds some of the minuend's elements, never the subtrahend's.
+	diff.Key, diff.Elem = lhsVal.Key, lhsVal.Elem
+	return diff
 }
 
 func (s subExpr) track(ctx TrackContext) uint64 {
@@ -530,11 +545,7 @@ func (m mulExpr) estimate(ctx EstimateContext) SizeEstimate {
 	if len(m.terms) == 0 {
 		return FixedSizeEstimate(1)
 	}
-	prod := m.terms[0].estimate(ctx)
-	for _, term := range m.terms[1:] {
-		prod = prod.Multiply(term.estimate(ctx))
-	}
-	return prod
+	return foldEstimates(ctx, m.terms, SizeEstimate.Multiply)
 }
 
 func (m mulExpr) track(ctx TrackContext) uint64 {
@@ -557,18 +568,19 @@ func Mul(terms ...QuantityExpr) QuantityExpr {
 	return mulExpr{terms: slices.Clone(terms)}
 }
 
-// scaleExpr represents an expression scaled by a factor function.
+// scaleExpr represents an expression scaled by a constant factor.
 type scaleExpr struct {
-	expr    QuantityExpr
-	scaleBy ScaleFn
+	expr   QuantityExpr
+	factor float64
+	// rat is the exact rational form of factor; see rationalOf.
+	rat rational
 }
 
 func (s scaleExpr) estimate(ctx EstimateContext) SizeEstimate {
 	val := s.expr.estimate(ctx)
-	fac := s.scaleBy(ctx)
 	res := RangedSizeEstimate(
-		SafeMultiplyByFactor(val.Min, fac),
-		SafeMultiplyByFactor(val.Max, fac),
+		scale(val.Min, s.factor, s.rat),
+		scale(val.Max, s.factor, s.rat),
 	)
 	res.Key = val.Key
 	res.Elem = val.Elem
@@ -576,84 +588,25 @@ func (s scaleExpr) estimate(ctx EstimateContext) SizeEstimate {
 }
 
 func (s scaleExpr) track(ctx TrackContext) uint64 {
-	return SafeMultiplyByFactor(s.expr.track(ctx), s.scaleBy(ctx))
+	return scale(s.expr.track(ctx), s.factor, s.rat)
 }
 
 func (s scaleExpr) hasTarget() bool {
 	return hasTarget(s.expr)
 }
 
-// ScaleFn represents a function that returns a scaling factor based on type context.
-type ScaleFn func(ctx TypeContext) float64
-
-// Scale creates an expression that scales another expression by a constant factor.
+// Scale creates an expression that scales another expression by a constant factor, rounding up.
+//
+// Factors are constant so that a model's runtime charge depends only on the sizes reported by the
+// sizing strategy. A cost which differs by argument type should be modeled with one OverloadModel
+// per overload ID, since CEL already dispatches overloads by type. The factor must be finite and
+// positive; Validate rejects any other.
+//
+// The factor is applied as the simplest rational with the same float64 value, so that 0.1 scales by
+// exactly 1/10, and the product is computed exactly; an unbounded quantity stays unbounded; and
+// when a model is compiled, factors are moved outward so that each product is rounded once.
 func Scale(expr QuantityExpr, factor float64) QuantityExpr {
-	return ScaleBy(expr, func(ctx TypeContext) float64 { return factor })
-}
-
-// ScaleBy creates an expression that scales another expression by a given factor.
-func ScaleBy(expr QuantityExpr, scaleBy ScaleFn) QuantityExpr {
-	return scaleExpr{expr: expr, scaleBy: scaleBy}
-}
-
-// ArgTypeScale returns a scale factor based on the type of the i-th argument.
-func ArgTypeScale(index int, scaler func(targetType *types.Type) float64) ScaleFn {
-	return func(ctx TypeContext) float64 {
-		t, ok := ctx.ArgType(index)
-		if !ok || t == nil {
-			return scaler(nil)
-		}
-		return scaler(t)
-	}
-}
-
-// containerElemType extracts the element type from a parameterized container (List, Map value, or Opaque).
-func containerElemType(t *types.Type) *types.Type {
-	if t == nil || len(t.Parameters()) == 0 {
-		return nil
-	}
-	switch t.Kind() {
-	case types.ListKind, types.OpaqueKind:
-		return t.Parameters()[0]
-	case types.MapKind:
-		if len(t.Parameters()) >= 2 {
-			return t.Parameters()[1]
-		}
-	}
-	return nil
-}
-
-// ArgElemTypeScale returns a scale factor based on the element type of the i-th argument.
-func ArgElemTypeScale(index int, scaler func(elemType *types.Type) float64) ScaleFn {
-	return func(ctx TypeContext) float64 {
-		t, ok := ctx.ArgType(index)
-		if !ok {
-			return scaler(nil)
-		}
-		return scaler(containerElemType(t))
-	}
-}
-
-// TargetTypeScale returns a scale factor based on the receiver / target type.
-func TargetTypeScale(scaler func(targetType *types.Type) float64) ScaleFn {
-	return func(ctx TypeContext) float64 {
-		t, ok := ctx.TargetType()
-		if !ok || t == nil {
-			return scaler(nil)
-		}
-		return scaler(t)
-	}
-}
-
-// TargetElemTypeScale returns a scale factor based on the element type of the receiver / target.
-func TargetElemTypeScale(scaler func(*types.Type) float64) ScaleFn {
-	return func(ctx TypeContext) float64 {
-		t, ok := ctx.TargetType()
-		if !ok {
-			return scaler(nil)
-		}
-		return scaler(containerElemType(t))
-	}
+	return scaleExpr{expr: expr, factor: factor, rat: rationalOf(factor)}
 }
 
 // Square creates an expression representing the square of another expression.
@@ -667,9 +620,7 @@ type minExpr struct {
 }
 
 func (m minExpr) estimate(ctx EstimateContext) SizeEstimate {
-	lhsVal := m.lhs.estimate(ctx)
-	rhsVal := m.rhs.estimate(ctx)
-	return withMeta(RangedSizeEstimate(min(lhsVal.Min, rhsVal.Min), min(lhsVal.Max, rhsVal.Max)), lhsVal, rhsVal)
+	return foldEstimates(ctx, []QuantityExpr{m.lhs, m.rhs}, minBounds)
 }
 
 func (m minExpr) track(ctx TrackContext) uint64 {
@@ -691,12 +642,7 @@ type maxExpr struct {
 }
 
 func (m maxExpr) estimate(ctx EstimateContext) SizeEstimate {
-	lhsVal := m.lhs.estimate(ctx)
-	rhsVal := m.rhs.estimate(ctx)
-	return withMeta(RangedSizeEstimate(
-		max(lhsVal.Min, rhsVal.Min),
-		max(lhsVal.Max, rhsVal.Max),
-	), lhsVal, rhsVal)
+	return foldEstimates(ctx, []QuantityExpr{m.lhs, m.rhs}, maxBounds)
 }
 
 func (m maxExpr) track(ctx TrackContext) uint64 {
@@ -721,11 +667,7 @@ func (u unionExpr) estimate(ctx EstimateContext) SizeEstimate {
 	if len(u.terms) == 0 {
 		return FixedSizeEstimate(0)
 	}
-	res := u.terms[0].estimate(ctx)
-	for _, term := range u.terms[1:] {
-		res = res.Union(term.estimate(ctx))
-	}
-	return res
+	return foldEstimates(ctx, u.terms, SizeEstimate.Union)
 }
 
 func (u unionExpr) track(ctx TrackContext) uint64 {
@@ -752,9 +694,37 @@ type rangedExpr struct {
 }
 
 func (r rangedExpr) estimate(ctx EstimateContext) SizeEstimate {
-	minSize := r.minExpr.estimate(ctx)
-	maxSize := r.maxExpr.estimate(ctx)
-	return withMeta(RangedSizeEstimate(min(minSize.Min, maxSize.Max), maxSize.Max), minSize, maxSize)
+	return foldEstimates(ctx, []QuantityExpr{r.minExpr, r.maxExpr}, rangedBounds)
+}
+
+// foldEstimates estimates the operands and combines the estimates from left to right with op,
+// attaching the operands' metadata as combineMeta describes. The estimates of up to four operands,
+// as many as the models in this repository use, are held on the stack.
+func foldEstimates(ctx EstimateContext, operands []QuantityExpr, op func(SizeEstimate, SizeEstimate) SizeEstimate) SizeEstimate {
+	var buf [4]SizeEstimate
+	ests := buf[:0]
+	for _, operand := range operands {
+		ests = append(ests, operand.estimate(ctx))
+	}
+	res := ests[0]
+	for _, est := range ests[1:] {
+		res = op(res, est)
+	}
+	return combineMeta(ctx, RangedSizeEstimate(res.Min, res.Max), operands, ests)
+}
+
+func minBounds(lhs, rhs SizeEstimate) SizeEstimate {
+	return RangedSizeEstimate(min(lhs.Min, rhs.Min), min(lhs.Max, rhs.Max))
+}
+
+func maxBounds(lhs, rhs SizeEstimate) SizeEstimate {
+	return RangedSizeEstimate(max(lhs.Min, rhs.Min), max(lhs.Max, rhs.Max))
+}
+
+// rangedBounds takes the upper bound from hi and the lower bound from lo, capped by the upper bound
+// since a lower bound above it would describe an empty interval.
+func rangedBounds(lo, hi SizeEstimate) SizeEstimate {
+	return RangedSizeEstimate(min(lo.Min, hi.Max), hi.Max)
 }
 
 func (r rangedExpr) track(ctx TrackContext) uint64 {
@@ -768,21 +738,6 @@ func (r rangedExpr) hasTarget() bool {
 // Ranged creates an expression where the lower bound is taken from minExpr and the upper bound from maxExpr.
 func Ranged(minExpr, maxExpr QuantityExpr) QuantityExpr {
 	return rangedExpr{minExpr: minExpr, maxExpr: maxExpr}
-}
-
-// withMeta attaches the union of the operands' key and element sizes to a combined size.
-//
-// Min, Max and Ranged select or bracket one of their operands, so when the result's elements come
-// from the operands, the union of the operands' metadata bounds whatever the result holds.
-// Relative to a nil Elem or Key (which ElemOf and KeyOf read as Unknown), attaching metadata
-// narrows the bound; estimators whose result holds transformed elements or keys must therefore
-// declare them with List or Map, which overwrite the inherited metadata.
-func withMeta(size SizeEstimate, operands ...SizeEstimate) SizeEstimate {
-	for _, operand := range operands {
-		size.Key = mergeSizeEstimatePtr(size.Key, operand.Key)
-		size.Elem = mergeSizeEstimatePtr(size.Elem, operand.Elem)
-	}
-	return size
 }
 
 // AtMost creates an expression representing a quantity bounded between 0 and the upper bound of maxExpr.
@@ -852,9 +807,10 @@ type listExpr struct {
 func (l listExpr) estimate(ctx EstimateContext) SizeEstimate {
 	lenSize := l.lenExpr.estimate(ctx)
 	elemSize := l.elemExpr.estimate(ctx)
-	lenSize.Key = nil
-	lenSize.Elem = &elemSize
-	return lenSize
+	size := containerSize(ctx, lenSize, elemSize)
+	size.Key = nil
+	size.Elem = &elemSize
+	return size
 }
 
 func (l listExpr) track(ctx TrackContext) uint64 {
@@ -865,7 +821,11 @@ func (l listExpr) hasTarget() bool {
 	return hasTarget(l.lenExpr) || hasTarget(l.elemExpr)
 }
 
-// List creates an expression representing a list size with the given length and element size expressions.
+// List creates an expression representing a list with the given length and element size.
+//
+// The estimate is the size the sizing strategy assigns to such a list: its length under the default
+// strategy, and 1 plus the length times the element size under the aggregate strategy. The track is
+// the length.
 func List(lenExpr, elemExpr QuantityExpr) QuantityExpr {
 	return listExpr{lenExpr: lenExpr, elemExpr: elemExpr}
 }
@@ -881,9 +841,10 @@ func (m mapExpr) estimate(ctx EstimateContext) SizeEstimate {
 	mapSize := m.sizeExpr.estimate(ctx)
 	keySize := m.keyExpr.estimate(ctx)
 	valSize := m.valExpr.estimate(ctx)
-	mapSize.Key = &keySize
-	mapSize.Elem = &valSize
-	return mapSize
+	size := containerSize(ctx, mapSize, AtLeastOneSize(keySize).Add(AtLeastOneSize(valSize)))
+	size.Key = &keySize
+	size.Elem = &valSize
+	return size
 }
 
 func (m mapExpr) track(ctx TrackContext) uint64 {
@@ -894,7 +855,11 @@ func (m mapExpr) hasTarget() bool {
 	return hasTarget(m.sizeExpr) || hasTarget(m.keyExpr) || hasTarget(m.valExpr)
 }
 
-// Map creates an expression representing a map size with the given map size, key size, and value size expressions.
+// Map creates an expression representing a map with the given entry count, key size and value size.
+//
+// The estimate is the size the sizing strategy assigns to such a map: its entry count under the
+// default strategy, and 1 plus the entry count times the key and value sizes under the aggregate
+// strategy. The track is the entry count.
 func Map(sizeExpr, keyExpr, valExpr QuantityExpr) QuantityExpr {
 	return mapExpr{sizeExpr: sizeExpr, keyExpr: keyExpr, valExpr: valExpr}
 }
@@ -1067,6 +1032,8 @@ func (m OverloadModel) buildEstimator(strategy SizingStrategy, version uint32) F
 		return m.estimator
 	}
 	hasTarget := m.hasTarget()
+	cost := normalize(m.Cost)
+	size := normalize(m.Size)
 	return func(estimator Estimator, target *AstNode, args []AstNode) *CallEstimate {
 		if hasTarget && target == nil {
 			return nil
@@ -1077,15 +1044,18 @@ func (m OverloadModel) buildEstimator(strategy SizingStrategy, version uint32) F
 		}
 		ctx.estimator = estimator
 		ctx.strategy = strategy
+		ctx.version = version
 		ctx.target = target
 		ctx.args = args
 		ctx.hasTarget = hasTarget
-		costEst := m.Cost.estimate(ctx)
 		var resSize *SizeEstimate
-		if m.Size != nil {
-			sz := m.Size.estimate(ctx)
+		if size != nil {
+			sz := aggregateResultSize(strategy, size.estimate(ctx))
 			resSize = &sz
+			// The result size is available to the cost through Result().
+			ctx.result = resSize
 		}
+		costEst := cost.estimate(ctx)
 		*ctx = estimatorEvalContext{}
 		estimatorCtxPool.Put(ctx)
 		return NewCallEstimate(CostEstimate{Min: costEst.Min, Max: costEst.Max}, resSize)
@@ -1098,8 +1068,10 @@ func (m OverloadModel) FunctionTracker() FunctionTracker {
 }
 
 // FunctionTrackerWithOptions returns a FunctionTracker implementing the cost model, configured by
-// the supplied options. Unset options take their defaults: the default SizingStrategy and the
-// latest model revision.
+// the supplied options.
+//
+// ModelVersion applies to tracking as it does to estimation, so that a call's estimate and its
+// charge are computed by the same rules.
 func (m OverloadModel) FunctionTrackerWithOptions(opts ...ModelOption) FunctionTracker {
 	resolved := newModelOptions(opts...)
 	return m.buildTracker(resolved.strategy, resolved.version)
@@ -1113,17 +1085,26 @@ func (m OverloadModel) buildTracker(strategy SizingStrategy, version uint32) Fun
 		return m.tracker
 	}
 	isMember := m.hasTarget()
+	cost := normalize(m.Cost)
 	return func(args []ref.Val, result ref.Val) *uint64 {
 		ctx := trackerCtxPool.Get().(*trackerEvalContext)
 		ctx.strategy = strategy
 		ctx.args = args
 		ctx.result = result
 		ctx.isMember = isMember
-		costVal := m.Cost.track(ctx)
+		costVal := cost.track(ctx)
 		*ctx = trackerEvalContext{}
 		trackerCtxPool.Put(ctx)
 		return &costVal
 	}
+}
+
+// versionOf reports the cost model version of an EstimateContext.
+func versionOf(ctx EstimateContext) uint32 {
+	if e, ok := ctx.(*estimatorEvalContext); ok && e.estimator == nil {
+		return e.version
+	}
+	return ModelVersionOf(ctx.Estimator())
 }
 
 // estimatorEvalContext provides evaluation context for cost estimation.
@@ -1131,9 +1112,26 @@ type estimatorEvalContext struct {
 	coster    *coster
 	estimator Estimator
 	strategy  SizingStrategy
+	version   uint32
 	target    *AstNode
 	args      []AstNode
 	hasTarget bool
+	// result is the estimated result size, available to the cost through Result().
+	result *SizeEstimate
+}
+
+// sizingStrategy implements sizingStrategyContext.
+func (e *estimatorEvalContext) sizingStrategy() SizingStrategy {
+	return e.strategy
+}
+
+// resultType implements resultTypeContext from the estimator, which knows the call being
+// estimated.
+func (e *estimatorEvalContext) resultType() (*types.Type, bool) {
+	if rc, ok := e.estimator.(resultTypeContext); ok {
+		return rc.resultType()
+	}
+	return nil, false
 }
 
 // Arg returns the size estimate for the argument at index.
@@ -1152,8 +1150,11 @@ func (e *estimatorEvalContext) Target() (SizeEstimate, bool) {
 	return UnknownSizeEstimate(), false
 }
 
-// Result returns the size estimate of the result.
+// Result returns the size estimate of the result, if the model's result size has been estimated.
 func (e *estimatorEvalContext) Result() (SizeEstimate, bool) {
+	if e.result != nil {
+		return *e.result, true
+	}
 	return UnknownSizeEstimate(), false
 }
 

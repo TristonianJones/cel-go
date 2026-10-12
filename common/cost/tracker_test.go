@@ -210,9 +210,9 @@ func TestCostTracker_StandardStringFunctionTracking(t *testing.T) {
 			overloadID: overloads.ContainsString,
 			function:   "contains",
 			target:     types.String("hello world"),
-			arg:        types.String("lo wo"), // len 5 -> ceil(11*0.1) * ceil(5*0.1) = 2 * 1 = 2
+			arg:        types.String("lo wo"), // len 5 -> ceil(11 * 5 / 100) = 1
 			result:     types.True,
-			wantCost:   2,
+			wantCost:   1,
 		},
 		{
 			name:       "in_list_string",
@@ -288,7 +288,9 @@ func TestTrackCostAdvanced(t *testing.T) {
 		},
 		{
 			lhsExpr: `"abc".contains("d")`,
-			rhsExpr: `"abcdhdflsfiehfieubdkwjbdwgxvuyagwsdwdnw qdbgquyidvbwqi".contains("e")`,
+			// contains costs ⌈target * substring / 100⌉, so the target must exceed 100 code points
+			// to cost more than a short one.
+			rhsExpr: `"abcdhdflsfiehfieubdkwjbdwgxvuyagwsdwdnw qdbgquyidvbwqi abcdhdflsfiehfieubdkwjbdwgxvuyagwsdwdnw qdbgquyidvbwqi".contains("e")`,
 		},
 		{
 			lhsExpr: `1 in [4, 5, 6]`,

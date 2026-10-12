@@ -308,7 +308,7 @@ func TestRegexCosts(t *testing.T) {
 		{
 			expr:            "regex.extract('4122345432', '22').or(optional.of('777')) == optional.of('22')",
 			estimatedCost:   cost.RangedCostEstimate(3, 16),
-			estimatedCostV0: costV0(3, 1844674407370955278),
+			estimatedCostV0: costV0(3, 18446744073709551615),
 			actualCost:      5,
 		},
 		{

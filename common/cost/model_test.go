@@ -216,9 +216,11 @@ func TestQuantityExprs_Estimate(t *testing.T) {
 			expected: FixedSizeEstimate(3),
 		},
 		{
+			// A missing argument is not a literal, so it is unbounded (version 1); the default
+			// applies only to the track.
 			name:     "int_arg_default_quantity",
 			expr:     IntArg(5, 99),
-			expected: FixedSizeEstimate(99),
+			expected: UnknownSizeEstimate(),
 		},
 		{
 			name:     "arg_element_quantity",
@@ -256,9 +258,14 @@ func TestQuantityExprs_Estimate(t *testing.T) {
 			expected: arg0.Add(arg1),
 		},
 		{
-			name:     "sub_quantity",
-			expr:     Sub(Arg(0), Arg(1)),
-			expected: arg0.Subtract(arg1),
+			// The difference carries only the minuend's metadata (version 1).
+			name: "sub_quantity",
+			expr: Sub(Arg(0), Arg(1)),
+			expected: func() SizeEstimate {
+				diff := arg0.Subtract(arg1)
+				diff.Key, diff.Elem = arg0.Key, arg0.Elem
+				return diff
+			}(),
 		},
 		{
 			name: "mul_quantity",
@@ -384,9 +391,10 @@ func TestQuantityExprs_Estimate(t *testing.T) {
 			expected: RangedSizeEstimate(3*12, 5*12),
 		},
 		{
-			name:     "element_total_without_element_size",
+			// A constant holds no elements, so its total is exactly 0, as it tracks.
+			name:     "element_total_of_scalar",
 			expr:     ElemTotal(Const(4)),
-			expected: UnknownSizeEstimate(),
+			expected: FixedSizeEstimate(0),
 		},
 	}
 
@@ -487,6 +495,7 @@ func TestProjectionExprs_Track(t *testing.T) {
 		{name: "elem_of_result", expr: ElemOf(Result()), expected: 4},
 		// The elements of the inner lists, not of the outer one.
 		{name: "elem_of_nested_list", expr: ElemOf(ArgElem(2)), expected: 4},
+		// Rejected by Validate, since no single size estimate bounds it; this pins the charge only.
 		{name: "elem_total_of_nested_list", expr: ElemTotal(ArgElem(2)), expected: 7},
 		// A list has no keys, and a string has no elements.
 		{name: "key_of_list", expr: ArgKey(0), expected: 0},
@@ -847,8 +856,9 @@ func TestModel_MissingContextFallbacks(t *testing.T) {
 			expr:      IntArg(0, 42),
 			wantTrack: 42,
 			checkEst: func(t *testing.T, sz SizeEstimate) {
-				if sz != FixedSizeEstimate(42) {
-					t.Errorf("got %v, want 42", sz)
+				// A missing value is not a literal, so it is unbounded (version 1).
+				if !sz.IsUnknown() {
+					t.Errorf("got %v, want unknown", sz)
 				}
 			},
 		},
@@ -857,8 +867,9 @@ func TestModel_MissingContextFallbacks(t *testing.T) {
 			expr:      IntTarget(42),
 			wantTrack: 42,
 			checkEst: func(t *testing.T, sz SizeEstimate) {
-				if sz != FixedSizeEstimate(42) {
-					t.Errorf("got %v, want 42", sz)
+				// A missing value is not a literal, so it is unbounded (version 1).
+				if !sz.IsUnknown() {
+					t.Errorf("got %v, want unknown", sz)
 				}
 			},
 		},
@@ -916,200 +927,6 @@ func TestModel_MissingContextFallbacks(t *testing.T) {
 	resTrackCtx := &testTrackContext{result: 42}
 	if got := Result().track(resTrackCtx); got != 42 {
 		t.Errorf("Result().track = %v, want 42", got)
-	}
-}
-
-func TestModel_ScaleFnAdapters(t *testing.T) {
-	typeCtx := &testEvalContext{
-		targetType: types.NewListType(types.StringType),
-		argTypes: []*types.Type{
-			types.NewMapType(types.StringType, types.IntType),
-			types.NewOpaqueType("custom", types.DoubleType),
-			types.IntType,
-			types.NewTypeTypeWithParam(types.StringType),
-		},
-	}
-	emptyCtx := &testEvalContext{}
-
-	tests := []struct {
-		name      string
-		scaleFn   ScaleFn
-		ctx       TypeContext
-		wantScale float64
-	}{
-		{
-			name: "arg_type_scale_matched",
-			scaleFn: ArgTypeScale(0, func(t *types.Type) float64 {
-				if t != nil && t.Kind() == types.MapKind {
-					return 2.5
-				}
-				return 1.0
-			}),
-			ctx:       typeCtx,
-			wantScale: 2.5,
-		},
-		{
-			name: "arg_type_scale_out_of_bounds",
-			scaleFn: ArgTypeScale(10, func(t *types.Type) float64 {
-				if t == nil {
-					return 0.5
-				}
-				return 1.0
-			}),
-			ctx:       typeCtx,
-			wantScale: 0.5,
-		},
-		{
-			name: "arg_elem_type_scale_map_elem",
-			scaleFn: ArgElemTypeScale(0, func(t *types.Type) float64 {
-				if t == types.IntType {
-					return 3.0
-				}
-				return 1.0
-			}),
-			ctx:       typeCtx,
-			wantScale: 3.0,
-		},
-		{
-			name: "arg_elem_type_scale_opaque_elem",
-			scaleFn: ArgElemTypeScale(1, func(t *types.Type) float64 {
-				if t == types.DoubleType {
-					return 4.0
-				}
-				return 1.0
-			}),
-			ctx:       typeCtx,
-			wantScale: 4.0,
-		},
-		{
-			name: "arg_elem_type_scale_no_param",
-			scaleFn: ArgElemTypeScale(2, func(t *types.Type) float64 {
-				if t == nil {
-					return 5.0
-				}
-				return 1.0
-			}),
-			ctx:       typeCtx,
-			wantScale: 5.0,
-		},
-		{
-			name: "arg_elem_type_scale_non_container_param",
-			scaleFn: ArgElemTypeScale(3, func(t *types.Type) float64 {
-				if t == nil {
-					return 99.0
-				}
-				return 1.0
-			}),
-			ctx:       typeCtx,
-			wantScale: 99.0,
-		},
-		{
-			name: "arg_elem_type_scale_out_of_bounds",
-			scaleFn: ArgElemTypeScale(10, func(t *types.Type) float64 {
-				if t == nil {
-					return 0.5
-				}
-				return 1.0
-			}),
-			ctx:       typeCtx,
-			wantScale: 0.5,
-		},
-		{
-			name: "target_type_scale_matched",
-			scaleFn: TargetTypeScale(func(t *types.Type) float64 {
-				if t != nil && t.Kind() == types.ListKind {
-					return 6.0
-				}
-				return 1.0
-			}),
-			ctx:       typeCtx,
-			wantScale: 6.0,
-		},
-		{
-			name: "target_type_scale_empty_ctx",
-			scaleFn: TargetTypeScale(func(t *types.Type) float64 {
-				if t == nil {
-					return 0.5
-				}
-				return 1.0
-			}),
-			ctx:       emptyCtx,
-			wantScale: 0.5,
-		},
-		{
-			name: "target_elem_type_scale_list_elem",
-			scaleFn: TargetElemTypeScale(func(t *types.Type) float64 {
-				if t == types.StringType {
-					return 7.0
-				}
-				return 1.0
-			}),
-			ctx:       typeCtx,
-			wantScale: 7.0,
-		},
-		{
-			name: "target_elem_type_scale_empty_ctx",
-			scaleFn: TargetElemTypeScale(func(t *types.Type) float64 {
-				if t == nil {
-					return 0.5
-				}
-				return 1.0
-			}),
-			ctx:       emptyCtx,
-			wantScale: 0.5,
-		},
-		{
-			name: "target_elem_type_scale_scalar_target",
-			scaleFn: TargetElemTypeScale(func(t *types.Type) float64 {
-				if t == nil {
-					return 0.5
-				}
-				return 1.0
-			}),
-			ctx:       &testEvalContext{targetType: types.IntType},
-			wantScale: 0.5,
-		},
-		{
-			name: "target_elem_type_scale_opaque_target",
-			scaleFn: TargetElemTypeScale(func(t *types.Type) float64 {
-				if t == types.BoolType {
-					return 8.0
-				}
-				return 1.0
-			}),
-			ctx:       &testEvalContext{targetType: types.NewOpaqueType("wrapper", types.BoolType)},
-			wantScale: 8.0,
-		},
-		{
-			name: "target_elem_type_scale_map_target",
-			scaleFn: TargetElemTypeScale(func(t *types.Type) float64 {
-				if t == types.DoubleType {
-					return 9.0
-				}
-				return 1.0
-			}),
-			ctx:       &testEvalContext{targetType: types.NewMapType(types.StringType, types.DoubleType)},
-			wantScale: 9.0,
-		},
-		{
-			name: "target_elem_type_scale_non_container_param",
-			scaleFn: TargetElemTypeScale(func(t *types.Type) float64 {
-				if t == nil {
-					return 99.0
-				}
-				return 1.0
-			}),
-			ctx:       &testEvalContext{targetType: types.NewTypeTypeWithParam(types.StringType)},
-			wantScale: 99.0,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if s := tc.scaleFn(tc.ctx); s != tc.wantScale {
-				t.Errorf("scale = %v, want %v", s, tc.wantScale)
-			}
-		})
 	}
 }
 

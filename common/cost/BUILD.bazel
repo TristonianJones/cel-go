@@ -12,6 +12,7 @@ go_library(
         "cost.go",
         "default_strategy.go",
         "estimator.go",
+        "helper.go",
         "model.go",
         "standard.go",
         "strategy.go",
@@ -35,6 +36,7 @@ go_test(
     size = "small",
     srcs = [
         "aggregate_strategy_test.go",
+        "algebra_test.go",
         "cost_bounds_test.go",
         "cost_test.go",
         "default_strategy_test.go",

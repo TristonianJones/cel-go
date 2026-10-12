@@ -17,6 +17,7 @@ package cost
 import (
 	"errors"
 	"fmt"
+	"math"
 )
 
 // Validate reports whether the model is well-formed.
@@ -27,14 +28,23 @@ import (
 // charging the maximum, one of which lets an expression through and the other of which fails every
 // evaluation that sets a cost limit.
 //
-// The checks are:
+// The checks apply at every model version, because every model they reject is mispriced at every
+// version. They are:
 //   - the overload has an ID, and an evaluation cost expression;
-//   - every element or key projection is applied to an expression which denotes a value.
+//   - every Arg and IntArg index is non-negative;
+//   - every element or key projection is applied to an expression which denotes a value;
+//   - every ElemTotal, KeyTotal and Length is applied to Arg, Target or Result;
+//   - a global overload does not reference the receiver;
+//   - every Scale factor is finite and positive;
+//   - no Ranged has constant bounds in the wrong order;
+//   - the result size expression does not reference Result().
 //
-// Projections read the value they project from, so ElemOf, KeyOf, ElemTotal and the ArgElem,
-// ArgKey, TargetElem and TargetKey shorthands are defined over Arg, Target, Result, and
-// projections of those. A projection of a computed quantity, such as ElemOf(Sum(Arg(0), Arg(1))),
-// has an estimate but no runtime counterpart, and is reported here.
+// Projections read the value they project from, so ElemOf, KeyOf and the ArgElem, ArgKey,
+// TargetElem and TargetKey shorthands are defined over Arg, Target, Result, and the ElemOf and
+// KeyOf projections of those. A projection of a computed quantity, such as
+// ElemOf(Sum(Arg(0), Arg(1))), has an estimate but no runtime counterpart, and is reported here.
+// ElemTotal, KeyTotal and Length estimate a quantity from the size of a single value, so they are
+// defined over Arg, Target and Result only.
 func (m OverloadModel) Validate() error {
 	return m.validate(false)
 }
@@ -71,6 +81,12 @@ func (m OverloadModel) validate(inPrior bool) error {
 			return fmt.Errorf("overload %q result size: %w", m.ID, err)
 		}
 	}
+	if !m.IsMember && (hasTarget(m.Cost) || hasTarget(m.Size)) {
+		return fmt.Errorf("overload %q is global but its model references the receiver; use MemberOverload", m.ID)
+	}
+	if m.Size != nil && references(m.Size, func(e QuantityExpr) bool { _, ok := e.(resultExpr); return ok }) {
+		return fmt.Errorf("overload %q result size references Result()", m.ID)
+	}
 	return validatePriors(m)
 }
 
@@ -95,6 +111,20 @@ func validatePriors(m OverloadModel) error {
 	return nil
 }
 
+// references reports whether pred holds for the expression or any of its operands.
+func references(expr QuantityExpr, pred func(QuantityExpr) bool) bool {
+	if pred(expr) {
+		return true
+	}
+	_, operands := describeQuantityExpr(expr)
+	for _, operand := range operands {
+		if references(operand, pred) {
+			return true
+		}
+	}
+	return false
+}
+
 // ValidateOverloadModels reports the first model which is not well-formed.
 func ValidateOverloadModels(models ...OverloadModel) error {
 	for _, m := range models {
@@ -114,12 +144,32 @@ func validateQuantityExpr(expr QuantityExpr) error {
 		return errors.New("nil quantity expression")
 	}
 	label, operands := describeQuantityExpr(expr)
+	switch e := expr.(type) {
+	case argExpr:
+		if e.index < 0 {
+			return fmt.Errorf("Arg index must be non-negative, got %d", e.index)
+		}
+	case intArgExpr:
+		if e.index < 0 {
+			return fmt.Errorf("IntArg index must be non-negative, got %d", e.index)
+		}
+	case scaleExpr:
+		if math.IsNaN(e.factor) || math.IsInf(e.factor, 0) || e.factor <= 0 {
+			return fmt.Errorf("Scale factor must be finite and positive, got %v", e.factor)
+		}
+	case rangedExpr:
+		lo, loConst := e.minExpr.(constExpr)
+		hi, hiConst := e.maxExpr.(constExpr)
+		if loConst && hiConst && lo.val > hi.val {
+			return fmt.Errorf("Ranged lower bound %d exceeds upper bound %d", lo.val, hi.val)
+		}
+	}
 	// A nil operand is left to the recursion below to report.
 	if _, isProjection := expr.(projection); isProjection && operands[0] != nil {
 		if _, ok := operands[0].(valueSource); !ok {
 			operandLabel, _ := describeQuantityExpr(operands[0])
 			return fmt.Errorf(
-				"%s is not defined over %s: element and key projections apply to Arg, Target, Result, and projections of those",
+				"%s is not defined over %s: element and key projections apply to Arg, Target, Result, and ElemOf or KeyOf of those",
 				label, operandLabel)
 		}
 	}

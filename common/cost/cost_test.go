@@ -1436,7 +1436,7 @@ func TestCostEstimateAndTracking(t *testing.T) {
 				decls.NewVariable("timestamp1", types.TimestampType),
 				decls.NewVariable("timestamp2", types.TimestampType),
 			},
-			wantEst: estPtr(cost.CostEstimate{Min: 4, Max: 1844674407370955268}),
+			wantEst: estPtr(cost.CostEstimate{Min: 4, Max: math.MaxUint64}),
 		},
 		{
 			name: "timestamp equality check",
