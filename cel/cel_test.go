@@ -5716,10 +5716,11 @@ func TestCostModelValueProjections(t *testing.T) {
 }
 
 func TestCostModelVersion(t *testing.T) {
-	// A model built on Min is exactly what a revision changes, so this also covers the env
-	// compiling user-supplied models at the pinned revision rather than at the latest one.
+	// A model with BeforeVersion(1, ...) covers the env compiling user-supplied models at the
+	// pinned revision rather than at the latest one.
 	model := cost.MemberOverload(overloads.StartsWithString,
 		cost.EvalCost(cost.Min(cost.Target(), cost.Arg(0))),
+		cost.BeforeVersion(1, cost.EvalCost(cost.Ranged(cost.Const(1), cost.Min(cost.Target(), cost.Arg(0))))),
 	)
 	const expr = `"abcdef".startsWith("abcdef")`
 

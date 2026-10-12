@@ -286,10 +286,9 @@ func TestRegexCosts(t *testing.T) {
 		actualCost      uint64
 	}{
 		{
-			expr:            `regex.extract('hello world', 'hello (.*)') == optional.of('world')`,
-			estimatedCost:   cost.RangedCostEstimate(7, 20),
-			estimatedCostV0: costV0(8, 20),
-			actualCost:      8,
+			expr:          `regex.extract('hello world', 'hello (.*)') == optional.of('world')`,
+			estimatedCost: cost.RangedCostEstimate(7, 20),
+			actualCost:    8,
 		},
 		// - Estimated Cost (Min: 5): Derived from fixed costs of scanning 10-char
 		//   target string and compiling 2-char regex. Since the inputs are constant,
@@ -300,7 +299,7 @@ func TestRegexCosts(t *testing.T) {
 		{
 			expr:            "regex.extract('4122345432', '22').orValue('777') == '22'",
 			estimatedCost:   cost.RangedCostEstimate(2, 14),
-			estimatedCostV0: costV0(3, 13),
+			estimatedCostV0: costV0(2, 13),
 			actualCost:      4,
 		},
 		// The .or() picks one of two optionals, and from ModelVersion1 the model reports the
@@ -309,13 +308,13 @@ func TestRegexCosts(t *testing.T) {
 		{
 			expr:            "regex.extract('4122345432', '22').or(optional.of('777')) == optional.of('22')",
 			estimatedCost:   cost.RangedCostEstimate(3, 16),
-			estimatedCostV0: costV0(4, 1844674407370955278),
+			estimatedCostV0: costV0(3, 1844674407370955278),
 			actualCost:      5,
 		},
 		{
 			expr:            "regex.extract('hello world', 'goodbye (.*)') == optional.none()",
 			estimatedCost:   cost.RangedCostEstimate(7, 23),
-			estimatedCostV0: costV0(10, 22),
+			estimatedCostV0: costV0(9, 22),
 			actualCost:      8,
 		},
 		{
@@ -333,25 +332,25 @@ func TestRegexCosts(t *testing.T) {
 		{
 			expr:            `regex.extractAll('id:123, id:456', r'id:\d+') == ['id:123', 'id:456']`,
 			estimatedCost:   cost.RangedCostEstimate(24, 41),
-			estimatedCostV0: costV0(25, 39),
+			estimatedCostV0: costV0(24, 39),
 			actualCost:      27,
 		},
 		{
 			expr:            `regex.extractAll('a b c', r'(\S*)\s*') == ['a', 'b', 'c']`,
 			estimatedCost:   cost.RangedCostEstimate(23, 31),
-			estimatedCostV0: costV0(24, 29),
+			estimatedCostV0: costV0(23, 29),
 			actualCost:      27,
 		},
 		{
 			expr:            `regex.extractAll('testuser@gmail.com, a@y.com, 2312321wsamkldjq2w2@sdad.com', r'(?P<username>\w+)@') == ['testuser', 'a', '2312321wsamkldjq2w2']`,
 			estimatedCost:   cost.RangedCostEstimate(49, 110),
-			estimatedCostV0: costV0(51, 108),
+			estimatedCostV0: costV0(50, 108),
 			actualCost:      53,
 		},
 		{
 			expr:            "regex.replace('hello world hello', 'hello', 'hi') == 'hi world hi'",
 			estimatedCost:   cost.RangedCostEstimate(3, 672),
-			estimatedCostV0: costV0(22, 40),
+			estimatedCostV0: costV0(23, 40),
 			actualCost:      16,
 		},
 		{

@@ -339,9 +339,8 @@ func TestTwoVarComprehensionsCost(t *testing.T) {
 				"m.@values":        10,
 				"m.@values.@items": 2,
 			},
-			estimatedCost:   cost.RangedCostEstimate(72, 173),
-			estimatedCostV0: costV0(73, 173),
-			actualCost:      98,
+			estimatedCost: cost.RangedCostEstimate(72, 173),
+			actualCost:    98,
 		},
 		{
 			name:          "transformMapEntry literal input",
@@ -366,9 +365,8 @@ func TestTwoVarComprehensionsCost(t *testing.T) {
 				"m.@keys":   16,
 				"m.@values": 10,
 			},
-			estimatedCost:   cost.RangedCostEstimate(64, 405),
-			estimatedCostV0: costV0(65, 405),
-			actualCost:      201,
+			estimatedCost: cost.RangedCostEstimate(64, 405),
+			actualCost:    201,
 		},
 	}
 

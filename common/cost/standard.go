@@ -61,30 +61,36 @@ var StandardOverloadModels = []OverloadModel{
 	// runtime, so the model reports no cost for the dispatch itself. The alternative's cost is
 	// bounded by calculateArgCost.
 	//
-	// The result is whichever of the two is present, so its size is the union of both.
+	// The result is whichever of the two is present, so its size is the union of both (version 1).
 	MemberOverload(overloads.OptionalOrOptional,
 		EvalCost(Const(0)),
 		ResultSize(Union(Target(), Arg(0))),
+		BeforeVersion(1, ResultSize(nil)),
 	),
 	MemberOverload(overloads.OptionalOrValueValue,
 		EvalCost(Const(0)),
 		ResultSize(Union(Target(), Arg(0))),
+		BeforeVersion(1, ResultSize(nil)),
 	),
 
 	// Wrapping and unwrapping an optional. These cost what an unmodeled call costs; they are
-	// modeled so that the wrapped value's size survives the round trip. Without them an estimate
-	// dies at optional.of(x) and everything downstream of the optional is unbounded.
+	// modeled from version 1 so that the wrapped value's size survives the round trip. Without
+	// them an estimate dies at optional.of(x) and everything downstream of the optional is
+	// unbounded.
 	Overload(overloads.OptionalOf,
 		EvalCost(Const(1)),
 		ResultSize(Arg(0)),
+		BeforeVersion(1, ResultSize(nil)),
 	),
 	Overload(overloads.OptionalOfNonZeroValue,
 		EvalCost(Const(1)),
 		ResultSize(Arg(0)),
+		BeforeVersion(1, ResultSize(nil)),
 	),
 	MemberOverload(overloads.OptionalValue,
 		EvalCost(Const(1)),
 		ResultSize(Target()),
+		BeforeVersion(1, ResultSize(nil)),
 	),
 
 	// O(min(m, n)) comparison / equality
@@ -171,34 +177,6 @@ var StandardOverloadModels = []OverloadModel{
 	),
 }
 
-// standardModels returns the standard overload models as of a model revision.
-//
-// Version 1 gave the optional path a result size: the two `or` forms report the union of the
-// receiver and the alternative, and optional.of, optional.ofNonZeroValue and value() are modeled
-// at all so that the wrapped value's size survives. Before the revision none of them reported a
-// size, so an estimate which passed through an optional saturated from that point on. A caller
-// pinned to version 0 keeps the estimates it recorded.
-//
-// The revision moves no charge: the overloads it adds are priced at the same 1 an unmodeled call
-// costs, which is why trackers are built from the latest list regardless of the pin.
-func standardModels(version uint32) []OverloadModel {
-	if version >= 1 {
-		return StandardOverloadModels
-	}
-	models := make([]OverloadModel, 0, len(StandardOverloadModels))
-	for _, m := range StandardOverloadModels {
-		switch m.ID {
-		case overloads.OptionalOf, overloads.OptionalOfNonZeroValue, overloads.OptionalValue:
-			// Modeled only to carry a result size, so at version 0 they are simply absent.
-			continue
-		case overloads.OptionalOrOptional, overloads.OptionalOrValueValue:
-			m.Size = nil
-		}
-		models = append(models, m)
-	}
-	return models
-}
-
 // StandardOverloadEstimators returns the map of FunctionEstimator instances for standard overloads.
 func StandardOverloadEstimators() map[string]FunctionEstimator {
 	return StandardOverloadEstimatorsWithOptions()
@@ -207,9 +185,8 @@ func StandardOverloadEstimators() map[string]FunctionEstimator {
 // StandardOverloadEstimatorsWithOptions returns the map of FunctionEstimator instances for standard
 // overloads, configured by the supplied options.
 func StandardOverloadEstimatorsWithOptions(opts ...ModelOption) map[string]FunctionEstimator {
-	models := standardModels(newModelOptions(opts...).version)
-	estimators := make(map[string]FunctionEstimator, len(models))
-	for _, m := range models {
+	estimators := make(map[string]FunctionEstimator, len(StandardOverloadModels))
+	for _, m := range StandardOverloadModels {
 		estimators[m.ID] = m.FunctionEstimatorWithOptions(opts...)
 	}
 	return estimators
@@ -223,8 +200,8 @@ func StandardOverloadTrackers() map[string]FunctionTracker {
 // StandardOverloadTrackersWithOptions returns the map of FunctionTracker instances for standard
 // overloads, configured by the supplied options.
 //
-// Every revision's models are tracked identically: a revision corrects what an expression is
-// predicted to cost, never what it is charged.
+// The models are tracked under the configured revision, so that each charge is computed by the same
+// rules as its estimate.
 func StandardOverloadTrackersWithOptions(opts ...ModelOption) map[string]FunctionTracker {
 	trackers := make(map[string]FunctionTracker, len(StandardOverloadModels))
 	for _, m := range StandardOverloadModels {

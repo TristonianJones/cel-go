@@ -930,7 +930,7 @@ func testCost(t *testing.T, expr string, estimatedCost cost.CostEstimate, runtim
 	default:
 		t.Fatalf("testCost() accepts at most one ModelVersion0 expectation, got %d", len(estimatedCostV0))
 	}
-	legacyEst, err := env.EstimateCost(checkedAst, &noopCostEstimator{}, cost.EstimateModelVersion(0))
+	legacyEst, err := env.EstimateCost(checkedAst, &noopCostEstimator{}, cost.ModelVersion(0))
 	if err != nil {
 		t.Fatalf("env.EstimateCost(%q, version 0) failed: %v", expr, err)
 	}

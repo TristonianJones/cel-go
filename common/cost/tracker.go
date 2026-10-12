@@ -16,6 +16,7 @@ package cost
 
 import (
 	"cel.dev/cel-go/common/types/ref"
+	"fmt"
 )
 
 // WARNING: Any changes to cost calculations in this file require a corresponding change in estimator.go
@@ -42,54 +43,70 @@ type Call interface {
 }
 
 // TrackerOption configures the behavior of CostTracker objects.
-type TrackerOption func(*Tracker) error
+type TrackerOption interface {
+	applyTracker(*trackerBuilder) error
+}
+
+type trackerOption func(*Tracker) error
+
+func (opt trackerOption) applyTracker(b *trackerBuilder) error {
+	return opt(b.tracker)
+}
+
+type trackerBuilderOption func(*trackerBuilder) error
+
+func (opt trackerBuilderOption) applyTracker(b *trackerBuilder) error {
+	return opt(b)
+}
+
+// trackerBuilder holds the configuration which matters only while NewTracker builds a Tracker.
+//
+// It is kept out of the Tracker, which is copied for every evaluation by Clone, so that the
+// per-evaluation copy carries only what pricing a call reads.
+type trackerBuilder struct {
+	tracker *Tracker
+	modelRules
+	overloadTrackers overloadTable[FunctionTracker]
+}
 
 // TrackerLimit sets the runtime limit on the evaluation cost during execution and will terminate the expression
 // evaluation if the limit is exceeded.
 func TrackerLimit(limit uint64) TrackerOption {
-	return func(tracker *Tracker) error {
+	return trackerOption(func(tracker *Tracker) error {
 		tracker.Limit = &limit
 		return nil
-	}
+	})
 }
 
 // TrackerPresenceTestHasCost determines whether presence testing has a cost of one or zero.
 // Defaults to presence test has a cost of one.
 func TrackerPresenceTestHasCost(hasCost bool) TrackerOption {
-	return func(tracker *Tracker) error {
+	return trackerOption(func(tracker *Tracker) error {
 		tracker.presenceTestHasCost = hasCost
 		return nil
-	}
+	})
 }
 
 // TrackerLimitExceededHandler sets a custom handler invoked when the cost limit is exceeded.
 func TrackerLimitExceededHandler(handler func()) TrackerOption {
-	return func(tracker *Tracker) error {
+	return trackerOption(func(tracker *Tracker) error {
 		tracker.limitExceededHandler = handler
 		return nil
-	}
+	})
 }
 
 // OverloadTracker binds an overload ID to a runtime FunctionTracker implementation.
 //
-// OverloadTracker instances augment or override ActualCostEstimator decisions, allowing for versioned and/or
-// optional cost tracking changes.
+// OverloadTracker instances augment or override ActualCostEstimator decisions, allowing for
+// versioned and/or optional cost tracking changes.
 func OverloadTracker(overloadID string, fnTracker FunctionTracker) TrackerOption {
-	return func(tracker *Tracker) error {
-		tracker.overloadTrackers[overloadID] = fnTracker
-		return nil
-	}
-}
-
-// TrackerSizingStrategy configures a SizingStrategy for runtime cost tracking.
-func TrackerSizingStrategy(strategy SizingStrategy) TrackerOption {
-	return func(tracker *Tracker) error {
-		if strategy == nil {
-			strategy = DefaultSizingStrategy()
+	return trackerBuilderOption(func(b *trackerBuilder) error {
+		if fnTracker == nil {
+			return fmt.Errorf("OverloadTracker(%q) requires a FunctionTracker", overloadID)
 		}
-		tracker.sizingStrategy = strategy
+		b.overloadTrackers.mutable()[overloadID] = fnTracker
 		return nil
-	}
+	})
 }
 
 // LimitExceededError indicates that the actual cost limit was exceeded during evaluation.
@@ -104,53 +121,50 @@ func (e LimitExceededError) Error() string {
 
 // Tracker represents the information needed for tracking runtime cost.
 type Tracker struct {
-	Estimator              ActualCostEstimator
-	overloadTrackers       map[string]FunctionTracker
-	sizingStrategy         SizingStrategy
-	sizingOverloadTrackers map[string]FunctionTracker
-	Limit                  *uint64
-	presenceTestHasCost    bool
-	limitExceededHandler   func()
-
-	cost uint64
+	Estimator                ActualCostEstimator
+	overloadTrackers         map[string]FunctionTracker
+	standardOverloadTrackers map[string]FunctionTracker
+	Limit                    *uint64
+	limitExceededHandler     func()
+	cost                     uint64
+	presenceTestHasCost      bool
 }
 
 // NewTracker creates a new Tracker with a given estimator and a set of functional TrackerOption values.
+//
+// The Tracker's configuration is fixed once it is returned; only its accumulated cost changes.
 func NewTracker(estimator ActualCostEstimator, opts ...TrackerOption) (*Tracker, error) {
-	tracker := &Tracker{
-		Estimator:           estimator,
-		overloadTrackers:    map[string]FunctionTracker{},
-		presenceTestHasCost: true,
+	b := &trackerBuilder{
+		tracker:    &Tracker{Estimator: estimator, presenceTestHasCost: true},
+		modelRules: defaultModelRules(),
 	}
 	for _, opt := range opts {
-		err := opt(tracker)
-		if err != nil {
+		if mo, ok := opt.(ModelOption); ok {
+			b.modelRules.override(mo)
+		}
+	}
+	for _, opt := range opts {
+		if err := opt.applyTracker(b); err != nil {
 			return nil, err
 		}
 	}
-	if tracker.sizingStrategy == nil {
-		tracker.sizingStrategy = DefaultSizingStrategy()
-	}
-	if tracker.sizingStrategy != defaultSizing {
-		tracker.sizingOverloadTrackers = StandardOverloadTrackersWithOptions(
-			WithSizingStrategy(tracker.sizingStrategy))
+	tracker := b.tracker
+	tracker.overloadTrackers = b.overloadTrackers.fns
+	// The package-level trackers are compiled under the default rules.
+	tracker.standardOverloadTrackers = stdOverloadTrackers
+	if !b.modelRules.isDefault() {
+		tracker.standardOverloadTrackers = StandardOverloadTrackersWithOptions(b.modelRules.modelOptions()...)
 	}
 	return tracker, nil
 }
 
-// Clone makes a shallow copy of the tracker.
-// The different clones can be used independently from each other.
+// Clone makes a shallow copy of the tracker with no accumulated cost.
+// The different clones can be used independently from each other: they share only configuration,
+// which is not modified after NewTracker returns.
 func (c *Tracker) Clone() (*Tracker, error) {
-	tracker := &Tracker{
-		Estimator:              c.Estimator,
-		overloadTrackers:       c.overloadTrackers,
-		sizingStrategy:         c.sizingStrategy,
-		sizingOverloadTrackers: c.sizingOverloadTrackers,
-		Limit:                  c.Limit,
-		presenceTestHasCost:    c.presenceTestHasCost,
-		limitExceededHandler:   c.limitExceededHandler,
-	}
-	return tracker, nil
+	tracker := *c
+	tracker.cost = 0
+	return &tracker, nil
 }
 
 // ActualCost returns the runtime cost.
@@ -234,23 +248,14 @@ func (c *Tracker) checkLimit() {
 	}
 }
 
-func (c *Tracker) getStandardOverloadTrackers() map[string]FunctionTracker {
-	if c.sizingOverloadTrackers != nil {
-		return c.sizingOverloadTrackers
-	}
-	return stdOverloadTrackers
-}
-
 // CostCall calculates the runtime cost for a function call.
 func (c *Tracker) CostCall(call Call, args []ref.Val, result ref.Val) uint64 {
 	var total uint64
-	if len(c.overloadTrackers) != 0 {
-		if tracker, found := c.overloadTrackers[call.OverloadID()]; found {
-			callCost := tracker(args, result)
-			if callCost != nil {
-				total = SafeAdd(total, *callCost)
-				return total
-			}
+	if tracker, found := c.overloadTrackers[call.OverloadID()]; found {
+		callCost := tracker(args, result)
+		if callCost != nil {
+			total = SafeAdd(total, *callCost)
+			return total
 		}
 	}
 	if c.Estimator != nil {
@@ -260,7 +265,7 @@ func (c *Tracker) CostCall(call Call, args []ref.Val, result ref.Val) uint64 {
 			return total
 		}
 	}
-	if tracker, found := c.getStandardOverloadTrackers()[call.OverloadID()]; found {
+	if tracker, found := c.standardOverloadTrackers[call.OverloadID()]; found {
 		callCost := tracker(args, result)
 		if callCost != nil {
 			total = SafeAdd(total, *callCost)

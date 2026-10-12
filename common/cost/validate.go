@@ -36,17 +36,61 @@ import (
 // projections of those. A projection of a computed quantity, such as ElemOf(Sum(Arg(0), Arg(1))),
 // has an estimate but no runtime counterpart, and is reported here.
 func (m OverloadModel) Validate() error {
+	return m.validate(false)
+}
+
+func (m OverloadModel) validate(inPrior bool) error {
 	if m.ID == "" {
 		return errors.New("overload model requires an ID")
 	}
-	if m.Cost == nil {
-		return fmt.Errorf("overload %q requires an EvalCost expression", m.ID)
+	if m.manual && m.manualEstimator {
+		return fmt.Errorf("overload %q cannot combine ManualCost with ManualEstimator", m.ID)
 	}
-	if err := validateQuantityExpr(m.Cost); err != nil {
-		return fmt.Errorf("overload %q eval cost: %w", m.ID, err)
+	if m.manual && (m.Cost != nil || m.hasSize) {
+		return fmt.Errorf("overload %q cannot combine ManualCost with EvalCost or ResultSize", m.ID)
 	}
-	if err := validateQuantityExpr(m.Size); err != nil {
-		return fmt.Errorf("overload %q result size: %w", m.ID, err)
+	if m.manual && (m.estimator == nil || m.tracker == nil) {
+		return fmt.Errorf("overload %q ManualCost requires both a FunctionEstimator and a FunctionTracker", m.ID)
+	}
+	if m.manualEstimator && m.hasSize {
+		return fmt.Errorf("overload %q cannot combine ManualEstimator with ResultSize", m.ID)
+	}
+	if m.manualEstimator && m.estimator == nil {
+		return fmt.Errorf("overload %q ManualEstimator requires a FunctionEstimator", m.ID)
+	}
+	if !m.manual && m.Cost == nil && !(inPrior && (m.manualEstimator || m.hasSize)) {
+		return fmt.Errorf("overload %q requires an EvalCost expression or ManualCost", m.ID)
+	}
+	if m.Cost != nil {
+		if err := validateQuantityExpr(m.Cost); err != nil {
+			return fmt.Errorf("overload %q eval cost: %w", m.ID, err)
+		}
+	}
+	if m.Size != nil || (m.hasSize && !inPrior) {
+		if err := validateQuantityExpr(m.Size); err != nil {
+			return fmt.Errorf("overload %q result size: %w", m.ID, err)
+		}
+	}
+	return validatePriors(m)
+}
+
+func validatePriors(m OverloadModel) error {
+	seen := make(map[uint32]struct{}, len(m.priors))
+	for _, p := range m.priors {
+		if p.before == 0 {
+			return fmt.Errorf("overload %q: BeforeVersion requires a version >= 1, got 0", m.ID)
+		}
+		if _, dup := seen[p.before]; dup {
+			return fmt.Errorf("overload %q: duplicate BeforeVersion(%d)", m.ID, p.before)
+		}
+		seen[p.before] = struct{}{}
+		if err := p.model.validate(true); err != nil {
+			return fmt.Errorf("overload %q before version %d: %w", m.ID, p.before, err)
+		}
+		resolved := m.resolvePrior(p.model)
+		if !resolved.manual && resolved.Cost == nil {
+			return fmt.Errorf("overload %q before version %d: overload %q requires an EvalCost expression or ManualCost", m.ID, p.before, m.ID)
+		}
 	}
 	return nil
 }
@@ -62,15 +106,16 @@ func ValidateOverloadModels(models ...OverloadModel) error {
 }
 
 // validateQuantityExpr reports the first operand of an expression tree which cannot be evaluated.
+//
+// A nil operand is reported here so that it fails registration rather than panicking when an
+// estimate or a charge is first computed.
 func validateQuantityExpr(expr QuantityExpr) error {
 	if expr == nil {
-		return nil
+		return errors.New("nil quantity expression")
 	}
 	label, operands := describeQuantityExpr(expr)
-	if _, isProjection := expr.(projection); isProjection {
-		if len(operands) == 0 || operands[0] == nil {
-			return fmt.Errorf("%s requires an operand", label)
-		}
+	// A nil operand is left to the recursion below to report.
+	if _, isProjection := expr.(projection); isProjection && operands[0] != nil {
 		if _, ok := operands[0].(valueSource); !ok {
 			operandLabel, _ := describeQuantityExpr(operands[0])
 			return fmt.Errorf(

@@ -34,17 +34,6 @@ type testEvalContext struct {
 	result        *SizeEstimate
 	targetType    *types.Type
 	argTypes      []*types.Type
-	// version pins the cost model revision. Nil means the latest revision, which is what every
-	// case that is not specifically about versioning wants.
-	version *uint32
-}
-
-// modelVersion implements versionedEstimateContext.
-func (t *testEvalContext) modelVersion() uint32 {
-	if t.version == nil {
-		return defaultModelVersion
-	}
-	return *t.version
 }
 
 func (t *testEvalContext) ArgValue(index int, defaultVal uint64) uint64 {
@@ -123,60 +112,60 @@ func (t *testEvalContext) ArgType(index int) (*types.Type, bool) {
 	return nil, false
 }
 
-// TestMinQuantityModelVersions pins the one estimation difference between the cost model revisions.
-//
-// Min is the only quantity expression the revision changes, so the two columns here are the whole
-// behavioural delta that CostModelVersion / EstimateModelVersion select between.
+// TestMinQuantityModelVersions checks that Min computes the exact interval minimum, while the
+// BeforeVersion(1, ...) prior on comparison overloads reproduces the version 0 floor of 1.
 func TestMinQuantityModelVersions(t *testing.T) {
-	v0 := uint32(0)
+	model := Overload("cmp",
+		EvalCost(Min(Arg(0), Arg(1))),
+		BeforeVersion(1, EvalCost(Ranged(Const(1), Min(Arg(0), Arg(1))))),
+	)
+	estV0 := model.FunctionEstimatorWithOptions(ModelVersion(0))
+	estV1 := model.FunctionEstimatorWithOptions(ModelVersion(1))
 	tests := []struct {
 		name   string
 		args   []SizeEstimate
-		wantV0 SizeEstimate
-		wantV1 SizeEstimate
+		wantV0 CostEstimate
+		wantV1 CostEstimate
 	}{
 		{
-			// ModelVersion0 ignores the operands' own lower bounds and reports a floor of 1.
 			name:   "overlapping_intervals",
 			args:   []SizeEstimate{RangedSizeEstimate(2, 10), RangedSizeEstimate(3, 5)},
-			wantV0: RangedSizeEstimate(1, 5),
-			wantV1: RangedSizeEstimate(2, 5),
+			wantV0: RangedCostEstimate(1, 5),
+			wantV1: RangedCostEstimate(2, 5),
 		},
 		{
-			// Equally sized operands: the traversal always visits every element, so the true
-			// minimum coincides with the maximum. ModelVersion0's floor of 1 understates it,
-			// which is the unsoundness ModelVersion1 corrects.
 			name:   "equal_fixed_operands",
 			args:   []SizeEstimate{FixedSizeEstimate(6), FixedSizeEstimate(6)},
-			wantV0: RangedSizeEstimate(1, 6),
-			wantV1: FixedSizeEstimate(6),
+			wantV0: RangedCostEstimate(1, 6),
+			wantV1: FixedCostEstimate(6),
 		},
 		{
-			// An operand that can legitimately be empty: here ModelVersion0's floor of 1
-			// overstates the minimum, so the revision moves the bound down rather than up.
 			name:   "operand_can_be_empty",
 			args:   []SizeEstimate{RangedSizeEstimate(0, 4), RangedSizeEstimate(3, 9)},
-			wantV0: RangedSizeEstimate(1, 4),
-			wantV1: RangedSizeEstimate(0, 4),
+			wantV0: RangedCostEstimate(1, 4),
+			wantV1: RangedCostEstimate(0, 4),
 		},
 		{
-			// A zero upper bound is the one case the revisions already agreed on.
 			name:   "zero_upper_bound",
 			args:   []SizeEstimate{FixedSizeEstimate(0), RangedSizeEstimate(3, 9)},
-			wantV0: FixedSizeEstimate(0),
-			wantV1: FixedSizeEstimate(0),
+			wantV0: FixedCostEstimate(0),
+			wantV1: FixedCostEstimate(0),
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			expr := Min(Arg(0), Arg(1))
-			gotV0 := expr.estimate(&testEvalContext{args: tc.args, version: &v0})
-			if !reflect.DeepEqual(gotV0, tc.wantV0) {
-				t.Errorf("Min().estimate() at ModelVersion0 got %v, wanted %v", gotV0, tc.wantV0)
+			a0, a1 := tc.args[0], tc.args[1]
+			nodes := []AstNode{
+				NewAstNode(nil, nil, types.StringType, &a0),
+				NewAstNode(nil, nil, types.StringType, &a1),
 			}
-			gotV1 := expr.estimate(&testEvalContext{args: tc.args})
+			gotV0 := estV0(nil, nil, nodes).CostEstimate
+			if !reflect.DeepEqual(gotV0, tc.wantV0) {
+				t.Errorf("estimate at ModelVersion(0) got %v, wanted %v", gotV0, tc.wantV0)
+			}
+			gotV1 := estV1(nil, nil, nodes).CostEstimate
 			if !reflect.DeepEqual(gotV1, tc.wantV1) {
-				t.Errorf("Min().estimate() at the latest revision got %v, wanted %v", gotV1, tc.wantV1)
+				t.Errorf("estimate at ModelVersion(1) got %v, wanted %v", gotV1, tc.wantV1)
 			}
 		})
 	}
@@ -291,6 +280,11 @@ func TestQuantityExprs_Estimate(t *testing.T) {
 			name:     "list_alloc_quantity",
 			expr:     ListAlloc(Const(10), 0.5),
 			expected: FixedSizeEstimate(ListCreateBaseCost + 5),
+		},
+		{
+			name:     "alloc_list_quantity",
+			expr:     AllocList(Const(10), Const(5)),
+			expected: FixedSizeEstimate(CallCost + ListCreateBaseCost + 15),
 		},
 		{
 			name:     "traversal_with_alloc_quantity",
@@ -1140,10 +1134,37 @@ func TestModel_FunctionEstimatorAndTracker(t *testing.T) {
 	if estMemberFn(nil, nil, nil) != nil {
 		t.Errorf("estMemberFn with nil target should return nil")
 	}
+
+	mManualEst := Overload("test_manual_est",
+		EvalCost(Const(5)),
+		ResultSize(Const(10)),
+		BeforeVersion(1, ManualEstimator(func(Estimator, *AstNode, []AstNode) *CallEstimate {
+			return NewListCallEstimate(FixedCostEstimate(2), FixedSizeEstimate(7))
+		})),
+	)
+	if got := mManualEst.FunctionEstimatorWithOptions(ModelVersion(0))(nil, nil, nil); got == nil || got.CostEstimate != FixedCostEstimate(13) || got.ResultSize == nil || *got.ResultSize != FixedSizeEstimate(7) {
+		t.Errorf("ManualEstimator at ModelVersion(0) = %v, want cost 13 size 7", got)
+	}
+	if got := mManualEst.FunctionTrackerWithOptions(ModelVersion(0))(nil, nil); got == nil || *got != 5 {
+		t.Errorf("FunctionTrackerWithOptions(ModelVersion(0)) with ManualEstimator prior = %v, want 5", got)
+	}
+
+	mPriorSizeOnly := Overload("test_prior_size_only",
+		EvalCost(Const(5)),
+		ResultSize(Const(10)),
+		BeforeVersion(1, ResultSize(Const(3))),
+	)
+	if got := mPriorSizeOnly.FunctionEstimatorWithOptions(ModelVersion(0))(nil, nil, nil); got == nil || got.CostEstimate != FixedCostEstimate(5) || got.ResultSize == nil || *got.ResultSize != FixedSizeEstimate(3) {
+		t.Errorf("ResultSize-only prior at ModelVersion(0) = %v, want cost 5 size 3", got)
+	}
+	if got := mPriorSizeOnly.FunctionTrackerWithOptions(ModelVersion(0))(nil, nil); got == nil || *got != 5 {
+		t.Errorf("FunctionTrackerWithOptions(ModelVersion(0)) with ResultSize-only prior = %v, want 5", got)
+	}
 }
 
 func TestModel_TrackerEvalContextMethods(t *testing.T) {
 	tCtx := &trackerEvalContext{
+		strategy: defaultSizing,
 		isMember: true,
 		args: []ref.Val{
 			types.String("target_val"),
@@ -1246,6 +1267,7 @@ func TestModel_TrackerEvalContextMethods(t *testing.T) {
 	}
 
 	nonMemberTCtx := &trackerEvalContext{
+		strategy: defaultSizing,
 		isMember: false,
 		args:     []ref.Val{types.Int(50)},
 	}
@@ -1273,6 +1295,7 @@ func TestModel_TrackerEvalContextMethods(t *testing.T) {
 	}
 
 	nilArgTCtx := &trackerEvalContext{
+		strategy: defaultSizing,
 		isMember: true,
 		args:     []ref.Val{nil, nil},
 	}
@@ -1288,6 +1311,7 @@ func TestModel_EstimatorEvalContextMethods(t *testing.T) {
 	targetNode := NewAstNode(nil, []string{"tgt"}, types.StringType, nil)
 	argNode := NewAstNode(nil, []string{"arg0"}, types.IntType, nil)
 	eCtx := &estimatorEvalContext{
+		strategy:  failingSizingStrategy{},
 		estimator: testHintsEstimator{hints: map[string]uint64{"tgt": 1, "arg0": 12}},
 		target:    &targetNode,
 		args:      []AstNode{argNode},
@@ -1419,6 +1443,7 @@ func TestModel_EstimatorEvalContextMethods(t *testing.T) {
 	}
 
 	nilEstECtx := &estimatorEvalContext{
+		strategy:  failingSizingStrategy{},
 		estimator: testHintsEstimator{hints: nil},
 	}
 	if sz := nilEstECtx.Size(nodeWithoutSize); sz != UnknownSizeEstimate() {

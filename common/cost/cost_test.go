@@ -426,6 +426,12 @@ func TestExtCostHelpers(t *testing.T) {
 			wantCost: cost.FixedCostEstimate(15),
 			wantSize: &sz,
 		},
+		{
+			name:     "new_list_call_estimate",
+			callEst:  cost.NewListCallEstimate(cost.FixedCostEstimate(4), sz),
+			wantCost: cost.FixedCostEstimate(15),
+			wantSize: &sz,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -545,48 +551,62 @@ func TestNodeAsUintValue(t *testing.T) {
 		node       cost.AstNode
 		defaultVal uint64
 		want       uint64
+		wantOK     bool
 	}{
 		{
 			name:       "nil_node",
 			node:       nil,
 			defaultVal: 99,
 			want:       99,
+			wantOK:     false,
 		},
 		{
 			name:       "non_literal_ident",
 			node:       identNode,
 			defaultVal: 99,
 			want:       99,
+			wantOK:     false,
 		},
 		{
 			name:       "non_int_literal_string",
 			node:       strNode,
 			defaultVal: 99,
 			want:       99,
+			wantOK:     false,
 		},
 		{
 			name:       "positive_int_literal",
 			node:       posIntNode,
 			defaultVal: 99,
 			want:       42,
+			wantOK:     true,
 		},
 		{
 			name:       "negative_int_literal_saturates_zero",
 			node:       negIntNode,
 			defaultVal: 99,
 			want:       0,
+			wantOK:     false,
 		},
 		{
 			name:       "uint_literal",
 			node:       uintNode,
 			defaultVal: 99,
 			want:       100,
+			wantOK:     true,
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			if val := cost.NodeAsUintValue(tc.node, tc.defaultVal); val != tc.want {
 				t.Errorf("NodeAsUintValue() = %d, want %d", val, tc.want)
+			}
+			val, ok := cost.UintValue(tc.node)
+			if ok != tc.wantOK {
+				t.Errorf("UintValue() ok = %t, want %t", ok, tc.wantOK)
+			}
+			if ok && val != tc.want {
+				t.Errorf("UintValue() = %d, want %d", val, tc.want)
 			}
 		})
 	}
@@ -1115,12 +1135,11 @@ func TestCostEstimateAndTracking(t *testing.T) {
 			wantTrack: trackPtr(51),
 		},
 		{
-			name:      "bytes to string conversion equality",
-			expr:      `string(input) == string(input)`,
-			vars:      []*decls.VariableDecl{decls.NewVariable("input", types.BytesType)},
-			hints:     map[string]uint64{"input": 500},
-			wantEst:   estPtr(cost.CostEstimate{Min: 2, Max: 152}),
-			wantEstV0: estPtr(cost.CostEstimate{Min: 3, Max: 152}),
+			name:    "bytes to string conversion equality",
+			expr:    `string(input) == string(input)`,
+			vars:    []*decls.VariableDecl{decls.NewVariable("input", types.BytesType)},
+			hints:   map[string]uint64{"input": 500},
+			wantEst: estPtr(cost.CostEstimate{Min: 2, Max: 152}),
 		},
 		{
 			name:      "string to bytes conversion",
@@ -1132,12 +1151,11 @@ func TestCostEstimateAndTracking(t *testing.T) {
 			wantTrack: trackPtr(51),
 		},
 		{
-			name:      "string to bytes conversion equality",
-			expr:      `bytes(input) == bytes(input)`,
-			vars:      []*decls.VariableDecl{decls.NewVariable("input", types.StringType)},
-			hints:     map[string]uint64{"input": 500},
-			wantEst:   estPtr(cost.CostEstimate{Min: 2, Max: 302}),
-			wantEstV0: estPtr(cost.CostEstimate{Min: 3, Max: 302}),
+			name:    "string to bytes conversion equality",
+			expr:    `bytes(input) == bytes(input)`,
+			vars:    []*decls.VariableDecl{decls.NewVariable("input", types.StringType)},
+			hints:   map[string]uint64{"input": 500},
+			wantEst: estPtr(cost.CostEstimate{Min: 2, Max: 302}),
 		},
 		{
 			name:      "int to string conversion",
@@ -1418,8 +1436,7 @@ func TestCostEstimateAndTracking(t *testing.T) {
 				decls.NewVariable("timestamp1", types.TimestampType),
 				decls.NewVariable("timestamp2", types.TimestampType),
 			},
-			wantEst:   estPtr(cost.CostEstimate{Min: 4, Max: 1844674407370955268}),
-			wantEstV0: estPtr(cost.CostEstimate{Min: 5, Max: 1844674407370955268}),
+			wantEst: estPtr(cost.CostEstimate{Min: 4, Max: 1844674407370955268}),
 		},
 		{
 			name: "timestamp equality check",
@@ -2093,7 +2110,7 @@ func TestCostEstimateAndTracking(t *testing.T) {
 				if tc.wantEstV0 != nil {
 					wantLegacy = *tc.wantEstV0
 				}
-				legacyOpts := append(slices.Clone(costOpts), cost.EstimateModelVersion(0))
+				legacyOpts := append(slices.Clone(costOpts), cost.ModelVersion(0))
 				legacyEst, err := cost.Cost(checked.NativeRep(), testCostEstimator{hints: tc.hints}, legacyOpts...)
 				if err != nil {
 					t.Fatalf("Cost(version 0) failed: %v", err)
@@ -2168,7 +2185,7 @@ func TestCustomSizingStrategy(t *testing.T) {
 		t.Fatalf("env.Compile() failed: %v", iss.Err())
 	}
 
-	res, err := cost.Cost(checked.NativeRep(), nil, cost.EstimateSizingStrategy(testCustomSizingStrategy{}))
+	res, err := cost.Cost(checked.NativeRep(), nil, cost.WithSizingStrategy(testCustomSizingStrategy{}))
 	if err != nil {
 		t.Fatalf("Cost() failed: %v", err)
 	}

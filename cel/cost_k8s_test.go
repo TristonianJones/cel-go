@@ -361,15 +361,12 @@ func TestK8sStringQuoteCost(t *testing.T) {
 			expectRuntimeCost:   3,
 		},
 		// Both operands have identical size bounds, so the exact interval min of
-		// the comparison traversal now lands on the runtime cost of 9. Under
-		// ModelVersion0 the lower bound was a hardcoded 7, below the 9 actually
-		// charged, which is the unsoundness the revision corrects.
+		// the comparison traversal lands on the runtime cost of 9.
 		{
-			name:                  "quoteEquals",
-			expr:                  "strings.quote('ABCDEFGHIJ abcdefghij') == strings.quote('ABCDEFGHIJ abcdefghij')",
-			expectEstimatedCost:   cost.RangedCostEstimate(9, 11),
-			expectEstimatedCostV0: costV0(7, 11),
-			expectRuntimeCost:     9,
+			name:                "quoteEquals",
+			expr:                "strings.quote('ABCDEFGHIJ abcdefghij') == strings.quote('ABCDEFGHIJ abcdefghij')",
+			expectEstimatedCost: cost.RangedCostEstimate(9, 11),
+			expectRuntimeCost:   9,
 		},
 	}
 
@@ -826,7 +823,7 @@ func testK8sCost(t *testing.T, expr string, expectEstimatedCost cost.CostEstimat
 	default:
 		t.Fatalf("testK8sCost() accepts at most one ModelVersion0 expectation, got %d", len(expectEstimatedCostV0))
 	}
-	legacyCost, err := env.EstimateCost(compiled, est, cost.EstimateModelVersion(0))
+	legacyCost, err := env.EstimateCost(compiled, est, cost.ModelVersion(0))
 	if err != nil {
 		t.Fatalf("env.EstimateCost(version 0) failed: %v", err)
 	}

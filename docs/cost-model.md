@@ -12,6 +12,13 @@ specified alongside the function definition and feels more idiomatic. At some
 point these cost models may also be expressed as CEL, but for now, they're in
 AST form.
 
+* [1. Overview & Motivation](#1-overview--motivation)
+* [2. Core Concepts & Architecture](#2-core-concepts--architecture)
+* [3. Cost Model AST Primitives & Combinators Reference](#3-cost-model-ast-primitives--combinators-reference)
+* [4. Cost Model Examples & Use Cases](#4-cost-model-examples--use-cases)
+* [5. Practical Integration Guide](#5-practical-integration-guide)
+* [6. Best Practices](#6-best-practices)
+
 ---
 
 ## 1. Overview & Motivation
@@ -125,12 +132,36 @@ cost.Overload(overloadID,
     cost.ResultSize(sizeExpr),
 )
 
-// Receiver / member method overload
+// Receiver / member method overload with a prior revision's model
 cost.MemberOverload(overloadID,
     cost.EvalCost(costExpr),
     cost.ResultSize(sizeExpr),
+    cost.BeforeVersion(1,
+        cost.EvalCost(priorCostExpr),
+        cost.ResultSize(priorSizeExpr),
+    ),
+)
+
+// Hand-written estimator and tracker for an overload (or a BeforeVersion entry)
+cost.MemberOverload(overloadID,
+    cost.ManualCost(customEstimator, customTracker),
+)
+
+// Hand-written estimator with declarative runtime tracking
+cost.MemberOverload(overloadID,
+    cost.EvalCost(costExpr),
+    cost.ManualEstimator(customEstimator),
 )
 ```
+
+[`BeforeVersion(version, opts...)`](https://github.com/cel-expr/cel-go/blob/master/common/cost/model.go)
+records the options (`EvalCost`, `ResultSize`, `ManualCost`, or
+`ManualEstimator`) that priced the overload at revisions `< version`. Every
+`BeforeVersion` clause must specify an explicit cost (`EvalCost`, such as
+`EvalCost(Const(1))`, `ManualCost`, or `ManualEstimator` which inherits the
+enclosing model's `EvalCost` for runtime tracking) and may optionally include
+`ResultSize`; omit `BeforeVersion` when an overload's prior model does not
+differ from the current one.
 
 ### Sizing Strategies
 
@@ -140,19 +171,27 @@ governs how container lengths, key sizes, and element sizes are estimated or
 observed:
 * The
   [`DefaultSizingStrategy`](https://github.com/cel-expr/cel-go/blob/master/common/cost/default_strategy.go)
+  sizes strings by code-point count and containers by top-level entry count,
   inspects inline list/map literals, aggregates element/entry sizes, resolves
   branch unions for ternary conditionals (`cond ? a : b`), and queries field
   path hints (`@items`, `@keys`, `@values`).
-* Custom sizing strategies can be attached via
-  [`EstimateSizingStrategy`](https://github.com/cel-expr/cel-go/blob/master/common/cost/estimator.go)
-  and
-  [`TrackerSizingStrategy`](https://github.com/cel-expr/cel-go/blob/master/common/cost/tracker.go).
+* The
+  [`AggregateSizingStrategy`](https://github.com/cel-expr/cel-go/blob/master/common/cost/aggregate_strategy.go)
+  sizes strings by UTF-8 byte length (at least $1$) and containers as $1$ plus
+  the recursive sum of their entries' sizes. Custom `FunctionEstimator`s can
+  inspect the active strategy's container unit via
+  [`cost.ContainerSizingOf(estimator)`](https://github.com/cel-expr/cel-go/blob/master/common/cost/helper.go).
+* Sizing strategies can be configured for both estimation and tracking via
+  [`cel.CostSizingStrategy`](https://github.com/cel-expr/cel-go/blob/master/cel/options.go)
+  at the environment level or
+  [`cost.WithSizingStrategy`](https://github.com/cel-expr/cel-go/blob/master/common/cost/strategy.go)
+  in package `common/cost`.
 
 ### Model Revisions
 
 Corrections to the model would otherwise silently move numbers that existing
 deployments budget against, so they land behind a revision. A caller holding
-estimates recorded under an earlier release can pin with
+estimates or runtime budgets recorded under an earlier release can pin with
 [`cel.CostModelVersion`](https://github.com/cel-expr/cel-go/blob/master/cel/options.go)
 (or [`cost.ModelVersion`](https://github.com/cel-expr/cel-go/blob/master/common/cost/version.go)),
 review the delta, and adopt the correction deliberately. New callers get the
@@ -161,17 +200,25 @@ latest revision by default.
 | Version | Corrects |
 |---|---|
 | `0` | The model as released in `v0.32.0`. |
-| `1` | Core `Min()` interval bounds, `optional` size propagation, and extension (`ext/lists`, `ext/strings`, `ext/regex`) cost and result-size bounds. |
+| `1` | Core `Min()` interval bounds, exact rational `Scale` normalization, `optional` size propagation, and extension (`ext/sets`, `ext/math`, `ext/encoders`, `ext/strings`, `ext/regex`, `ext/network`, `ext/lists`) cost and result-size models. |
 
 Specifically, version `1` corrects:
-* **Core `Min()` (`common/cost`)**: `Min()` computes the exact minimum of its
-  operands' intervals (`min(lhs.Min, rhs.Min)`) rather than clamping non-zero
-  intervals to a floor of $1$.
+* **Core `Min()` and `Scale()` (`common/cost`)**: `Min()` computes the exact
+  minimum of its operands' intervals (`min(lhs.Min, rhs.Min)`) rather than
+  clamping non-zero intervals to a floor of $1$, and `Scale()` normalizes
+  nested and multiplied rational factors so products round once. The `Min()`
+  correction moves only the lower bound of an estimate, never a charge, so it
+  applies at every revision, including version `0`.
 * **Optionals (`common/cost`)**: `optional.of`, `optional.ofNonZeroValue`, and
   `value()` preserve the wrapped value's `SizeEstimate` (including container
   `Key` and `Elem` metadata); `or` and `orValue` report the union of their
   branches' sizes; and optional index operators (`_[?_]`) record the same
   `@items` and `@values` field paths as standard indexing.
+* **Sets, Math, Encoders, and Network (`ext/sets`, `ext/math`, `ext/encoders`, `ext/network`)**:
+  * Migrates extension overloads from hand-written estimators and trackers to
+    declarative `OverloadModel`s (using `BeforeVersion(1, ...)` — which inherits
+    any unset `EvalCost` or `ResultSize` from the enclosing model — or
+    `cost.ManualEstimator(...)` to preserve version `0` behavior).
 * **Lists (`ext/lists`)**:
   * `distinct()`, `sort()`, and `sortBy()` align their self-comparison bounds
     with the runtime tracker's $2.1 \times n^2$ factor (`Max` covers $2.1 \times n^2$
@@ -205,12 +252,11 @@ Custom `cost.FunctionEstimator` callbacks can inspect the active model revision
 via [`cost.ModelVersionOf(estimator)`](https://github.com/cel-expr/cel-go/blob/master/common/cost/model.go).
 
 > [!IMPORTANT]
-> Revisions affect **estimation only**. What an expression is charged at
-> runtime is not versioned — a revision that moved the charge would change what
-> a program is billed rather than what it is predicted to be billed. This is
-> why a revision may add an overload model purely to carry a result size, as
-> version `1` does for `optional.of`: the added model prices the call at
-> the same $1$ an unmodeled call already costs.
+> Selecting a model version via `cel.CostModelVersion` or `cost.ModelVersion`
+> applies to **both static estimation and runtime tracking** for overloads that
+> declare a [`BeforeVersion`](https://github.com/cel-expr/cel-go/blob/master/common/cost/model.go)
+> clause, ensuring that an expression's estimated bounds and runtime charge are
+> always evaluated under the same rules.
 
 > [!WARNING]
 > Pinning is an escape hatch, not a supported configuration. Every revision
@@ -262,6 +308,7 @@ The table below catalogs the AST nodes and helper functions provided by
 | **Standard Macros** | `StringScan(expr)` | Shorthand for `Scale(expr, 0.1)`. |
 | | `CompareCost(lhs, rhs)` | Comparison cost of two values ($O(1)$ scalars, min-length scaled strings, recursive containers). |
 | | `ListAlloc(elemCount, factor)` | Base allocation cost ($10$) plus scaled element count. |
+| | `AllocList(terms...)` | Call dispatch ($1$) + base list allocation ($10$) plus work terms. |
 | | `Traversal(expr, factor, alloc)` | Traversal cost with optional fixed allocation cost. |
 
 ### Result Size Metadata
@@ -811,7 +858,8 @@ cost.Overload("crypto_encrypt_bytes_bytes",
 ### Step 1: Registering Overload Models in Custom Extensions
 
 To register custom cost models in a CEL environment, construct `OverloadModel`
-definitions and provide them to `cel.CostTracking` and `cel.CostEstimator`:
+definitions and provide them via [`cel.CostModel`](https://github.com/cel-expr/cel-go/blob/master/cel/options.go)
+(which registers both the static estimator and runtime tracker on the environment):
 
 ```go
 package myext
@@ -847,6 +895,7 @@ func ExtensionOptions() []cel.EnvOption {
                 }),
             ),
         ),
+        cel.CostModel(MyCustomOverloads...),
     }
 }
 ```
@@ -891,14 +940,9 @@ func Estimate(env *cel.Env, ast *cel.Ast) (cost.CostEstimate, error) {
         },
     }
     
-    // Pass custom overload estimators if needed
-    var opts []cost.CostOption
-    for _, m := range MyCustomOverloads {
-        opts = append(opts,
-            cost.OverloadCostEstimate(m.ID, m.FunctionEstimator()))
-    }
-    
-    return env.EstimateCost(ast, estimator, opts...)
+    // Models not already registered on env via cel.CostModel can be supplied
+    // directly with cost.Model, which satisfies both CostOption and TrackerOption.
+    return env.EstimateCost(ast, estimator, cost.Model(MyCustomOverloads...))
 }
 ```
 
@@ -913,15 +957,9 @@ func ExecuteWithBudget(
     input map[string]any,
     budgetLimit uint64,
 ) (ref.Val, *cel.EvalDetails, error) {
-    var trackerOpts []cost.TrackerOption
-    for _, m := range MyCustomOverloads {
-        trackerOpts = append(trackerOpts,
-            cost.OverloadTracker(m.ID, m.FunctionTracker()))
-    }
-
     prg, err := env.Program(ast,
         cel.CostLimit(budgetLimit),
-        cel.CostTracking(nil, trackerOpts...),
+        cel.CostTracking(nil, cost.Model(MyCustomOverloads...)),
     )
     if err != nil {
         return nil, nil, err

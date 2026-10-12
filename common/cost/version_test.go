@@ -15,18 +15,13 @@
 package cost
 
 import (
+	"strings"
 	"testing"
 
 	"cel.dev/cel-go/common/ast"
 	"cel.dev/cel-go/common/types"
 	"cel.dev/cel-go/common/types/ref"
 )
-
-// unversionedContext stands in for a third-party EstimateContext, which cannot implement the
-// unexported versionedEstimateContext interface.
-type unversionedContext struct {
-	EstimateContext
-}
 
 type noopSizingStrategy struct{}
 
@@ -51,48 +46,6 @@ func (s stubEstimator) EstimateCallCost(_, _ string, _ *AstNode, _ []AstNode) *C
 	return s.callEst
 }
 
-func TestContextModelVersion(t *testing.T) {
-	tests := []struct {
-		name string
-		ctx  EstimateContext
-		want uint32
-	}{
-		{
-			// A context with no revision of its own is treated as running at the latest, which is
-			// the right default for a context built without any knowledge of pinning.
-			name: "unversioned_context_defaults_to_latest",
-			ctx:  unversionedContext{},
-			want: defaultModelVersion,
-		},
-		{
-			// newEstimateContext must forward its coster's pin. It is the context handed to sizing
-			// strategies, so a silent default here would ignore the caller's pin.
-			name: "estimator_context_reports_coster_pin",
-			ctx:  (&coster{modelVersion: 0}).newEstimateContext(),
-			want: 0,
-		},
-		{
-			name: "estimator_context_reports_latest_pin",
-			ctx:  (&coster{modelVersion: 1}).newEstimateContext(),
-			want: 1,
-		},
-		{
-			// estimatorEvalContext bakes the revision in at build time, since it has no coster to
-			// consult.
-			name: "eval_context_reports_baked_in_version",
-			ctx:  &estimatorEvalContext{version: 0},
-			want: 0,
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := contextModelVersion(tc.ctx); got != tc.want {
-				t.Errorf("contextModelVersion() got %v, wanted %v", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestModelVersionOfAndVersionedEstimator(t *testing.T) {
 	if got := ModelVersionOf(nil); got != defaultModelVersion {
 		t.Errorf("ModelVersionOf(nil) = %v, want %v", got, defaultModelVersion)
@@ -101,7 +54,7 @@ func TestModelVersionOfAndVersionedEstimator(t *testing.T) {
 		t.Errorf("ModelVersionOf(stubEstimator{}) = %v, want %v", got, defaultModelVersion)
 	}
 
-	cNil := &coster{modelVersion: 0}
+	cNil := mustNewCoster(t, nil, nil, ModelVersion(0))
 	estNil := cNil.getEstimator()
 	if got := ModelVersionOf(estNil); got != 0 {
 		t.Errorf("ModelVersionOf(cNil.getEstimator()) = %v, want 0", got)
@@ -115,10 +68,7 @@ func TestModelVersionOfAndVersionedEstimator(t *testing.T) {
 
 	sz := FixedSizeEstimate(7)
 	call := NewCallEstimate(FixedCostEstimate(3), &sz)
-	cDel := &coster{
-		estimator:    stubEstimator{sizeEst: &sz, callEst: call},
-		modelVersion: 1,
-	}
+	cDel := mustNewCoster(t, nil, stubEstimator{sizeEst: &sz, callEst: call}, ModelVersion(1))
 	estDel := cDel.getEstimator()
 	if got := ModelVersionOf(estDel); got != 1 {
 		t.Errorf("ModelVersionOf(cDel.getEstimator()) = %v, want 1", got)
@@ -136,14 +86,8 @@ func TestCosterHelpersAndEvalContextSize(t *testing.T) {
 	identExpr := fac.NewIdent(1, "x")
 	checked := ast.NewCheckedAST(ast.NewAST(identExpr, nil), map[int64]*types.Type{1: types.StringType}, nil)
 
-	// Without a configured sizing strategy, getSizingStrategy defaults to defaultSizing,
-	// and when a custom noop strategy returns false for a variable, sizeOrUnknown returns UnknownSizeEstimate.
-	c := &coster{
-		checkedAST:     checked,
-		computedSizes:  make(map[int64]SizeEstimate),
-		exprPaths:      make(map[int64][]string),
-		sizingStrategy: noopSizingStrategy{},
-	}
+	// When a custom noop strategy returns false for a variable, sizeOrUnknown returns UnknownSizeEstimate.
+	c := mustNewCoster(t, checked, nil, WithSizingStrategy(noopSizingStrategy{}))
 	if got := c.sizeOrUnknown(identExpr); got != UnknownSizeEstimate() {
 		t.Errorf("sizeOrUnknown(unhinted) = %v, want %v", got, UnknownSizeEstimate())
 	}
@@ -171,8 +115,8 @@ func TestNewModelOptions(t *testing.T) {
 			t.Error("strategy got nil, wanted the default sizing strategy")
 		}
 	})
-	t.Run("nil option and nil strategy are ignored", func(t *testing.T) {
-		opts := newModelOptions(nil, WithSizingStrategy(nil), ModelVersion(0))
+	t.Run("nil strategy is ignored", func(t *testing.T) {
+		opts := newModelOptions(WithSizingStrategy(nil), ModelVersion(0))
 		if opts.strategy == nil {
 			t.Error("strategy got nil, wanted the default sizing strategy to be retained")
 		}
@@ -180,4 +124,43 @@ func TestNewModelOptions(t *testing.T) {
 			t.Errorf("version got %v, wanted 0", opts.version)
 		}
 	})
+}
+
+func mustNewCoster(t *testing.T, checked *ast.AST, estimator Estimator, opts ...Option) *coster {
+	t.Helper()
+	c, err := newCoster(checked, estimator, opts...)
+	if err != nil {
+		t.Fatalf("newCoster() failed: %v", err)
+	}
+	return c
+}
+
+// TestBuildersOwnTheirInputs guards the immutability of built models: a caller reusing the slice
+// it passed to a variadic builder must not change what was built.
+func TestBuildersOwnTheirInputs(t *testing.T) {
+	models := []OverloadModel{Overload("f", EvalCost(Const(1)))}
+	opt := Model(models...)
+	models[0] = Overload("f", EvalCost(Const(5)))
+	est := newModelOptions(opt).modelSets[0].estimators()["f"](nil, nil, nil)
+	if est.CostEstimate != FixedCostEstimate(1) {
+		t.Errorf("Model() estimate = %v after the caller's slice changed, want %v", est.CostEstimate, FixedCostEstimate(1))
+	}
+
+	terms := []QuantityExpr{Const(2), Const(3)}
+	sum := Sum(terms...)
+	terms[0] = Const(9)
+	if got := sum.estimate(nil); got != FixedSizeEstimate(5) {
+		t.Errorf("Sum() estimate = %v after the caller's slice changed, want %v", got, FixedSizeEstimate(5))
+	}
+}
+
+// TestNilOverloadFunctionsRejected guards that a missing estimator or tracker is reported when the
+// estimator or tracker is configured, rather than panicking when the overload is first priced.
+func TestNilOverloadFunctionsRejected(t *testing.T) {
+	if _, err := newCoster(nil, nil, OverloadCostEstimate("f", nil)); err == nil || !strings.Contains(err.Error(), `OverloadCostEstimate("f")`) {
+		t.Errorf("newCoster(OverloadCostEstimate(\"f\", nil)) errored: %v, wanted an error naming the overload", err)
+	}
+	if _, err := NewTracker(nil, OverloadTracker("f", nil)); err == nil || !strings.Contains(err.Error(), `OverloadTracker("f")`) {
+		t.Errorf("NewTracker(OverloadTracker(\"f\", nil)) errored: %v, wanted an error naming the overload", err)
+	}
 }

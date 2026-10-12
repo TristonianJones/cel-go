@@ -400,7 +400,7 @@ func newProgram(e *Env, a *ast.AST, opts []ProgramOption) (Program, error) {
 			observers = append(observers, interpreter.EvalStateObserver())
 		}
 		if p.evalOpts&OptTrackCost == OptTrackCost {
-			trackerOpts := p.costModel.trackerOptions()
+			trackerOpts := p.costModel.tracker
 			costOptCount := len(trackerOpts) + len(p.costOptions)
 			if p.costLimit != nil {
 				costOptCount++

@@ -16,6 +16,7 @@ package cost
 
 import (
 	"slices"
+	"sync"
 
 	"cel.dev/cel-go/common/types"
 	"cel.dev/cel-go/common/types/ref"
@@ -493,7 +494,7 @@ func (a addExpr) hasTarget() bool {
 
 // Sum creates an expression representing the sum of the given terms.
 func Sum(terms ...QuantityExpr) QuantityExpr {
-	return addExpr{terms: terms}
+	return addExpr{terms: slices.Clone(terms)}
 }
 
 // subExpr represents the subtraction of two quantity expressions.
@@ -553,7 +554,7 @@ func (m mulExpr) hasTarget() bool {
 
 // Mul creates an expression representing the product of the given terms.
 func Mul(terms ...QuantityExpr) QuantityExpr {
-	return mulExpr{terms: terms}
+	return mulExpr{terms: slices.Clone(terms)}
 }
 
 // scaleExpr represents an expression scaled by a factor function.
@@ -668,17 +669,7 @@ type minExpr struct {
 func (m minExpr) estimate(ctx EstimateContext) SizeEstimate {
 	lhsVal := m.lhs.estimate(ctx)
 	rhsVal := m.rhs.estimate(ctx)
-	smallestMax := min(lhsVal.Max, rhsVal.Max)
-	if contextModelVersion(ctx) < 1 {
-		// Version 0 reported a floor of 1 for any non-empty interval, ignoring the operands'
-		// own lower bounds. Retained verbatim so pinned callers see their recorded estimates.
-		minVal := uint64(0)
-		if smallestMax > 0 {
-			minVal = 1
-		}
-		return withMeta(RangedSizeEstimate(minVal, smallestMax), lhsVal, rhsVal)
-	}
-	return withMeta(RangedSizeEstimate(min(lhsVal.Min, rhsVal.Min), smallestMax), lhsVal, rhsVal)
+	return withMeta(RangedSizeEstimate(min(lhsVal.Min, rhsVal.Min), min(lhsVal.Max, rhsVal.Max)), lhsVal, rhsVal)
 }
 
 func (m minExpr) track(ctx TrackContext) uint64 {
@@ -751,7 +742,7 @@ func (u unionExpr) hasTarget() bool {
 
 // Union creates an expression representing the union interval of multiple expressions.
 func Union(terms ...QuantityExpr) QuantityExpr {
-	return unionExpr{terms: terms}
+	return unionExpr{terms: slices.Clone(terms)}
 }
 
 // rangedExpr represents a quantity bounded by minExpr on the bottom and maxExpr on top.
@@ -763,7 +754,7 @@ type rangedExpr struct {
 func (r rangedExpr) estimate(ctx EstimateContext) SizeEstimate {
 	minSize := r.minExpr.estimate(ctx)
 	maxSize := r.maxExpr.estimate(ctx)
-	return withMeta(RangedSizeEstimate(minSize.Min, maxSize.Max), minSize, maxSize)
+	return withMeta(RangedSizeEstimate(min(minSize.Min, maxSize.Max), maxSize.Max), minSize, maxSize)
 }
 
 func (r rangedExpr) track(ctx TrackContext) uint64 {
@@ -835,6 +826,15 @@ func ListAlloc(elemCount QuantityExpr, costFactor float64) QuantityExpr {
 	return Sum(Const(ListCreateBaseCost), Scale(elemCount, costFactor))
 }
 
+// AllocList creates an expression representing the cost of a call that allocates a list:
+// CallCost + ListCreateBaseCost plus the given work terms.
+func AllocList(terms ...QuantityExpr) QuantityExpr {
+	all := make([]QuantityExpr, 0, len(terms)+1)
+	all = append(all, Const(CallCost+ListCreateBaseCost))
+	all = append(all, terms...)
+	return Sum(all...)
+}
+
 // Traversal creates an expression representing the traversal and optional allocation cost over an expression.
 func Traversal(expr QuantityExpr, costFactor float64, allocCost uint64) QuantityExpr {
 	if allocCost == 0 {
@@ -900,11 +900,42 @@ func Map(sizeExpr, keyExpr, valExpr QuantityExpr) QuantityExpr {
 }
 
 // OverloadModel pairs an overload ID with its abstract cost and result size expressions.
+//
+// An OverloadModel is a value built by Overload or MemberOverload, and is not modified afterwards:
+// estimators and trackers are compiled from it on request. Validate reports a model which cannot
+// be priced, and cel.CostModel and Model call it when the model is registered.
 type OverloadModel struct {
-	ID       string
-	Cost     QuantityExpr
-	Size     QuantityExpr
-	IsMember bool
+	ID              string
+	Cost            QuantityExpr
+	Size            QuantityExpr
+	hasSize         bool
+	IsMember        bool
+	manual          bool
+	manualEstimator bool
+	estimator       FunctionEstimator
+	tracker         FunctionTracker
+	priors          []priorOverload
+}
+
+// priorOverload is the model which priced an overload at revisions earlier than before.
+type priorOverload struct {
+	before uint32
+	model  OverloadModel
+}
+
+// priorForVersion selects the prior with the smallest before which still exceeds version, so
+// that each prior covers the revisions from the previous prior's before up to its own.
+func priorForVersion(priors []priorOverload, version uint32) (OverloadModel, bool) {
+	var chosen *priorOverload
+	for i, p := range priors {
+		if version < p.before && (chosen == nil || p.before < chosen.before) {
+			chosen = &priors[i]
+		}
+	}
+	if chosen == nil {
+		return OverloadModel{}, false
+	}
+	return chosen.model, true
 }
 
 // OverloadModelOption functional options for configuring an OverloadModel.
@@ -917,25 +948,82 @@ func EvalCost(cost QuantityExpr) OverloadModelOption {
 	}
 }
 
-// ResultSize sets the result size expression for the overload model.
+// ResultSize sets the result size expression for the overload model. Passing nil in a
+// BeforeVersion entry clears any result size inherited from the enclosing OverloadModel.
 func ResultSize(size QuantityExpr) OverloadModelOption {
 	return func(m *OverloadModel) {
 		m.Size = size
+		m.hasSize = true
 	}
+}
+
+// ManualCost sets a custom FunctionEstimator and FunctionTracker for an overload whose cost or
+// result size cannot be expressed declaratively with EvalCost and ResultSize.
+//
+// Both functions are required; Validate reports a nil one. ManualCost cannot be combined with
+// EvalCost, ResultSize, or ManualEstimator on the same OverloadModel or BeforeVersion entry.
+func ManualCost(estimator FunctionEstimator, tracker FunctionTracker) OverloadModelOption {
+	return func(m *OverloadModel) {
+		m.manual = true
+		m.estimator = estimator
+		m.tracker = tracker
+	}
+}
+
+// ManualEstimator sets a custom FunctionEstimator for an overload (or BeforeVersion entry) whose
+// static estimate cannot be expressed declaratively with EvalCost and ResultSize, while retaining
+// the OverloadModel's declarative EvalCost for runtime tracking.
+//
+// ManualEstimator requires a non-nil FunctionEstimator and cannot be combined with ManualCost or
+// ResultSize on the same OverloadModel or BeforeVersion entry.
+func ManualEstimator(estimator FunctionEstimator) OverloadModelOption {
+	return func(m *OverloadModel) {
+		m.manualEstimator = true
+		m.estimator = estimator
+	}
+}
+
+// BeforeVersion records the options that priced the overload before the given model revision.
+//
+// At revisions earlier than version, the overload is configured by opts (such as EvalCost,
+// ResultSize, ManualCost, or ManualEstimator), inheriting the enclosing OverloadModel's ID,
+// receiver kind, and any unset EvalCost or ResultSize.
+func BeforeVersion(version uint32, opts ...OverloadModelOption) OverloadModelOption {
+	return func(m *OverloadModel) {
+		m.priors = append(m.priors, priorOverload{
+			before: version,
+			model:  newOverloadModel(m.ID, m.IsMember, opts),
+		})
+	}
+}
+
+// resolvePrior returns prior with any unset Cost or Size inherited from m.
+func (m OverloadModel) resolvePrior(prior OverloadModel) OverloadModel {
+	if prior.manual {
+		return prior
+	}
+	if prior.Cost == nil {
+		prior.Cost = m.Cost
+	}
+	if !prior.manualEstimator && !prior.hasSize {
+		prior.Size = m.Size
+		prior.hasSize = m.hasSize
+	}
+	return prior
 }
 
 // Overload creates a global function OverloadModel with functional options.
 func Overload(id string, opts ...OverloadModelOption) OverloadModel {
-	m := OverloadModel{ID: id, IsMember: false}
-	for _, opt := range opts {
-		opt(&m)
-	}
-	return m
+	return newOverloadModel(id, false, opts)
 }
 
 // MemberOverload creates a member function OverloadModel with functional options.
 func MemberOverload(id string, opts ...OverloadModelOption) OverloadModel {
-	m := OverloadModel{ID: id, IsMember: true}
+	return newOverloadModel(id, true, opts)
+}
+
+func newOverloadModel(id string, isMember bool, opts []OverloadModelOption) OverloadModel {
+	m := OverloadModel{ID: id, IsMember: isMember}
 	for _, opt := range opts {
 		opt(&m)
 	}
@@ -946,9 +1034,21 @@ func (m OverloadModel) hasTarget() bool {
 	return m.IsMember || hasTarget(m.Cost) || hasTarget(m.Size)
 }
 
+var estimatorCtxPool = sync.Pool{
+	New: func() any {
+		return &estimatorEvalContext{}
+	},
+}
+
+var trackerCtxPool = sync.Pool{
+	New: func() any {
+		return &trackerEvalContext{}
+	},
+}
+
 // FunctionEstimator returns a FunctionEstimator implementing the cost model.
 func (m OverloadModel) FunctionEstimator() FunctionEstimator {
-	return m.FunctionEstimatorWithOptions()
+	return m.buildEstimator(defaultSizing, defaultModelVersion)
 }
 
 // FunctionEstimatorWithOptions returns a FunctionEstimator implementing the cost model, configured
@@ -956,50 +1056,72 @@ func (m OverloadModel) FunctionEstimator() FunctionEstimator {
 // latest model revision.
 func (m OverloadModel) FunctionEstimatorWithOptions(opts ...ModelOption) FunctionEstimator {
 	resolved := newModelOptions(opts...)
+	return m.buildEstimator(resolved.strategy, resolved.version)
+}
+
+func (m OverloadModel) buildEstimator(strategy SizingStrategy, version uint32) FunctionEstimator {
+	if prior, ok := priorForVersion(m.priors, version); ok {
+		return m.resolvePrior(prior).buildEstimator(strategy, version)
+	}
+	if m.manual || m.manualEstimator {
+		return m.estimator
+	}
 	hasTarget := m.hasTarget()
 	return func(estimator Estimator, target *AstNode, args []AstNode) *CallEstimate {
 		if hasTarget && target == nil {
 			return nil
 		}
-		ctx := &estimatorEvalContext{
-			estimator: estimator,
-			strategy:  resolved.strategy,
-			version:   resolved.version,
-			target:    target,
-			args:      args,
-			hasTarget: hasTarget,
+		ctx := estimatorCtxPool.Get().(*estimatorEvalContext)
+		if ve, ok := estimator.(*versionedEstimator); ok {
+			ctx.coster = ve.coster
 		}
+		ctx.estimator = estimator
+		ctx.strategy = strategy
+		ctx.target = target
+		ctx.args = args
+		ctx.hasTarget = hasTarget
 		costEst := m.Cost.estimate(ctx)
 		var resSize *SizeEstimate
 		if m.Size != nil {
 			sz := m.Size.estimate(ctx)
 			resSize = &sz
 		}
+		*ctx = estimatorEvalContext{}
+		estimatorCtxPool.Put(ctx)
 		return NewCallEstimate(CostEstimate{Min: costEst.Min, Max: costEst.Max}, resSize)
 	}
 }
 
 // FunctionTracker returns a FunctionTracker implementing the cost model.
 func (m OverloadModel) FunctionTracker() FunctionTracker {
-	return m.FunctionTrackerWithOptions()
+	return m.buildTracker(defaultSizing, defaultModelVersion)
 }
 
 // FunctionTrackerWithOptions returns a FunctionTracker implementing the cost model, configured by
-// the supplied options.
-//
-// ModelVersion is accepted for symmetry with FunctionEstimatorWithOptions but has no effect:
-// revisions correct estimation only, never the cost charged at runtime.
+// the supplied options. Unset options take their defaults: the default SizingStrategy and the
+// latest model revision.
 func (m OverloadModel) FunctionTrackerWithOptions(opts ...ModelOption) FunctionTracker {
 	resolved := newModelOptions(opts...)
+	return m.buildTracker(resolved.strategy, resolved.version)
+}
+
+func (m OverloadModel) buildTracker(strategy SizingStrategy, version uint32) FunctionTracker {
+	if prior, ok := priorForVersion(m.priors, version); ok {
+		return m.resolvePrior(prior).buildTracker(strategy, version)
+	}
+	if m.manual {
+		return m.tracker
+	}
 	isMember := m.hasTarget()
 	return func(args []ref.Val, result ref.Val) *uint64 {
-		ctx := &trackerEvalContext{
-			strategy: resolved.strategy,
-			args:     args,
-			result:   result,
-			isMember: isMember,
-		}
+		ctx := trackerCtxPool.Get().(*trackerEvalContext)
+		ctx.strategy = strategy
+		ctx.args = args
+		ctx.result = result
+		ctx.isMember = isMember
 		costVal := m.Cost.track(ctx)
+		*ctx = trackerEvalContext{}
+		trackerCtxPool.Put(ctx)
 		return &costVal
 	}
 }
@@ -1009,15 +1131,9 @@ type estimatorEvalContext struct {
 	coster    *coster
 	estimator Estimator
 	strategy  SizingStrategy
-	version   uint32
 	target    *AstNode
 	args      []AstNode
 	hasTarget bool
-}
-
-// modelVersion implements versionedEstimateContext.
-func (e *estimatorEvalContext) modelVersion() uint32 {
-	return e.version
 }
 
 // Arg returns the size estimate for the argument at index.
@@ -1059,10 +1175,8 @@ func (e *estimatorEvalContext) Size(node AstNode) SizeEstimate {
 			return *sz
 		}
 	}
-	if e.strategy != nil {
-		if sz, ok := e.strategy.EstimateSize(e, node); ok {
-			return sz
-		}
+	if sz, ok := e.strategy.EstimateSize(e, node); ok {
+		return sz
 	}
 	if e.estimator != nil {
 		if sz := e.estimator.EstimateSize(node); sz != nil {
@@ -1185,7 +1299,8 @@ func (t *trackerEvalContext) Size(value ref.Val) uint64 {
 	if value == nil {
 		return 0
 	}
-	if t.strategy != nil {
+	// defaultSizingStrategy.TrackSize is ActualSize, so the interface call is skipped for it.
+	if t.strategy != defaultSizing {
 		if sz, ok := t.strategy.TrackSize(t, value); ok {
 			return sz
 		}

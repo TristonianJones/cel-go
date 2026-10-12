@@ -437,3 +437,33 @@ func TestDefaultSizingStrategy_EstimateSize_ScalarAndFallback(t *testing.T) {
 		})
 	}
 }
+
+// TestSharedSizeEstimatesNotExposed guards the allocation-free sizing of scalars: computeSize returns
+// the shared unitSizeEstimate and zeroSizeEstimate, and no pointer which a caller can retain or
+// write through, including one handed to a FunctionEstimator, may alias them.
+func TestSharedSizeEstimatesNotExposed(t *testing.T) {
+	want := FixedSizeEstimate(1)
+	fac := ast.NewExprFactory()
+	lit := fac.NewLiteral(1, types.Int(1))
+	checked := ast.NewCheckedAST(ast.NewAST(lit, nil), map[int64]*types.Type{1: types.IntType}, nil)
+	c := mustNewCoster(t, checked, nil)
+	if c.computeSize(lit) != &unitSizeEstimate {
+		t.Fatal("computeSize(1) does not return the shared unit estimate; this test no longer guards it")
+	}
+	defer func() { unitSizeEstimate = want }()
+
+	escaped := map[string]*SizeEstimate{
+		"AstNode.ComputedSize": c.newAstNode(lit).ComputedSize(),
+		"fallbackElemSize":     fallbackElemSize(nil, types.IntType),
+	}
+	c.pushLocalVar("x", lit)
+	v, _ := c.peekLocalVar("x")
+	escaped["local variable size"] = v.size
+	for name, sz := range escaped {
+		sz.Min, sz.Max = 7, 7
+		sz.Elem = &SizeEstimate{Max: 3}
+		if unitSizeEstimate.Min != want.Min || unitSizeEstimate.Max != want.Max || unitSizeEstimate.Elem != nil {
+			t.Fatalf("writing through %s modified the shared unit estimate: %+v", name, unitSizeEstimate)
+		}
+	}
+}

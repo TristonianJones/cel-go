@@ -391,6 +391,15 @@ func NewCallEstimate(cost CostEstimate, sz *SizeEstimate) *CallEstimate {
 	return &CallEstimate{CostEstimate: cost, ResultSize: sz}
 }
 
+// NewListCallEstimate creates a CallEstimate for a call that allocates a list, adding CallCost and
+// ListCreateBaseCost to work and setting ResultSize to resultSize.
+func NewListCallEstimate(work CostEstimate, resultSize SizeEstimate) *CallEstimate {
+	return NewCallEstimate(
+		work.Add(FixedCostEstimate(CallCost+ListCreateBaseCost)),
+		&resultSize,
+	)
+}
+
 // ActualSize returns the size of the value for all traits.Sizer values,
 // and returns a size of 1 for all other value types.
 func ActualSize(value ref.Val) uint64 {
@@ -435,22 +444,35 @@ func EstimateListAlloc(sz SizeEstimate, costFactor float64) (CostEstimate, *Size
 	return EstimateTraversal(sz, costFactor, &ListAllocCost)
 }
 
+// UintValue returns the value of a non-negative literal int or uint node as a uint64, or false if
+// the node is not a non-negative integer literal.
+func UintValue(node AstNode) (uint64, bool) {
+	if node == nil || node.Expr() == nil || node.Expr().Kind() != ast.LiteralKind {
+		return 0, false
+	}
+	switch v := node.Expr().AsLiteral().(type) {
+	case types.Int:
+		if v < types.IntZero {
+			return 0, false
+		}
+		return uint64(v), true
+	case types.Uint:
+		return uint64(v), true
+	default:
+		return 0, false
+	}
+}
+
 // NodeAsUintValue returns the value of a literal int node as a uint64, or the default value if the
 // node is not a non-negative int literal.
 func NodeAsUintValue(node AstNode, defaultVal uint64) uint64 {
-	if node == nil || node.Expr() == nil || node.Expr().Kind() != ast.LiteralKind {
-		return defaultVal
+	if val, ok := UintValue(node); ok {
+		return val
 	}
-	lit := node.Expr().AsLiteral()
-	if lit.Type() == types.UintType {
-		return uint64(lit.(types.Uint))
+	if node != nil && node.Expr() != nil && node.Expr().Kind() == ast.LiteralKind {
+		if v, ok := node.Expr().AsLiteral().(types.Int); ok && v < types.IntZero {
+			return 0
+		}
 	}
-	if lit.Type() != types.IntType {
-		return defaultVal
-	}
-	val := lit.(types.Int)
-	if val < types.IntZero {
-		return 0
-	}
-	return uint64(val)
+	return defaultVal
 }

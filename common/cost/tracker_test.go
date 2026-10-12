@@ -379,7 +379,7 @@ func (testConcurrentSizingStrategy) TrackSize(ctx cost.TrackContext, value ref.V
 }
 
 func TestTracker_ConcurrentCloneRace(t *testing.T) {
-	tracker, err := cost.NewTracker(nil, cost.TrackerSizingStrategy(testConcurrentSizingStrategy{}))
+	tracker, err := cost.NewTracker(nil, cost.WithSizingStrategy(testConcurrentSizingStrategy{}))
 	if err != nil {
 		t.Fatalf("NewTracker() failed: %v", err)
 	}

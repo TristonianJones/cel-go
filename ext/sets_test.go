@@ -521,7 +521,7 @@ func testCheckCost(t *testing.T, env *cel.Env, ast *cel.Ast, hints map[string]ui
 	if wantEstV0 != nil {
 		wantLegacy = *wantEstV0
 	}
-	est := estimate(cost.EstimateModelVersion(0))
+	est := estimate(cost.ModelVersion(0))
 	if !reflect.DeepEqual(est, wantLegacy) {
 		t.Errorf("env.EstimateCost(version 0) got %v, wanted %v", est, wantLegacy)
 	}

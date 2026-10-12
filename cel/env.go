@@ -151,7 +151,8 @@ type Env struct {
 	libraries       map[string]SingletonLibrary
 	validators      []ASTValidator
 	costOptions     []cost.Option
-	costModel       *costModel
+	costConfig      *costConfig
+	costModel       costModelOptions
 
 	// Flags for copy-on-write behavior with env.Extend.
 	funcsShared           bool
@@ -187,93 +188,58 @@ type Env struct {
 	progOpts []ProgramOption
 }
 
-type costModel struct {
+// costConfig accumulates the cost options while the environment is configured. Env.configure
+// builds the environment's costModelOptions from it once the options have run; it is kept only so
+// that Env.Extend can configure a copy.
+type costConfig struct {
 	strategy cost.SizingStrategy
 	models   []cost.OverloadModel
 
-	// version pins the cost model revision used for estimation.
+	// version pins the cost model revision used for estimation and tracking.
 	//
 	// A pointer rather than a value because version 0 is a meaningful pin, so the
 	// nil case is the only way to express "caller did not ask for a revision".
 	version *uint32
 }
 
-func (c *costModel) copy() *costModel {
-	if c == nil {
-		return &costModel{}
-	}
-	return &costModel{
+func (c *costConfig) copy() *costConfig {
+	return &costConfig{
 		strategy: c.strategy,
 		models:   slices.Clone(c.models),
 		version:  c.version,
 	}
 }
 
-// isEmpty reports whether the cost model carries no configuration worth emitting options for.
-func (c *costModel) isEmpty() bool {
-	return c == nil || (c.strategy == nil && len(c.models) == 0 && c.version == nil)
-}
-
-// modelOptions returns the options used to compile a user-supplied OverloadModel, so that those
-// models observe the same sizing and revision rules as the standard ones.
-func (c *costModel) modelOptions() []cost.ModelOption {
-	opts := make([]cost.ModelOption, 0, 2)
+// build derives the estimation and tracking options. A cost.ModelOption serves both, so the two
+// lists hold the same options.
+func (c *costConfig) build() costModelOptions {
+	var opts []cost.ModelOption
+	if len(c.models) > 0 {
+		opts = append(opts, cost.Model(c.models...))
+	}
 	if c.strategy != nil {
 		opts = append(opts, cost.WithSizingStrategy(c.strategy))
 	}
 	if c.version != nil {
 		opts = append(opts, cost.ModelVersion(*c.version))
 	}
-	return opts
+	built := costModelOptions{
+		estimate: make([]cost.Option, len(opts)),
+		tracker:  make([]cost.TrackerOption, len(opts)),
+	}
+	for i, opt := range opts {
+		built.estimate[i] = opt
+		built.tracker[i] = opt
+	}
+	return built
 }
 
-func (c *costModel) estimateOptions() []cost.Option {
-	if c.isEmpty() {
-		return nil
-	}
-	count := len(c.models)
-	if c.strategy != nil {
-		count++
-	}
-	if c.version != nil {
-		count++
-	}
-	modelOpts := c.modelOptions()
-	opts := make([]cost.Option, 0, count)
-	for _, m := range c.models {
-		opts = append(opts, cost.OverloadCostEstimate(m.ID, m.FunctionEstimatorWithOptions(modelOpts...)))
-	}
-	if c.strategy != nil {
-		opts = append(opts, cost.EstimateSizingStrategy(c.strategy))
-	}
-	if c.version != nil {
-		opts = append(opts, cost.EstimateModelVersion(*c.version))
-	}
-	return opts
-}
-
-func (c *costModel) trackerOptions() []cost.TrackerOption {
-	if c.isEmpty() {
-		return nil
-	}
-	count := len(c.models)
-	if c.strategy != nil {
-		count++
-	}
-	// Tracking is deliberately not versioned: a revision changes what an expression is predicted
-	// to cost, never what it is charged. Only the sizing strategy reaches the trackers.
-	trackerModelOpts := make([]cost.ModelOption, 0, 1)
-	if c.strategy != nil {
-		trackerModelOpts = append(trackerModelOpts, cost.WithSizingStrategy(c.strategy))
-	}
-	opts := make([]cost.TrackerOption, 0, count)
-	for _, m := range c.models {
-		opts = append(opts, cost.OverloadTracker(m.ID, m.FunctionTrackerWithOptions(trackerModelOpts...)))
-	}
-	if c.strategy != nil {
-		opts = append(opts, cost.TrackerSizingStrategy(c.strategy))
-	}
-	return opts
+// costModelOptions are the options which apply the environment's cost models, sizing strategy, and
+// revision to estimation and tracking. They precede the caller's options so the caller may
+// override them.
+type costModelOptions struct {
+	estimate []cost.Option
+	tracker  []cost.TrackerOption
 }
 
 // ToConfig produces a YAML-serializable env.Config object from the given environment.
@@ -497,7 +463,7 @@ func NewCustomEnv(opts ...EnvOption) (*Env, error) {
 		validators:      []ASTValidator{},
 		progOpts:        []ProgramOption{},
 		costOptions:     []cost.Option{},
-		costModel:       &costModel{},
+		costConfig:      &costConfig{},
 	}).configure(opts)
 }
 
@@ -687,7 +653,7 @@ func (e *Env) Extend(opts ...EnvOption) (*Env, error) {
 		chkOpts:         chkOptsCopy,
 		prsrOpts:        prsrOptsCopy,
 		costOptions:     costOptsCopy,
-		costModel:       e.costModel.copy(),
+		costConfig:      e.costConfig.copy(),
 		// Copy-on-write flags.
 		funcsShared:           true,
 		featuresShared:        true,
@@ -987,10 +953,10 @@ func (e *Env) ResidualAst(a *Ast, details *EvalDetails) (*Ast, error) {
 // EstimateCost estimates the cost of a type checked CEL expression using the length estimates of input data and
 // extension functions provided by estimator.
 func (e *Env) EstimateCost(ast *Ast, estimator cost.Estimator, opts ...cost.CostOption) (cost.CostEstimate, error) {
-	modelOpts := e.costModel.estimateOptions()
+	modelOpts := e.costModel.estimate
 	extendedOpts := make([]cost.Option, 0, len(modelOpts)+len(e.costOptions)+len(opts))
-	extendedOpts = append(extendedOpts, e.costOptions...)
 	extendedOpts = append(extendedOpts, modelOpts...)
+	extendedOpts = append(extendedOpts, e.costOptions...)
 	extendedOpts = append(extendedOpts, opts...)
 	return cost.Cost(ast.NativeRep(), estimator, extendedOpts...)
 }
@@ -1018,6 +984,8 @@ func (e *Env) configure(opts []EnvOption) (*Env, error) {
 			}
 		}
 	}
+
+	e.costModel = e.costConfig.build()
 
 	// Configure the parser.
 	prsrOpts := []parser.Option{}

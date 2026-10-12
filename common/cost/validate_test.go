@@ -17,6 +17,8 @@ package cost
 import (
 	"strings"
 	"testing"
+
+	"cel.dev/cel-go/common/types/ref"
 )
 
 // unanswerable is a projection over a constant: it has an estimate, but no value to read at
@@ -74,12 +76,86 @@ func TestOverloadModelValidate(t *testing.T) {
 		{
 			name:  "projection_without_operand",
 			model: Overload("test_id", EvalCost(ElemOf(nil))),
-			err:   "ElemOf requires an operand",
+			err:   "ElemOf: nil quantity expression",
+		},
+		{
+			name:  "nil_operand",
+			model: Overload("test_id", EvalCost(Sum(Arg(0), nil))),
+			err:   `overload "test_id" eval cost: Sum: nil quantity expression`,
 		},
 		{
 			name:  "projection_in_result_size",
 			model: Overload("test_id", EvalCost(Const(1)), ResultSize(unanswerable)),
 			err:   `overload "test_id" result size: ElemOf is not defined over Const`,
+		},
+		{
+			name: "valid_manual_estimator_top_level",
+			model: Overload("test_id",
+				EvalCost(Const(1)),
+				ManualEstimator(func(Estimator, *AstNode, []AstNode) *CallEstimate { return nil }),
+			),
+		},
+		{
+			name: "valid_manual_estimator_in_prior",
+			model: Overload("test_id",
+				EvalCost(Const(1)),
+				ResultSize(Const(2)),
+				BeforeVersion(1, ManualEstimator(func(Estimator, *AstNode, []AstNode) *CallEstimate { return nil })),
+			),
+		},
+		{
+			name: "manual_estimator_missing_cost_top_level",
+			model: Overload("test_id",
+				ManualEstimator(func(Estimator, *AstNode, []AstNode) *CallEstimate { return nil }),
+			),
+			err: `overload "test_id" requires an EvalCost expression or ManualCost`,
+		},
+		{
+			name: "manual_estimator_nil_fn",
+			model: Overload("test_id",
+				EvalCost(Const(1)),
+				ManualEstimator(nil),
+			),
+			err: `overload "test_id" ManualEstimator requires a FunctionEstimator`,
+		},
+		{
+			name: "manual_estimator_with_result_size",
+			model: Overload("test_id",
+				EvalCost(Const(1)),
+				ResultSize(Const(2)),
+				ManualEstimator(func(Estimator, *AstNode, []AstNode) *CallEstimate { return nil }),
+			),
+			err: `overload "test_id" cannot combine ManualEstimator with ResultSize`,
+		},
+		{
+			name: "manual_estimator_with_manual_cost",
+			model: Overload("test_id",
+				ManualCost(
+					func(Estimator, *AstNode, []AstNode) *CallEstimate { return nil },
+					func([]ref.Val, ref.Val) *uint64 { return nil },
+				),
+				ManualEstimator(func(Estimator, *AstNode, []AstNode) *CallEstimate { return nil }),
+			),
+			err: `overload "test_id" cannot combine ManualCost with ManualEstimator`,
+		},
+		{
+			name: "valid_before_version_result_size_only",
+			model: Overload("test_id",
+				EvalCost(Const(1)),
+				ResultSize(Const(4)),
+				BeforeVersion(1, ResultSize(Const(1))),
+			),
+		},
+		{
+			name: "before_version_result_size_only_without_parent_eval_cost",
+			model: Overload("test_id",
+				ManualCost(
+					func(Estimator, *AstNode, []AstNode) *CallEstimate { return nil },
+					func([]ref.Val, ref.Val) *uint64 { return nil },
+				),
+				BeforeVersion(1, ResultSize(Const(1))),
+			),
+			err: `overload "test_id" before version 1: overload "test_id" requires an EvalCost expression or ManualCost`,
 		},
 	}
 	for _, tc := range tests {
@@ -195,6 +271,7 @@ func TestValidateTraversesOperands(t *testing.T) {
 		{name: "square", expr: Square(unanswerable)},
 		{name: "string_scan", expr: StringScan(unanswerable)},
 		{name: "list_alloc", expr: ListAlloc(unanswerable, 0.5)},
+		{name: "alloc_list", expr: AllocList(unanswerable)},
 		{name: "traversal", expr: Traversal(unanswerable, 0.5, 10)},
 		{name: "at_most", expr: AtMost(unanswerable)},
 	}

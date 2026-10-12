@@ -15,6 +15,7 @@
 package cost
 
 import (
+	"fmt"
 	"math"
 	"strconv"
 
@@ -98,7 +99,15 @@ func NewAstNode(expr ast.Expr, path []string, t *types.Type, derivedSize *SizeEs
 }
 
 // Option configures flags which affect cost computations.
-type Option func(*coster) error
+type Option interface {
+	applyCoster(*coster) error
+}
+
+type costerOption func(*coster) error
+
+func (opt costerOption) applyCoster(c *coster) error {
+	return opt(c)
+}
 
 // CostOption is an alias for Option.
 //
@@ -109,14 +118,14 @@ type CostOption = Option
 //
 // Defaults to presence test has a cost of one.
 func PresenceTestHasCost(hasCost bool) Option {
-	return func(c *coster) error {
+	return costerOption(func(c *coster) error {
 		if hasCost {
 			c.presenceTestCost = selectAndIdentCost
 			return nil
 		}
 		c.presenceTestCost = FixedCostEstimate(0)
 		return nil
-	}
+	})
 }
 
 // FunctionEstimator provides a CallEstimate given the target and arguments for a specific function, overload pair.
@@ -124,66 +133,57 @@ type FunctionEstimator func(estimator Estimator, target *AstNode, args []AstNode
 
 // OverloadCostEstimate binds a FunctionEstimator to a specific function overload ID.
 //
-// When a OverloadCostEstimate is provided, it will override the cost calculation of the CostEstimator provided to
-// the Cost() call.
+// When an OverloadCostEstimate is provided, it overrides the cost calculation of the Estimator
+// provided to the Cost() call.
 func OverloadCostEstimate(overloadID string, functionCoster FunctionEstimator) Option {
-	return func(c *coster) error {
-		c.overloadEstimators[overloadID] = functionCoster
-		return nil
-	}
-}
-
-// EstimateSizingStrategy configures a custom SizingStrategy for cost estimation.
-func EstimateSizingStrategy(strategy SizingStrategy) Option {
-	return func(c *coster) error {
-		if strategy == nil {
-			strategy = DefaultSizingStrategy()
+	return costerOption(func(c *coster) error {
+		if functionCoster == nil {
+			return fmt.Errorf("OverloadCostEstimate(%q) requires a FunctionEstimator", overloadID)
 		}
-		c.sizingStrategy = strategy
+		c.overloadEstimators.mutable()[overloadID] = functionCoster
 		return nil
-	}
-}
-
-// EstimateModelVersion pins cost estimation to a revision of the cost model's rules.
-//
-// If not set, the latest cost model version is used. Pin only to hold estimates stable against a
-// previously recorded baseline; see ModelVersion for per-version details.
-func EstimateModelVersion(version uint32) Option {
-	return func(c *coster) error {
-		c.modelVersion = version
-		return nil
-	}
+	})
 }
 
 // Cost estimates the cost of the parsed and type checked CEL expression.
 func Cost(checked *ast.AST, estimator Estimator, opts ...Option) (CostEstimate, error) {
-	c := &coster{
-		checkedAST:         checked,
-		estimator:          estimator,
-		overloadEstimators: map[string]FunctionEstimator{},
-		exprPaths:          map[int64][]string{},
-		localVars:          make(scopes),
-		computedSizes:      map[int64]SizeEstimate{},
-		presenceTestCost:   FixedCostEstimate(1),
-		modelVersion:       defaultModelVersion,
-	}
-	for _, opt := range opts {
-		err := opt(c)
-		if err != nil {
-			return CostEstimate{}, err
-		}
-	}
-	if c.sizingStrategy == nil {
-		c.sizingStrategy = DefaultSizingStrategy()
-	}
-	// The package-level estimator cache is built with the default strategy at the latest revision,
-	// so it can only be reused when both still hold.
-	if c.sizingStrategy != defaultSizing || c.modelVersion != defaultModelVersion {
-		c.sizingOverloadEstimators = StandardOverloadEstimatorsWithOptions(
-			WithSizingStrategy(c.sizingStrategy),
-			ModelVersion(c.modelVersion))
+	c, err := newCoster(checked, estimator, opts...)
+	if err != nil {
+		return CostEstimate{}, err
 	}
 	return c.cost(checked.Expr()), nil
+}
+
+// newCoster returns a coster configured by the options. Its configuration is fixed once it is
+// returned; only the per-expression state gathered while costing changes.
+func newCoster(checked *ast.AST, estimator Estimator, opts ...Option) (*coster, error) {
+	c := &coster{
+		checkedAST:       checked,
+		estimator:        estimator,
+		modelRules:       defaultModelRules(),
+		exprPaths:        map[int64][]string{},
+		localVars:        make(scopes),
+		computedSizes:    map[int64]SizeEstimate{},
+		presenceTestCost: FixedCostEstimate(1),
+	}
+	for _, opt := range opts {
+		if mo, ok := opt.(ModelOption); ok {
+			c.modelRules.override(mo)
+		}
+	}
+	for _, opt := range opts {
+		if err := opt.applyCoster(c); err != nil {
+			return nil, err
+		}
+	}
+	// The package-level estimators are compiled under the default rules.
+	c.standardOverloadEstimators = stdOverloadEstimators
+	if !c.modelRules.isDefault() {
+		c.standardOverloadEstimators = StandardOverloadEstimatorsWithOptions(c.modelRules.modelOptions()...)
+	}
+	c.est = versionedEstimator{coster: c, delegate: estimator, version: c.modelVersion}
+	c.evalCtx = estimatorEvalContext{coster: c, estimator: estimator, strategy: c.sizingStrategy}
+	return c, nil
 }
 
 // coster performs recursive cost and size calculation on checked AST expressions.
@@ -195,15 +195,17 @@ type coster struct {
 	// computedSizes tracks the computed sizes of call results.
 	computedSizes map[int64]SizeEstimate
 
-	checkedAST               *ast.AST
-	estimator                Estimator
-	sizingStrategy           SizingStrategy
-	overloadEstimators       map[string]FunctionEstimator
-	sizingOverloadEstimators map[string]FunctionEstimator
+	checkedAST *ast.AST
+	estimator  Estimator
+	modelRules
+	overloadEstimators         overloadTable[FunctionEstimator]
+	standardOverloadEstimators map[string]FunctionEstimator
 	// presenceTestCost will either be a zero or one based on whether has() macros count against cost computations.
 	presenceTestCost CostEstimate
-	// modelVersion selects the revision of the estimation rules to apply.
-	modelVersion uint32
+	// est and evalCtx are owned by the coster and handed out by pointer, so that passing them to
+	// estimators and sizing strategies does not allocate.
+	est     versionedEstimator
+	evalCtx estimatorEvalContext
 }
 
 // localVar captures the local variable size estimates if they exist for variables
@@ -301,7 +303,7 @@ func (c *coster) pushIterSingle(varName string, rangeExpr ast.Expr) {
 // pushLocalVar records a local variable binding with its path and size estimates.
 func (c *coster) pushLocalVar(varName string, e ast.Expr) {
 	path := c.getPath(e)
-	c.localVars.push(varName, e, path, c.computeSize(e))
+	c.localVars.push(varName, e, path, ownedSize(c.computeSize(e)))
 }
 
 // peekLocalVar looks up the top of the scope stack for a local variable name.
@@ -426,11 +428,15 @@ func (c *coster) costCall(e ast.Expr) CostEstimate {
 		}
 	}
 
-	argTypes := make([]AstNode, len(args))
-	argCosts := make([]CostEstimate, len(args))
+	var argCostBuf [4]CostEstimate
+	var argCosts []CostEstimate
+	if len(args) <= len(argCostBuf) {
+		argCosts = argCostBuf[:len(args)]
+	} else {
+		argCosts = make([]CostEstimate, len(args))
+	}
 	for i, arg := range args {
 		argCosts[i] = c.cost(arg)
-		argTypes[i] = c.newAstNode(arg)
 	}
 
 	overloadIDs := c.checkedAST.GetOverloadIDs(e.ID())
@@ -441,11 +447,26 @@ func (c *coster) costCall(e ast.Expr) CostEstimate {
 		}
 		return FixedCostEstimate(1).Add(sum).Add(argCostSum)
 	}
-	var targetType *AstNode
 	if call.IsMemberFunction() {
 		sum = sum.Add(c.cost(call.Target()))
-		var t AstNode = c.newAstNode(call.Target())
-		targetType = &t
+	}
+	var argTypeBuf [4]AstNode
+	var argTypes []AstNode
+	var targetNode AstNode
+	var targetType *AstNode
+	if c.needsCallNodes(overloadIDs) {
+		if len(args) <= len(argTypeBuf) {
+			argTypes = argTypeBuf[:len(args)]
+		} else {
+			argTypes = make([]AstNode, len(args))
+		}
+		for i, arg := range args {
+			argTypes[i] = c.newAstNode(arg)
+		}
+		if call.IsMemberFunction() {
+			targetNode = c.newAstNode(call.Target())
+			targetType = &targetNode
+		}
 	}
 	// Pick a cost estimate range that covers all the overload cost estimation ranges
 	fnCost := CostEstimate{Min: uint64(math.MaxUint64), Max: 0}
@@ -458,7 +479,7 @@ func (c *coster) costCall(e ast.Expr) CostEstimate {
 		if field, ok := c.indexFieldPath(overload); ok && len(args) > 0 {
 			if targetPath := c.getPath(args[0]); len(targetPath) > 0 {
 				c.addPath(e, append(targetPath, field))
-			} else if containerSize := argTypes[0].ComputedSize(); containerSize != nil && containerSize.Elem != nil {
+			} else if containerSize := c.computeSize(args[0]); containerSize != nil && containerSize.Elem != nil {
 				elemSize := *containerSize.Elem
 				resultSize = &elemSize
 			}
@@ -469,6 +490,22 @@ func (c *coster) costCall(e ast.Expr) CostEstimate {
 	}
 	c.setSize(e, resultSize)
 	return sum.Add(fnCost)
+}
+
+func (c *coster) needsCallNodes(overloadIDs []string) bool {
+	if c.estimator != nil {
+		return true
+	}
+	std := c.standardOverloadEstimators
+	for _, id := range overloadIDs {
+		if _, ok := c.overloadEstimators.fns[id]; ok {
+			return true
+		}
+		if _, ok := std[id]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // indexFieldPath reports the field path segment an index overload qualifies its operand with, so
@@ -677,17 +714,17 @@ func calculateArgCost(overloadID string, argCosts []CostEstimate) CostEstimate {
 func (c *coster) functionCost(e ast.Expr, function, overloadID string, target *AstNode, args []AstNode, argCosts []CostEstimate) CallEstimate {
 	argCost := calculateArgCost(overloadID, argCosts)
 	estCtx := c.getEstimator()
-	if len(c.overloadEstimators) != 0 {
-		if estimator, found := c.overloadEstimators[overloadID]; found {
-			if est := estimator(estCtx, target, args); est != nil {
-				return CallEstimate{CostEstimate: est.Add(argCost), ResultSize: est.ResultSize}
-			}
+	if estimator, found := c.overloadEstimators.fns[overloadID]; found {
+		if est := estimator(estCtx, target, args); est != nil {
+			return CallEstimate{CostEstimate: est.Add(argCost), ResultSize: est.ResultSize}
 		}
 	}
-	if est := estCtx.EstimateCallCost(function, overloadID, target, args); est != nil {
-		return CallEstimate{CostEstimate: est.Add(argCost), ResultSize: est.ResultSize}
+	if c.estimator != nil {
+		if est := c.estimator.EstimateCallCost(function, overloadID, target, args); est != nil {
+			return CallEstimate{CostEstimate: est.Add(argCost), ResultSize: est.ResultSize}
+		}
 	}
-	if estimator, found := c.getStandardOverloadEstimators()[overloadID]; found {
+	if estimator, found := c.standardOverloadEstimators[overloadID]; found {
 		if est := estimator(estCtx, target, args); est != nil {
 			return CallEstimate{CostEstimate: est.Add(argCost), ResultSize: est.ResultSize}
 		}
@@ -721,13 +758,6 @@ func (c *coster) getPath(e ast.Expr) []string {
 	return nil
 }
 
-func (c *coster) getStandardOverloadEstimators() map[string]FunctionEstimator {
-	if c.sizingOverloadEstimators != nil {
-		return c.sizingOverloadEstimators
-	}
-	return stdOverloadEstimators
-}
-
 // addPath associates an expression ID with its path.
 func (c *coster) addPath(e ast.Expr, path []string) {
 	c.exprPaths[e.ID()] = path
@@ -746,7 +776,21 @@ func (c *coster) newAstNode(e ast.Expr) AstNode {
 		path:        c.getPath(e),
 		t:           c.getType(e),
 		expr:        e,
-		derivedSize: c.computeSize(e)}
+		derivedSize: ownedSize(c.computeSize(e))}
+}
+
+// ownedSize returns a size estimate pointer which the caller may retain or modify.
+//
+// computeSize returns the shared unitSizeEstimate and zeroSizeEstimate for scalars and empty or
+// single-unit literals so that the common case does not allocate. Those values back every such
+// estimate, so a pointer which escapes into a retained structure, or to a FunctionEstimator through
+// AstNode.ComputedSize, is copied first; a write through it must never reach the shared values.
+func ownedSize(sz *SizeEstimate) *SizeEstimate {
+	if sz == &unitSizeEstimate || sz == &zeroSizeEstimate {
+		owned := *sz
+		return &owned
+	}
+	return sz
 }
 
 // setSize stores a computed size estimate for an expression ID.
@@ -770,52 +814,47 @@ func (c *coster) copySizeEstimates(dst, src ast.Expr) {
 	c.setSize(dst, c.computeSize(src))
 }
 
-func (c *coster) getSizingStrategy() SizingStrategy {
-	if c.sizingStrategy != nil {
-		return c.sizingStrategy
-	}
-	return defaultSizing
-}
-
 type versionedEstimator struct {
+	coster   *coster
 	delegate Estimator
 	version  uint32
 }
 
-func (v versionedEstimator) EstimateSize(element AstNode) *SizeEstimate {
+func (v *versionedEstimator) EstimateSize(element AstNode) *SizeEstimate {
 	if v.delegate == nil {
 		return nil
 	}
 	return v.delegate.EstimateSize(element)
 }
 
-func (v versionedEstimator) EstimateCallCost(function, overloadID string, target *AstNode, args []AstNode) *CallEstimate {
+func (v *versionedEstimator) EstimateCallCost(function, overloadID string, target *AstNode, args []AstNode) *CallEstimate {
 	if v.delegate == nil {
 		return nil
 	}
 	return v.delegate.EstimateCallCost(function, overloadID, target, args)
 }
 
-func (v versionedEstimator) modelVersion() uint32 {
+func (v *versionedEstimator) modelVersion() uint32 {
 	return v.version
 }
 
 func (c *coster) getEstimator() Estimator {
-	return versionedEstimator{delegate: c.estimator, version: c.modelVersion}
+	return &c.est
 }
 
 func (c *coster) newEstimateContext() *estimatorEvalContext {
-	return &estimatorEvalContext{
-		coster:    c,
-		estimator: c.estimator,
-		strategy:  c.getSizingStrategy(),
-		version:   c.modelVersion,
-	}
+	return &c.evalCtx
 }
 
 // computeSize resolves the size estimate for an expression, caching the result when found.
 func (c *coster) computeSize(e ast.Expr) *SizeEstimate {
 	if size, ok := c.computedSizes[e.ID()]; ok {
+		if size == unitSizeEstimate {
+			return &unitSizeEstimate
+		}
+		if size == zeroSizeEstimate {
+			return &zeroSizeEstimate
+		}
 		return &size
 	}
 	if e.Kind() == ast.IdentKind {
@@ -824,10 +863,31 @@ func (c *coster) computeSize(e ast.Expr) *SizeEstimate {
 			return v.size
 		}
 	}
+	strategy := c.sizingStrategy
+	if strategy == defaultSizing {
+		if size := computeExprSize(e); size != nil {
+			c.computedSizes[e.ID()] = *size
+			return size
+		}
+		// Without an Estimator to supply hints, only a container's size needs the strategy.
+		if t := c.getType(e); c.estimator == nil && !isContainerKind(t.Kind()) {
+			if size := computeTypeSize(t); size != nil {
+				c.computedSizes[e.ID()] = *size
+				return size
+			}
+			return nil
+		}
+	}
 	node := astNode{expr: e, path: c.getPath(e), t: c.getType(e)}
 	ctx := c.newEstimateContext()
-	if size, ok := c.getSizingStrategy().EstimateSize(ctx, node); ok {
+	if size, ok := strategy.EstimateSize(ctx, node); ok {
 		c.computedSizes[e.ID()] = size
+		if size == unitSizeEstimate {
+			return &unitSizeEstimate
+		}
+		if size == zeroSizeEstimate {
+			return &zeroSizeEstimate
+		}
 		return &size
 	}
 	if size := computeExprSize(e); size != nil {
@@ -855,12 +915,18 @@ func computeExprSize(expr ast.Expr) *SizeEstimate {
 		case types.Bool, types.Double, types.Duration,
 			types.Int, types.Timestamp, types.Uint,
 			types.Null:
-			v = uint64(1)
+			return &unitSizeEstimate
 		default:
 			return nil
 		}
 	default:
 		return nil
+	}
+	if v == 1 {
+		return &unitSizeEstimate
+	}
+	if v == 0 {
+		return &zeroSizeEstimate
 	}
 	size := FixedSizeEstimate(v)
 	return &size
@@ -869,8 +935,7 @@ func computeExprSize(expr ast.Expr) *SizeEstimate {
 // computeTypeSize returns a fixed unit size estimate if the type is a constant-size scalar.
 func computeTypeSize(t *types.Type) *SizeEstimate {
 	if isScalar(t) {
-		size := FixedSizeEstimate(1)
-		return &size
+		return &unitSizeEstimate
 	}
 	return nil
 }
@@ -893,6 +958,8 @@ func isScalar(t *types.Type) bool {
 var (
 	unknownSizeEstimate = SizeEstimate{Min: 0, Max: math.MaxUint64}
 	unknownCostEstimate = unknownSizeEstimate.MultiplyByCostFactor(1)
+	unitSizeEstimate    = FixedSizeEstimate(1)
+	zeroSizeEstimate    = FixedSizeEstimate(0)
 
 	selectAndIdentCost = FixedCostEstimate(SelectAndIdentCost)
 	constCost          = FixedCostEstimate(ConstCost)

@@ -155,7 +155,7 @@ func isContainerKind(kind types.Kind) bool {
 // or queries the estimator with an untyped/pathless node for type-level hints.
 func fallbackElemSize(ctx EstimateContext, elemType *types.Type) *SizeEstimate {
 	if sz := computeTypeSize(elemType); sz != nil {
-		return sz
+		return ownedSize(sz)
 	}
 	if ctx != nil && ctx.Estimator() != nil {
 		elemNode := NewAstNode(nil, nil, elemType, nil)

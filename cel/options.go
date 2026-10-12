@@ -873,10 +873,7 @@ func CostModel(models ...cost.OverloadModel) EnvOption {
 		if err := cost.ValidateOverloadModels(models...); err != nil {
 			return nil, err
 		}
-		if e.costModel == nil {
-			e.costModel = &costModel{}
-		}
-		e.costModel.models = append(e.costModel.models, models...)
+		e.costConfig.models = append(e.costConfig.models, models...)
 		return e, nil
 	}
 }
@@ -884,31 +881,24 @@ func CostModel(models ...cost.OverloadModel) EnvOption {
 // CostSizingStrategy configures a SizingStrategy for both cost estimation and runtime cost tracking.
 func CostSizingStrategy(strategy cost.SizingStrategy) EnvOption {
 	return func(e *Env) (*Env, error) {
-		if e.costModel == nil {
-			e.costModel = &costModel{}
-		}
-		e.costModel.strategy = strategy
+		e.costConfig.strategy = strategy
 		return e, nil
 	}
 }
 
-// CostModelVersion pins cost estimation to a revision of the cost model's rules.
+// CostModelVersion pins cost estimation and runtime cost tracking to a revision of the cost
+// model's rules.
 //
-// The pin applies both to the standard estimators and to any model supplied via CostModel, so an
-// environment reports one consistent set of rules rather than a mixture.
-//
-// Runtime cost tracking is unaffected: a revision changes what an expression is predicted to cost,
-// never what it is charged.
+// The pin applies to the standard models and to any model supplied via CostModel, for both
+// estimation and tracking, so an environment's estimates and charges come from one consistent set
+// of rules.
 //
 // If this option is not set, the latest cost model version is used. Use this only to hold estimates
 // stable against a baseline recorded under an earlier release; see cost.ModelVersion for the
 // per-revision details.
 func CostModelVersion(version uint32) EnvOption {
 	return func(e *Env) (*Env, error) {
-		if e.costModel == nil {
-			e.costModel = &costModel{}
-		}
-		e.costModel.version = &version
+		e.costConfig.version = &version
 		return e, nil
 	}
 }
