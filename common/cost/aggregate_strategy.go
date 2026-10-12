@@ -85,9 +85,69 @@ func (a *aggregateSizingStrategy) EstimateSize(ctx EstimateContext, node AstNode
 		return estimateAggregateListSize(ctx, node)
 	case types.MapKind:
 		return estimateAggregateMapSize(ctx, node)
+	case types.DynKind, types.AnyKind, types.TypeParamKind:
+		return estimateAggregateDynSize(ctx, node)
 	default:
 		return estimateScalarOrFallback(ctx, node)
 	}
+}
+
+// estimateAggregateDynSize calculates the aggregate size estimate for a dynamically typed AST node,
+// folding nested container hints ("@items", "@keys", "@values") into the aggregate size up to the
+// hinted depth.
+func estimateAggregateDynSize(ctx EstimateContext, node AstNode) (SizeEstimate, bool) {
+	if node.Expr() != nil {
+		switch node.Expr().Kind() {
+		case ast.ListKind:
+			return estimateAggregateListSize(ctx, node)
+		case ast.MapKind:
+			return estimateAggregateMapSize(ctx, node)
+		case ast.CallKind:
+			if call := node.Expr().AsCall(); call.FunctionName() == operators.Conditional {
+				if u, ok := estimateConditionalSize(ctx, node.Type(), call.Args()); ok {
+					return u, true
+				}
+			}
+		}
+	}
+	var baseSz *SizeEstimate
+	if sz, ok := estimateScalarOrFallback(ctx, node); ok {
+		if sz.Elem != nil || sz.Key != nil {
+			return sz, true
+		}
+		baseSz = &sz
+	}
+	if len(node.Path()) > 0 {
+		if elemSz := resolveDynamicChild(ctx, node.Path(), "@items"); elemSz != nil {
+			if baseSz == nil {
+				return combineListSize(nil, elemSz)
+			}
+			return SizeEstimate{
+				Min:  min(baseSz.Min, SafeAdd(1, SafeMultiply(baseSz.Min, max(elemSz.Min, 1)))),
+				Max:  max(baseSz.Max, SafeAdd(1, SafeMultiply(baseSz.Max, max(elemSz.Max, 1)))),
+				Elem: elemSz,
+			}, true
+		}
+		keySz := resolveDynamicChild(ctx, node.Path(), "@keys")
+		valSz := resolveDynamicChild(ctx, node.Path(), "@values")
+		if keySz != nil || valSz != nil {
+			if baseSz == nil {
+				return combineMapSize(nil, keySz, valSz)
+			}
+			minKey, maxKey, keySz := resolveElemBounds(keySz, baseSz.Max > 0)
+			minVal, maxVal, valSz := resolveElemBounds(valSz, baseSz.Max > 0)
+			return SizeEstimate{
+				Min:  min(baseSz.Min, SafeAdd(1, SafeMultiply(baseSz.Min, SafeAdd(minKey, minVal)))),
+				Max:  max(baseSz.Max, SafeAdd(1, SafeMultiply(baseSz.Max, SafeAdd(max(maxKey, 1), max(maxVal, 1))))),
+				Key:  keySz,
+				Elem: valSz,
+			}, true
+		}
+	}
+	if baseSz != nil {
+		return *baseSz, true
+	}
+	return SizeEstimate{}, false
 }
 
 // estimateAggregateListSize computes list aggregate size: 1 (header) + listSize * elemSize.

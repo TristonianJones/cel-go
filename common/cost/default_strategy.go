@@ -52,10 +52,16 @@ func (defaultSizingStrategy) EstimateSize(ctx EstimateContext, node AstNode) (Si
 		return estimateDefaultListSize(ctx, node)
 	case types.MapKind:
 		return estimateDefaultMapSize(ctx, node)
+	case types.DynKind, types.AnyKind, types.TypeParamKind:
+		return estimateDefaultDynSize(ctx, node)
 	default:
 		return estimateScalarOrFallback(ctx, node)
 	}
 }
+
+// maxHintDepth bounds how many nested container hint levels ("@items", "@keys", "@values")
+// dynamic type size estimation inspects.
+const maxHintDepth = 32
 
 // estimateDefaultListSize calculates the size and element size of a list AST node.
 func estimateDefaultListSize(ctx EstimateContext, node AstNode) (SizeEstimate, bool) {
@@ -71,6 +77,65 @@ func estimateDefaultMapSize(ctx EstimateContext, node AstNode) (SizeEstimate, bo
 	mapSize, keySize, valSize := estimateMapExpr(ctx, node, keyType, valType)
 	mapSize, keySize, valSize = resolveMapSizes(ctx, node, keyType, valType, mapSize, keySize, valSize)
 	return combineMapSize(mapSize, keySize, valSize)
+}
+
+// estimateDefaultDynSize calculates the size estimate for a dynamically typed AST node.
+// For variable/path nodes, the nesting of hints ("@items", "@keys", "@values") determines
+// the possible container depth; any level beyond the hinted depth remains nil (unknown).
+func estimateDefaultDynSize(ctx EstimateContext, node AstNode) (SizeEstimate, bool) {
+	if node.Expr() != nil {
+		switch node.Expr().Kind() {
+		case ast.ListKind:
+			return estimateDefaultListSize(ctx, node)
+		case ast.MapKind:
+			return estimateDefaultMapSize(ctx, node)
+		case ast.CallKind:
+			if call := node.Expr().AsCall(); call.FunctionName() == operators.Conditional {
+				if u, ok := estimateConditionalSize(ctx, node.Type(), call.Args()); ok {
+					return u, true
+				}
+			}
+		}
+	}
+	var baseSz *SizeEstimate
+	if sz, ok := estimateScalarOrFallback(ctx, node); ok {
+		if sz.Elem != nil || sz.Key != nil {
+			return sz, true
+		}
+		baseSz = &sz
+	}
+	if len(node.Path()) > 0 {
+		if elemSz := resolveDynamicChild(ctx, node.Path(), "@items"); elemSz != nil {
+			return combineListSize(baseSz, elemSz)
+		}
+		keySz := resolveDynamicChild(ctx, node.Path(), "@keys")
+		valSz := resolveDynamicChild(ctx, node.Path(), "@values")
+		if keySz != nil || valSz != nil {
+			return combineMapSize(baseSz, keySz, valSz)
+		}
+	}
+	if baseSz != nil {
+		return *baseSz, true
+	}
+	return SizeEstimate{}, false
+}
+
+// resolveDynamicChild probes a child hint subpath ("@items", "@keys", "@values") under a
+// dynamic node, recursing only when the estimator provides an explicit hint at that subpath.
+func resolveDynamicChild(ctx EstimateContext, parentPath []string, subPath string) *SizeEstimate {
+	if len(parentPath) == 0 || len(parentPath) >= maxHintDepth || ctx == nil || ctx.Estimator() == nil {
+		return nil
+	}
+	childPath := append(slices.Clone(parentPath), subPath)
+	childNode := NewAstNode(nil, childPath, types.DynType, nil)
+	if ctx.Estimator().EstimateSize(childNode) == nil {
+		return nil
+	}
+	sz := ctx.Size(childNode)
+	if sz.IsUnknown() {
+		return nil
+	}
+	return &sz
 }
 
 // resolveListSizes resolves a list node's container size and element size using the estimator,
@@ -126,7 +191,7 @@ func resolveMapSizes(ctx EstimateContext, node AstNode, keyType, valType *types.
 // resolveChildSize looks up child size estimates on the given subPath (e.g. "@items", "@keys", "@values")
 // when the current estimate is missing or lacks nested container details, falling back to primitive/type hints.
 func resolveChildSize(ctx EstimateContext, parentPath []string, subPath string, childType *types.Type, current *SizeEstimate) *SizeEstimate {
-	if current == nil || (current.Elem == nil && isContainerKind(childType.Kind())) {
+	if current == nil || (current.Elem == nil && (isContainerKind(childType.Kind()) || isDynamicKind(childType.Kind()))) {
 		if len(parentPath) > 0 && ctx != nil {
 			childPath := append(slices.Clone(parentPath), subPath)
 			sz := ctx.Size(NewAstNode(nil, childPath, childType, nil))
@@ -149,6 +214,11 @@ func resolveChildSize(ctx EstimateContext, parentPath []string, subPath string, 
 // isContainerKind reports whether kind is a list or map container type.
 func isContainerKind(kind types.Kind) bool {
 	return kind == types.ListKind || kind == types.MapKind
+}
+
+// isDynamicKind reports whether kind represents a dynamically typed value.
+func isDynamicKind(kind types.Kind) bool {
+	return kind == types.DynKind || kind == types.AnyKind || kind == types.TypeParamKind
 }
 
 // fallbackElemSize resolves fixed-width primitive type sizes via computeTypeSize,
@@ -250,13 +320,29 @@ func estimateListExpr(ctx EstimateContext, node AstNode, elemType *types.Type) (
 	}
 	switch node.Expr().Kind() {
 	case ast.ListKind:
-		elements := node.Expr().AsList().Elements()
+		list := node.Expr().AsList()
+		elements := list.Elements()
 		l := FixedSizeEstimate(uint64(len(elements)))
-		listSize = &l
-		for _, elem := range elements {
+		// An optional element is omitted when it has no value, so only the required
+		// elements count toward the minimum length.
+		l.Min = uint64(len(elements) - len(list.OptionalIndices()))
+		optional := make(map[int32]bool, len(list.OptionalIndices()))
+		for _, i := range list.OptionalIndices() {
+			optional[i] = true
+		}
+		for i, elem := range elements {
+			if optional[int32(i)] {
+				// The list holds the optional's value, if any, rather than the optional.
+				var present bool
+				if elem, present = optionalLiteralValue(elem); !present {
+					l.Max = SafeSubtract(l.Max, 1)
+					continue
+				}
+			}
 			elemNode := NewAstNode(elem, nil, elemType, nil)
 			elemSize = unionAccumulator(elemSize, ctx.Size(elemNode))
 		}
+		listSize = &l
 	case ast.CallKind:
 		call := node.Expr().AsCall()
 		args := call.Args()
@@ -292,6 +378,10 @@ func estimateMapExpr(ctx EstimateContext, node AstNode, keyType, valType *types.
 		mapSize = &m
 		for _, entry := range entries {
 			mapEntry := entry.AsMapEntry()
+			if mapEntry.IsOptional() {
+				// An optional entry is omitted when its value is absent.
+				m.Min = SafeSubtract(m.Min, 1)
+			}
 			kNode := NewAstNode(mapEntry.Key(), nil, keyType, nil)
 			vNode := NewAstNode(mapEntry.Value(), nil, valType, nil)
 			keySize = unionAccumulator(keySize, ctx.Size(kNode))
@@ -414,3 +504,27 @@ func combineMapSize(mapSize, keySize, valSize *SizeEstimate) (SizeEstimate, bool
 }
 
 var defaultSizing SizingStrategy = defaultSizingStrategy{}
+
+// optionalLiteralValue returns the value an optional list element contributes: nothing for
+// optional.none(), the argument of optional.of(x) or optional.ofNonZeroValue(x), and otherwise
+// the element itself, whose value is not known statically.
+func optionalLiteralValue(e ast.Expr) (ast.Expr, bool) {
+	if e.Kind() != ast.CallKind {
+		return e, true
+	}
+	call := e.AsCall()
+	if call.IsMemberFunction() {
+		return e, true
+	}
+	switch call.FunctionName() {
+	case "optional.none":
+		if len(call.Args()) == 0 {
+			return nil, false
+		}
+	case "optional.of", "optional.ofNonZeroValue":
+		if len(call.Args()) == 1 {
+			return call.Args()[0], true
+		}
+	}
+	return e, true
+}

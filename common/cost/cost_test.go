@@ -1766,9 +1766,11 @@ func TestCostEstimateAndTracking(t *testing.T) {
 			wantEst: estPtr(cost.CostEstimate{Min: 13, Max: 1763}),
 		},
 		{
-			name:    "bind: unused bind variable",
-			expr:    `cel.bind(a, [1, 2, 3], 42)`,
-			wantEst: estPtr(cost.CostEstimate{Min: 20, Max: 20}),
+			name:      "bind: unused bind variable",
+			expr:      `cel.bind(a, [1, 2, 3], 42)`,
+			wantEst:   estPtr(cost.CostEstimate{Min: 10, Max: 20}),
+			wantTrack: trackPtr(10),
+			wantEstV0: estPtr(cost.FixedCostEstimate(20)),
 		},
 		{
 			name:      "bind: derived size propagation to comprehension",

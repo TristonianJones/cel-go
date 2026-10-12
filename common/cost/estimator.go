@@ -181,7 +181,7 @@ func newCoster(checked *ast.AST, estimator Estimator, opts ...Option) (*coster, 
 	if !c.modelRules.isDefault() {
 		c.standardOverloadEstimators = StandardOverloadEstimatorsWithOptions(c.modelRules.modelOptions()...)
 	}
-	c.est = versionedEstimator{coster: c, delegate: estimator, version: c.modelVersion}
+	c.est = versionedEstimator{coster: c, delegate: estimator, version: c.modelVersion, strategy: c.sizingStrategy}
 	c.evalCtx = estimatorEvalContext{coster: c, estimator: estimator, strategy: c.sizingStrategy}
 	return c, nil
 }
@@ -363,6 +363,7 @@ func (c *coster) costSelect(e ast.Expr) CostEstimate {
 	var sum CostEstimate
 	if sel.IsTestOnly() {
 		sum = sum.Add(c.presenceTestCost)
+		sum = sum.Add(branchQualifierCost(sel.Operand()))
 	} else {
 		sum = sum.Add(selectAndIdentCost)
 	}
@@ -373,6 +374,54 @@ func (c *coster) costSelect(e ast.Expr) CostEstimate {
 		c.addPath(e, append(targetPath, sel.FieldName()))
 	}
 	return sum
+}
+
+// branchQualifierCost is the cost of the qualification a presence test applies to the branch of a
+// conditional at the root of its operand's attribute chain. The interpreter charges it when the
+// selected branch is computed. When the branch is an attribute, the estimate already accounts for
+// it with the cost of the branch's root, which the interpreter resolves without charging.
+func branchQualifierCost(operand ast.Expr) CostEstimate {
+	root := attributeChainRoot(operand)
+	if !isConditionalCall(root) {
+		return CostEstimate{}
+	}
+	args := root.AsCall().Args()
+	if len(args) != 3 {
+		return CostEstimate{}
+	}
+	branch := func(e ast.Expr) CostEstimate {
+		if !isAttributeChain(e) || (e.Kind() == ast.SelectKind && e.AsSelect().IsTestOnly()) {
+			return FixedCostEstimate(SelectAndIdentCost)
+		}
+		return branchQualifierCost(e)
+	}
+	return branch(args[1]).Union(branch(args[2]))
+}
+
+// attributeChainRoot returns the expression an attribute chain starts from, past the selections
+// and index operations which extend it.
+func attributeChainRoot(e ast.Expr) ast.Expr {
+	for {
+		switch e.Kind() {
+		case ast.SelectKind:
+			if e.AsSelect().IsTestOnly() {
+				return e
+			}
+			e = e.AsSelect().Operand()
+		case ast.CallKind:
+			call := e.AsCall()
+			switch call.FunctionName() {
+			case operators.Index, operators.OptIndex, operators.OptSelect:
+				if len(call.Args()) > 0 {
+					e = call.Args()[0]
+					continue
+				}
+			}
+			return e
+		default:
+			return e
+		}
+	}
 }
 
 // relativeAttributeCost is the cost of qualifying a value which was computed rather than named.
@@ -655,9 +704,38 @@ func (c *coster) costComprehension(e ast.Expr) CostEstimate {
 				accuSize.Key = stepSize.Key
 			}
 		}
+		// A conditional step, as in filter, may skip an iteration, so the container may hold
+		// no entries at all.
+		if isConditionalCall(comp.LoopStep()) {
+			accuSize.Min = 0
+		}
+		// The accumulated container holds at most one entry per iteration; report the size the
+		// sizing strategy assigns to it.
+		sized := containerSizeFor(c.sizingStrategy, accuSize, accumulatedEntrySize(accuSize))
+		sized.Key, sized.Elem = accuSize.Key, accuSize.Elem
+		accuSize = sized
 		c.setSize(e, &accuSize)
 	}
 	return sum
+}
+
+// accumulatedEntrySize returns the size of one entry of an accumulated container: its element, or
+// its key and value. An unknown part is unbounded.
+func accumulatedEntrySize(sz SizeEstimate) SizeEstimate {
+	entry := UnknownSizeEstimate()
+	if sz.Elem != nil {
+		entry = RangedSizeEstimate(sz.Elem.Min, sz.Elem.Max)
+	}
+	if sz.Key != nil {
+		withKey := entry.Add(RangedSizeEstimate(sz.Key.Min, sz.Key.Max))
+		entry = RangedSizeEstimate(withKey.Min, withKey.Max)
+	}
+	return entry
+}
+
+// isConditionalCall reports whether e is a call to the conditional operator.
+func isConditionalCall(e ast.Expr) bool {
+	return e.Kind() == ast.CallKind && e.AsCall().FunctionName() == operators.Conditional
 }
 
 // isBind returns true if the given expression represents a cel.bind() macro structure.
@@ -676,7 +754,13 @@ func (c *coster) costBind(e ast.Expr) CostEstimate {
 	var sum CostEstimate
 	// Binds are lazily initialized, so we retain the cost of an empty iteration range.
 	sum = sum.Add(c.cost(comp.IterRange()))
-	sum = sum.Add(c.cost(comp.AccuInit()))
+	initCost := c.cost(comp.AccuInit())
+	if c.modelVersion >= 1 && !mustReadVar(comp.Result(), comp.AccuVar()) {
+		// The bound value is computed only if the result reads it, so unless every evaluation of
+		// the result reads it, its cost contributes to the upper bound alone.
+		initCost = CostEstimate{Min: 0, Max: initCost.Max}
+	}
+	sum = sum.Add(initCost)
 
 	c.pushLocalVar(comp.AccuVar(), comp.AccuInit())
 	sum = sum.Add(c.cost(comp.Result()))
@@ -688,6 +772,80 @@ func (c *coster) costBind(e ast.Expr) CostEstimate {
 	c.popLocalVar(comp.AccuVar())
 
 	return sum
+}
+
+// mustReadVar reports whether every evaluation of e reads the variable name. It is conservative:
+// operands which may be skipped, such as the right side of a logical operator, the branches of a
+// conditional, the alternative of an optional, and the body of a comprehension, do not count,
+// and neither does the bound value of a nested bind, which is itself lazy.
+func mustReadVar(e ast.Expr, name string) bool {
+	switch e.Kind() {
+	case ast.IdentKind:
+		return e.AsIdent() == name
+	case ast.SelectKind:
+		return mustReadVar(e.AsSelect().Operand(), name)
+	case ast.CallKind:
+		call := e.AsCall()
+		args := call.Args()
+		switch call.FunctionName() {
+		case operators.LogicalAnd, operators.LogicalOr, operators.Conditional:
+			return len(args) > 0 && mustReadVar(args[0], name)
+		case "or", "orValue":
+			if call.IsMemberFunction() {
+				return mustReadVar(call.Target(), name)
+			}
+		}
+		if call.IsMemberFunction() && mustReadVar(call.Target(), name) {
+			return true
+		}
+		for _, arg := range args {
+			if mustReadVar(arg, name) {
+				return true
+			}
+		}
+		return false
+	case ast.ListKind:
+		for _, elem := range e.AsList().Elements() {
+			if mustReadVar(elem, name) {
+				return true
+			}
+		}
+		return false
+	case ast.MapKind:
+		for _, entry := range e.AsMap().Entries() {
+			me := entry.AsMapEntry()
+			if mustReadVar(me.Key(), name) || mustReadVar(me.Value(), name) {
+				return true
+			}
+		}
+		return false
+	case ast.StructKind:
+		for _, field := range e.AsStruct().Fields() {
+			if mustReadVar(field.AsStructField().Value(), name) {
+				return true
+			}
+		}
+		return false
+	case ast.ComprehensionKind:
+		comp := e.AsComprehension()
+		if mustReadVar(comp.IterRange(), name) {
+			return true
+		}
+		// A bind's value is lazy: it is computed only when its result reads it, and its result,
+		// unless the bind shadows name, may read name directly. A loop's initial accumulator is
+		// always computed.
+		isBind := comp.IterRange().Kind() == ast.ListKind && comp.IterRange().AsList().Size() == 0 &&
+			!isAccumulatorVar(comp.AccuVar())
+		if isBind {
+			if comp.AccuVar() != name && mustReadVar(comp.Result(), name) {
+				return true
+			}
+			return mustReadVar(comp.Result(), comp.AccuVar()) && mustReadVar(comp.AccuInit(), name)
+		}
+		return mustReadVar(comp.AccuInit(), name)
+	default:
+		return false
+	}
 }
 
 func calculateArgCost(overloadID string, argCosts []CostEstimate) CostEstimate {
@@ -717,6 +875,7 @@ func calculateArgCost(overloadID string, argCosts []CostEstimate) CostEstimate {
 
 func (c *coster) functionCost(e ast.Expr, function, overloadID string, target *AstNode, args []AstNode, argCosts []CostEstimate) CallEstimate {
 	argCost := calculateArgCost(overloadID, argCosts)
+	c.est.callID = e.ID()
 	estCtx := c.getEstimator()
 	if estimator, found := c.overloadEstimators.fns[overloadID]; found {
 		if est := estimator(estCtx, target, args); est != nil {
@@ -822,6 +981,9 @@ type versionedEstimator struct {
 	coster   *coster
 	delegate Estimator
 	version  uint32
+	strategy SizingStrategy
+	// callID is the expression ID of the call being estimated, if any.
+	callID int64
 }
 
 func (v *versionedEstimator) EstimateSize(element AstNode) *SizeEstimate {
@@ -840,6 +1002,14 @@ func (v *versionedEstimator) EstimateCallCost(function, overloadID string, targe
 
 func (v *versionedEstimator) modelVersion() uint32 {
 	return v.version
+}
+
+func (v *versionedEstimator) sizingStrategy() SizingStrategy {
+	return v.strategy
+}
+
+func (v *versionedEstimator) resultType() (*types.Type, bool) {
+	return v.coster.checkedAST.GetType(v.callID), true
 }
 
 func (c *coster) getEstimator() Estimator {

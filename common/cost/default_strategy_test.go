@@ -438,6 +438,73 @@ func TestDefaultSizingStrategy_EstimateSize_ScalarAndFallback(t *testing.T) {
 	}
 }
 
+func TestDefaultSizingStrategy_EstimateSize_Dyn(t *testing.T) {
+	strat := DefaultSizingStrategy()
+	hintCtx := &testEvalContext{
+		estimator: testHintsEstimator{
+			hints: map[string]uint64{
+				"dyn_scalar":                    12,
+				"dyn_list":                      3,
+				"dyn_list.@items":               4,
+				"dyn_list.@items.@items":        8,
+				"dyn_map":                       2,
+				"dyn_map.@keys":                 5,
+				"dyn_map.@values":               6,
+				"dyn_map.@values.@items":        9,
+				"dyn_elem_only.@items":          7,
+				"list_of_dyn":                   2,
+				"list_of_dyn.@items":            3,
+				"list_of_dyn.@items.@items":     10,
+			},
+		},
+		strategy: strat,
+	}
+
+	t.Run("scalar_dyn_has_no_child_estimates", func(t *testing.T) {
+		got, ok := strat.EstimateSize(hintCtx, NewAstNode(nil, []string{"dyn_scalar"}, types.DynType, nil))
+		if !ok || got.Max != 12 || got.Elem != nil || got.Key != nil {
+			t.Fatalf("EstimateSize(dyn_scalar) = (%+v, %t), want Max=12 with nil Key/Elem", got, ok)
+		}
+	})
+
+	t.Run("nested_list_dyn_populates_up_to_hint_depth", func(t *testing.T) {
+		got, ok := strat.EstimateSize(hintCtx, NewAstNode(nil, []string{"dyn_list"}, types.DynType, nil))
+		if !ok || got.Max != 3 || got.Elem == nil || got.Elem.Max != 4 || got.Elem.Elem == nil || got.Elem.Elem.Max != 8 {
+			t.Fatalf("EstimateSize(dyn_list) = (%+v, %t), want 3 -> 4 -> 8", got, ok)
+		}
+		if got.Elem.Elem.Elem != nil {
+			t.Errorf("expected Elem beyond hint depth 2 to be nil, got %+v", got.Elem.Elem.Elem)
+		}
+	})
+
+	t.Run("nested_map_dyn_populates_up_to_hint_depth", func(t *testing.T) {
+		got, ok := strat.EstimateSize(hintCtx, NewAstNode(nil, []string{"dyn_map"}, types.DynType, nil))
+		if !ok || got.Max != 2 || got.Key == nil || got.Key.Max != 5 || got.Elem == nil || got.Elem.Max != 6 {
+			t.Fatalf("EstimateSize(dyn_map) = (%+v, %t), want Max=2, Key=5, Elem=6", got, ok)
+		}
+		if got.Elem.Elem == nil || got.Elem.Elem.Max != 9 || got.Elem.Elem.Elem != nil {
+			t.Errorf("EstimateSize(dyn_map) nested Elem = %+v, want Max=9 with nil child", got.Elem.Elem)
+		}
+	})
+
+	t.Run("dyn_with_only_items_hint", func(t *testing.T) {
+		got, ok := strat.EstimateSize(hintCtx, NewAstNode(nil, []string{"dyn_elem_only"}, types.DynType, nil))
+		if !ok || got.Elem == nil || got.Elem.Max != 7 || got.Elem.Elem != nil {
+			t.Fatalf("EstimateSize(dyn_elem_only) = (%+v, %t), want Elem.Max=7 with nil child", got, ok)
+		}
+	})
+
+	t.Run("list_of_dyn_populates_nested_items", func(t *testing.T) {
+		got, ok := strat.EstimateSize(hintCtx, NewAstNode(nil, []string{"list_of_dyn"}, types.NewListType(types.DynType), nil))
+		if !ok || got.Max != 2 || got.Elem == nil || got.Elem.Max != 3 || got.Elem.Elem == nil || got.Elem.Elem.Max != 10 {
+			t.Fatalf("EstimateSize(list_of_dyn) = (%+v, %t), want 2 -> 3 -> 10", got, ok)
+		}
+		if got.Elem.Elem.Elem != nil {
+			t.Errorf("expected Elem beyond hint depth to be nil, got %+v", got.Elem.Elem.Elem)
+		}
+	})
+}
+
 // TestSharedSizeEstimatesNotExposed guards the allocation-free sizing of scalars: computeSize returns
 // the shared unitSizeEstimate and zeroSizeEstimate, and no pointer which a caller can retain or
 // write through, including one handed to a FunctionEstimator, may alias them.

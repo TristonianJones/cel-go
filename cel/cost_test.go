@@ -735,3 +735,147 @@ func TestCostModelNilOrEmpty(t *testing.T) {
 		t.Errorf("details.ActualCost() = 0, want > 0")
 	}
 }
+
+// TestCostModelVersionPinsTracking checks that CostModelVersion applies to runtime tracking as well
+// as estimation, so that a pinned environment's charge is computed by the same rules as its
+// estimate.
+func TestCostModelVersionPinsTracking(t *testing.T) {
+	expr := `'abcdefghijk'.contains('abcdefghijk')`
+	tests := []struct {
+		name    string
+		opts    []EnvOption
+		wantEst cost.CostEstimate
+		want    uint64
+	}{
+		// contains costs ⌈0.1·11⌉ · ⌈0.1·11⌉ = 4 at version 0, and ⌈0.01·11·11⌉ = 2 at version 1.
+		{name: "version 0", opts: []EnvOption{CostModelVersion(0)}, wantEst: cost.FixedCostEstimate(4), want: 4},
+		{name: "version 1", opts: []EnvOption{CostModelVersion(1)}, wantEst: cost.FixedCostEstimate(2), want: 2},
+		{name: "latest", wantEst: cost.FixedCostEstimate(2), want: 2},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			env, err := NewEnv(tc.opts...)
+			if err != nil {
+				t.Fatalf("NewEnv() failed: %v", err)
+			}
+			ast, iss := env.Compile(expr)
+			if iss.Err() != nil {
+				t.Fatalf("Compile(%q) failed: %v", expr, iss.Err())
+			}
+			est, err := env.EstimateCost(ast, testCostEstimator{})
+			if err != nil {
+				t.Fatalf("EstimateCost() failed: %v", err)
+			}
+			if est != tc.wantEst {
+				t.Errorf("EstimateCost() = %v, want %v", est, tc.wantEst)
+			}
+			prg, err := env.Program(ast, CostTracking(nil))
+			if err != nil {
+				t.Fatalf("Program() failed: %v", err)
+			}
+			_, det, err := prg.Eval(NoVars())
+			if err != nil {
+				t.Fatalf("Eval() failed: %v", err)
+			}
+			if got := *det.ActualCost(); got != tc.want {
+				t.Errorf("ActualCost() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSinceModelVersionHandoff checks that a model with BeforeVersion replaces an overload's
+// earlier estimator and tracker from that revision on, in both estimation and tracking, while
+// environments pinned to an earlier revision keep the earlier ones, and that a caller's tracker
+// still overrides both.
+func TestSinceModelVersionHandoff(t *testing.T) {
+	legacyCost := uint64(100)
+	overrideCost := uint64(999)
+	lib := func() EnvOption {
+		return Lib(sinceVersionLib{legacyCost: &legacyCost})
+	}
+	tests := []struct {
+		name     string
+		opts     []EnvOption
+		progOpts []ProgramOption
+		wantEst  cost.CostEstimate
+		want     uint64
+	}{
+		// The literal costs 0; the call costs 100 under the hand-written pair, 15 under the v1
+		// model, and 7 under the v2+ model.
+		{name: "pinned before the model", opts: []EnvOption{CostModelVersion(0)}, wantEst: cost.FixedCostEstimate(100), want: 100},
+		{name: "pinned at v1 model", opts: []EnvOption{CostModelVersion(1)}, wantEst: cost.FixedCostEstimate(15), want: 15},
+		{name: "pinned at v2 model", opts: []EnvOption{CostModelVersion(2)}, wantEst: cost.FixedCostEstimate(7), want: 7},
+		{name: "latest", wantEst: cost.FixedCostEstimate(7), want: 7},
+		{
+			name: "caller override",
+			progOpts: []ProgramOption{CostTrackerOptions(cost.OverloadTracker("handoff_string",
+				func([]ref.Val, ref.Val) *uint64 { return &overrideCost }))},
+			wantEst: cost.FixedCostEstimate(7),
+			want:    999,
+		},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			env, err := NewEnv(append([]EnvOption{lib()}, tc.opts...)...)
+			if err != nil {
+				t.Fatalf("NewEnv() failed: %v", err)
+			}
+			ast, iss := env.Compile(`handoff('abc')`)
+			if iss.Err() != nil {
+				t.Fatalf("Compile() failed: %v", iss.Err())
+			}
+			est, err := env.EstimateCost(ast, testCostEstimator{})
+			if err != nil {
+				t.Fatalf("EstimateCost() failed: %v", err)
+			}
+			if est != tc.wantEst {
+				t.Errorf("EstimateCost() = %v, want %v", est, tc.wantEst)
+			}
+			prg, err := env.Program(ast, append([]ProgramOption{CostTracking(nil)}, tc.progOpts...)...)
+			if err != nil {
+				t.Fatalf("Program() failed: %v", err)
+			}
+			_, det, err := prg.Eval(NoVars())
+			if err != nil {
+				t.Fatalf("Eval() failed: %v", err)
+			}
+			if got := *det.ActualCost(); got != tc.want {
+				t.Errorf("ActualCost() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// sinceVersionLib declares handoff(string), priced by a hand-written estimator and tracker before
+// model version 1, an intermediate model before version 2, and the current model from version 2.
+type sinceVersionLib struct {
+	legacyCost *uint64
+}
+
+func (l sinceVersionLib) CompileOptions() []EnvOption {
+	legacy := cost.FixedCostEstimate(*l.legacyCost)
+	return []EnvOption{
+		Function("handoff", Overload("handoff_string", []*Type{StringType}, IntType,
+			UnaryBinding(func(ref.Val) ref.Val { return types.Int(1) }))),
+		CostModel(cost.Overload("handoff_string",
+			cost.EvalCost(cost.Const(7)),
+			cost.BeforeVersion(1, cost.ManualCost(
+				func(cost.Estimator, *cost.AstNode, []cost.AstNode) *cost.CallEstimate {
+					return cost.NewCallEstimate(legacy, nil)
+				},
+				func([]ref.Val, ref.Val) *uint64 { return l.legacyCost },
+			)),
+			cost.BeforeVersion(2,
+				cost.EvalCost(cost.Const(15)),
+				cost.ResultSize(cost.Const(1)),
+			),
+		)),
+	}
+}
+
+func (l sinceVersionLib) ProgramOptions() []ProgramOption {
+	return nil
+}

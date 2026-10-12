@@ -1980,8 +1980,8 @@ func (u *unadaptableVal) ConvertToType(typeVal ref.Type) ref.Val {
 	return types.NewErr("cannot convert")
 }
 func (u *unadaptableVal) Equal(other ref.Val) ref.Val { return types.False }
-func (u *unadaptableVal) Type() ref.Type             { return u.valType }
-func (u *unadaptableVal) Value() any                 { return u }
+func (u *unadaptableVal) Type() ref.Type              { return u.valType }
+func (u *unadaptableVal) Value() any                  { return u }
 
 func TestAdaptLiteral(t *testing.T) {
 	env, err := NewEnv(

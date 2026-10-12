@@ -496,3 +496,54 @@ func TestAggregateSizingStrategy_EstimateSize_ScalarAndFallback(t *testing.T) {
 		})
 	}
 }
+
+func TestAggregateSizingStrategy_EstimateSize_Dyn(t *testing.T) {
+	strat := AggregateSizingStrategy()
+	hintCtx := &testEvalContext{
+		estimator: testHintsEstimator{
+			hints: map[string]uint64{
+				"dyn_scalar":             12,
+				"dyn_list":               3,
+				"dyn_list.@items":        4,
+				"dyn_list.@items.@items": 8,
+				"dyn_map":                2,
+				"dyn_map.@keys":          5,
+				"dyn_map.@values":        6,
+			},
+		},
+		strategy: strat,
+	}
+
+	t.Run("scalar_dyn", func(t *testing.T) {
+		got, ok := strat.EstimateSize(hintCtx, NewAstNode(nil, []string{"dyn_scalar"}, types.DynType, nil))
+		if !ok || !reflect.DeepEqual(got, FixedSizeEstimate(12)) {
+			t.Fatalf("EstimateSize(dyn_scalar) = (%+v, %t), want FixedSizeEstimate(12)", got, ok)
+		}
+	})
+
+	t.Run("nested_list_dyn", func(t *testing.T) {
+		got, ok := strat.EstimateSize(hintCtx, NewAstNode(nil, []string{"dyn_list"}, types.DynType, nil))
+		// Inner list: [4, 1 + 4*8 = 33], Elem: [8, 8]
+		// Outer list: [3, 1 + 3*33 = 100], Elem: inner
+		want := ListSizeEstimate(
+			RangedSizeEstimate(3, 100),
+			ListSizeEstimate(RangedSizeEstimate(4, 33), FixedSizeEstimate(8)),
+		)
+		if !ok || !reflect.DeepEqual(got, want) {
+			t.Fatalf("EstimateSize(dyn_list) = (%+v, %t), want %+v", got, ok, want)
+		}
+	})
+
+	t.Run("map_dyn", func(t *testing.T) {
+		got, ok := strat.EstimateSize(hintCtx, NewAstNode(nil, []string{"dyn_map"}, types.DynType, nil))
+		// Map: [2, 1 + 2*(5+6) = 23], Key: [5, 5], Elem: [6, 6]
+		want := MapSizeEstimate(
+			RangedSizeEstimate(2, 23),
+			FixedSizeEstimate(5),
+			FixedSizeEstimate(6),
+		)
+		if !ok || !reflect.DeepEqual(got, want) {
+			t.Fatalf("EstimateSize(dyn_map) = (%+v, %t), want %+v", got, ok, want)
+		}
+	})
+}

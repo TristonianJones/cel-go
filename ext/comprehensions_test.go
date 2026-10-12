@@ -287,7 +287,7 @@ func TestTwoVarComprehensionsCost(t *testing.T) {
 		{
 			name:          "transformList with filter",
 			expr:          `[3, 2, 1].transformList(i, v, v > i, v) == [3, 2]`,
-			estimatedCost: cost.RangedCostEstimate(44, 80),
+			estimatedCost: cost.RangedCostEstimate(43, 80),
 			actualCost:    67,
 		},
 		{
@@ -318,7 +318,7 @@ func TestTwoVarComprehensionsCost(t *testing.T) {
 		{
 			name:          "transformMap filter map",
 			expr:          `{1: 2, 3: 4, 5: 6}.transformMap(k, v, k % 3 == 0, v + 1) == {3: 5}`,
-			estimatedCost: cost.RangedCostEstimate(104, 116),
+			estimatedCost: cost.RangedCostEstimate(103, 116),
 			actualCost:    106,
 		},
 		{
