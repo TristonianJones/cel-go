@@ -217,8 +217,9 @@ Specifically, version `1` corrects:
   `@items` and `@values` field paths as standard indexing.
 * **Sets, Math, Encoders, and Network (`ext/sets`, `ext/math`, `ext/encoders`, `ext/network`)**:
   * Migrates extension overloads from hand-written estimators and trackers to
-    declarative `OverloadModel`s (using `BeforeVersion(1, ...)` — which inherits
-    any unset `EvalCost` or `ResultSize` from the enclosing model — or
+    declarative `OverloadModel`s (using `Length` for strategy-independent
+    entry/character counts and `BeforeVersion(1, ...)` — which inherits any
+    unset `EvalCost` or `ResultSize` from the enclosing model — or
     `cost.ManualEstimator(...)` to preserve version `0` behavior).
 * **Lists (`ext/lists`)**:
   * `distinct()`, `sort()`, and `sortBy()` align their self-comparison bounds
@@ -348,9 +349,14 @@ sizes values for estimation and for tracking, so a model's `Arg`, `Target`,
 | `list` | elements | $1$ plus the sum of the elements' sizes |
 | `map` | entries | $1$ plus the sum of the keys' and values' sizes |
 | message | $1$ | $1$ plus the sum of the set fields' sizes |
-| optional | the size of its value; $0$ when empty | the size of its value; $0$ when empty |
-| other value with a `Size()`, such as an IP or CIDR | its `Size()` | its `Size()` |
+| optional | the size of its value; $0$ when empty | the size of its value; $1$ when empty |
+| other value with a `Size()`, such as an IP or CIDR | its `Size()` | its `Size()`, at least $1$ |
 | any other value | $1$ | $1$ |
+
+Under the aggregate strategy every value has size at least $1$: an empty
+optional, a nil message, list or map, and a value whose `Size()` is $0$ each
+have size $1$. A container's size is therefore at least $1$ plus its number of
+entries, which bounds how many times a comprehension over it can iterate.
 
 ### 3.4 Atoms
 
@@ -481,8 +487,8 @@ below its size.
 **Absent metadata.** Whether an absent (`nil`) `Elem` or `Key` means
 "unknown" or "none" depends on what the operand is:
 
-* **Scalars** never carry metadata: `Const`, `IntArg`, `IntTarget`, and
-  `ElemTotal` (§3.9). (`Const(k)` represents a numeric scalar $k$; a
+* **Scalars** never carry metadata: `Const`, `IntArg`, `IntTarget`, and the
+  totals and `Length` of §3.9. (`Const(k)` represents a numeric scalar $k$; a
   constant-length list or map is written `List(Const(k), elem)` or
   `Map(Const(k), key, val)`.)
 * **Values** (`Arg`, `Target`, `Result`, `ElemOf`, `KeyOf`) and combinators of
@@ -505,20 +511,43 @@ Combinators propagate metadata as follows:
 * `Sub(A, B)` carries `A`'s metadata, since a difference holds some of `A`'s
   elements and none of `B`'s.
 * `Scale(A, f)` and `AtLeastOneQuantity(A)` carry `A`'s metadata.
-* `ElemTotal` is a scalar and carries none.
+* `ElemTotal`, `KeyTotal`, and `Length` are scalars and carry none.
 
 ### 3.9 Projections
 
-`ElemOf(X)`, `KeyOf(X)`, and `ElemTotal(X)` read the value they apply to, so
-they are defined only where `X` denotes a value: `Arg(i)`, `Target()`,
-`Result()`, or an `ElemOf` or `KeyOf` of those. `Validate` rejects other
-operands at every version.
+`ElemOf(X)` and `KeyOf(X)` read the value they apply to, so they are defined
+only where `X` denotes a value: `Arg(i)`, `Target()`, `Result()`, or an
+`ElemOf` or `KeyOf` of those. `ElemTotal(X)`, `KeyTotal(X)`, and `Length(X)`
+estimate a quantity from the size of a single value, so `X` must be `Arg(i)`,
+`Target()`, or `Result()`. `Validate` rejects other operands at every version.
 
 | Projection | Estimate | Track |
 |---|---|---|
 | `ElemOf(X)` | `X.Elem`, or $[0, \top]$ | size of the largest element |
 | `KeyOf(X)` | `X.Key`, or $[0, \top]$ | size of the largest key |
-| `ElemTotal(X)` | $x \otimes p$ (where $x$ is the size of `X` and $p$ its element size) | sum of the element sizes |
+| `ElemTotal(X)` | by strategy (below) | sum of the element sizes |
+| `KeyTotal(X)` | by strategy (below) | sum of the key sizes |
+| `Length(X)` | by strategy (below) | the shallow top-level length (`size()` / `cost.ActualSize`): code points of a string, bytes of a bytes value, top-level entries of a list or map, the length of an optional's value ($0$ when empty), $0$ for an error, $1$ otherwise |
+
+The totals are estimated from what the strategy's size of a container means.
+With $x = [x_l, x_h]$ the size of `X` and $p$ the element or key size:
+
+| Strategy | `ElemTotal(X)` of a list | `ElemTotal(X)` or `KeyTotal(X)` of a map | Reason |
+|---|---|---|---|
+| `DefaultSizingStrategy` | $x \otimes p$ | $x \otimes p$ | a container's size is its length |
+| `AggregateSizingStrategy` | $[x_l \ominus 1, x_h \ominus 1]$ | $[0, x_h \ominus 1]$ | a container's size is $1$ plus the sizes of its entries |
+| any other strategy | $[0, \top]$ | $[0, \top]$ | no relationship is known |
+
+`Length(X)` always reports the shallow top-level length of `X` (`size()` /
+`cost.ActualSize`), independent of the sizing strategy. Its estimate depends on
+the strategy and on the checked type of `X`, or, for a `Result()` of unknown
+type, on whether the estimate states `Elem` or `Key`:
+
+| Strategy | string of size $[x_l, x_h]$ | bytes | list or map | bool, number, duration, timestamp, null | other |
+|---|---|---|---|---|---|
+| `DefaultSizingStrategy` | $[x_l, x_h]$ | $[x_l, x_h]$ | $[x_l, x_h]$ | $[1, 1]$ | $[x_l, x_h]$ |
+| `AggregateSizingStrategy` | $[\lceil x_l / 4 \rceil, x_h]$, or $[0, x_h]$ when $x_l \le 1$ | $[x_l, x_h]$, or $[0, x_h]$ when $x_l \le 1$ | $[\lceil (x_l - 1) / e_h \rceil, x_h]$, with $e_h$ the largest entry | $[1, 1]$ | $[0, \max(x_h, 1)]$ |
+| any other strategy | $[0, \top]$ | $[0, \top]$ | $[0, \top]$ | $[1, 1]$ | $[0, \top]$ |
 
 ### 3.10 Overloads
 
@@ -585,7 +614,9 @@ The table below catalogs the AST nodes and helper functions provided by
 | | `AtLeastOneQuantity(expr)` | Quantity guaranteed to be $\ge 1$. |
 | **Containers** | `ElemOf(expr)` | Size of the largest element of a composite expression. |
 | | `KeyOf(expr)` | Size of the largest key of a composite expression. |
-| | `ElemTotal(expr)` | Combined size of every element of a composite expression. |
+| | `ElemTotal(expr)` | Combined size of every element (or map value) of a single container. |
+| | `KeyTotal(expr)` | Combined size of every key of a single map. |
+| | `Length(expr)` | Shallow top-level length (`size()` / `ActualSize`) of a single value, independent of the sizing strategy. |
 | | `List(lenExpr, elemExpr)` | Construct list size estimate with element size metadata. |
 | | `Map(sizeExpr, keyExpr, valExpr)` | Construct map size estimate with key and value size metadata. |
 | **Standard Macros** | `StringScan(expr)` | Shorthand for `Scale(expr, 0.1)`. |
@@ -613,7 +644,7 @@ what it holds:
   example, an unhinted list variable in `Union(knownList, unknownList)`), the
   merged metadata is widened to `UnknownSizeEstimate()` so the unstated
   container cannot under-approximate the combined bound. Scalar expressions
-  (`Const`, `IntArg`, `IntTarget`, `ElemTotal`, or
+  (`Const`, `IntArg`, `IntTarget`, `Length`, `ElemTotal`, `KeyTotal`, or
   arguments typed as scalars/strings/bytes) and known-empty containers
   contribute no metadata and do not widen another operand's metadata.
 
@@ -626,29 +657,33 @@ what it holds:
 > the operands' element size attached to a result whose elements are larger
 > understates every downstream estimate.
 
-### Element and Key Projections
+### Element, Key, and Length Projections
 
-`ElemOf`, `KeyOf` and `ElemTotal` — and the `ArgElem`, `ArgKey`, `TargetElem`
-and `TargetKey` shorthands — read the value they are applied to, so they are
-defined only over the expressions which denote a value: `Arg(i)`, `Target()`,
-`Result()`, and projections of those. `ElemOf(Sum(Arg(0), Arg(1)))` has an
-estimate but no runtime counterpart;
+`ElemOf`, `KeyOf`, `ElemTotal`, `KeyTotal`, and `Length` — and the `ArgElem`,
+`ArgKey`, `TargetElem`, and `TargetKey` shorthands — read the value they are
+applied to, so `ElemOf` and `KeyOf` are defined only over expressions which
+denote a value (`Arg(i)`, `Target()`, `Result()`, and nested `ElemOf`/`KeyOf`
+projections of those), while `ElemTotal`, `KeyTotal`, and `Length` are defined
+over single values (`Arg(i)`, `Target()`, or `Result()`). `ElemOf(Sum(Arg(0), Arg(1)))`
+has an estimate but no runtime counterpart;
 [`OverloadModel.Validate`](https://github.com/cel-expr/cel-go/blob/master/common/cost/validate.go)
 reports it, and `cel.CostModel` rejects the model rather than mispricing the
 call. Projections may be nested: `ElemOf(TargetElem())` is the element size of
 the inner lists of a list of lists.
 
 `ElemOf` and `KeyOf` report the *largest* element or key, which is what makes
-them a bound rather than an average. `ElemTotal` reports the exact combined
-size, and is the right choice for a result whose length is the sum of its
-inputs, such as a flattened list.
+them a bound rather than an average. `ElemTotal` and `KeyTotal` report the exact
+combined size of a container's elements/values or map keys, and `Length` reports
+the shallow top-level entry/code-point count regardless of whether the active
+sizing strategy is `DefaultSizingStrategy` or `AggregateSizingStrategy`.
 
 > [!IMPORTANT]
-> A projection scans the container on every call it is charged for. Unlike the
-> other quantity expressions, whose cost does not depend on the values, it is
+> Element and key projections (`ElemOf`, `KeyOf`, `ElemTotal`, `KeyTotal`) scan
+> the container on every call they are charged for. Unlike the other quantity
+> expressions, whose cost does not depend on the values, they are
 > $O(n)$ on the evaluation path — roughly $30$ ns per element, against $3$ ns
-> for a size read (`BenchmarkProjectionTracking`). Prefer `Arg(i)` or
-> `Target()` where the length alone answers the question, and reserve the
+> for a size read (`BenchmarkProjectionTracking`). Prefer `Arg(i)`, `Target()`,
+> or `Length(...)` where the length alone answers the question, and reserve the
 > projections for models whose cost genuinely depends on what the container
 > holds.
 
@@ -884,7 +919,10 @@ sliceList := cost.List(
     cost.TargetElem(),
 )
 cost.MemberOverload("list_slice",
-    cost.EvalCost(cost.Const(1)),
+    cost.EvalCost(cost.Sum(
+        cost.Const(cost.CallCost+cost.ListCreateBaseCost),
+        cost.Length(cost.Result()),
+    )),
     cost.ResultSize(cost.Ranged(
         sliceList,
         cost.Min(sliceList, cost.Target()),
@@ -955,51 +993,58 @@ cost.MemberOverload("string_split_string",
 ### Nested List Flattening
 
 * **CEL Expression**: `matrix.flatten()`
-* **Complexity**: $O(N \times M)$ element traversal; output list length is the
-  combined length of the nested lists, element size is element of nested list.
+* **Complexity**: $O(N \times M)$ element traversal; output list length is at
+  most the combined length of the nested lists, and element size is the element
+  of the nested list.
 * **Cost Model AST**:
 ```go
-cost.MemberOverload("list_flatten",
-    cost.EvalCost(cost.ListAlloc(
-        cost.ElemTotal(cost.Target()),
-        0.1,
-    )),
-    cost.ResultSize(cost.List(
-        cost.ElemTotal(cost.Target()),
+flattenedSize := cost.AtMost(cost.Min(
+    cost.List(
+        cost.Mul(cost.Target(), cost.AtLeastOneQuantity(cost.TargetElem())),
         cost.ElemOf(cost.TargetElem()),
+    ),
+    cost.Sum(cost.Target(), cost.ElemTotal(cost.Target())),
+))
+cost.MemberOverload("list_flatten",
+    cost.EvalCost(cost.Sum(
+        cost.Const(cost.CallCost+cost.ListCreateBaseCost),
+        cost.Length(cost.Result()),
     )),
+    cost.ResultSize(flattenedSize),
 )
 ```
-* **Estimation Behavior**: `ElemTotal` multiplies the outer list length by the
-  inner list length, the same bound as `Mul(Target(), TargetElem())`.
-* **Tracking Behavior**: Charges the exact number of flattened elements plus
-  the base allocation. `Mul(Target(), TargetElem())` would charge the outer
-  length multiplied by the *largest* inner list, which is an overcharge for a
-  ragged input.
+* **Estimation Behavior**: Bounds the flattened result above by the smaller of
+  `List(Mul(Target(), AtLeastOneQuantity(TargetElem())), ElemOf(TargetElem()))`
+  and `Sum(Target(), ElemTotal(Target()))`, with a lower bound of $0$ (`AtMost`)
+  since inner lists may be empty, keeping the estimate sound under both
+  `DefaultSizingStrategy` and `AggregateSizingStrategy`.
+* **Tracking Behavior**: Charges the exact runtime flattened list length
+  (`Length(Result())`) plus the call and list allocation base cost.
 
 ---
 
 ### Map Key / Value Projection
 
 * **CEL Expression**: `userMap.keys()` or `userMap.values()`
-* **Complexity**: $O(n)$ list allocation; result list length equals map size,
-  element size equals key/value size.
+* **Complexity**: $O(n)$ list allocation; result list length equals map entry
+  count (`Length(Target())`), element size equals key/value size.
 * **Cost Model AST**:
 ```go
 // map.keys()
 cost.MemberOverload("map_keys",
-    cost.EvalCost(cost.ListAlloc(cost.Target(), 0.1)),
-    cost.ResultSize(cost.List(cost.Target(), cost.TargetKey())),
+    cost.EvalCost(cost.ListAlloc(cost.Length(cost.Target()), 0.1)),
+    cost.ResultSize(cost.List(cost.Length(cost.Target()), cost.TargetKey())),
 )
 
 // map.values()
 cost.MemberOverload("map_values",
-    cost.EvalCost(cost.ListAlloc(cost.Target(), 0.1)),
-    cost.ResultSize(cost.List(cost.Target(), cost.TargetElem())),
+    cost.EvalCost(cost.ListAlloc(cost.Length(cost.Target()), 0.1)),
+    cost.ResultSize(cost.List(cost.Length(cost.Target()), cost.TargetElem())),
 )
 ```
 * **Estimation Behavior**: Returns a list size estimate whose length matches
-  map size and whose `Elem` matches map `Key` or `Elem`.
+  the map entry count (`Length(Target())`) under both sizing strategies and
+  whose `Elem` matches the map's `Key` or `Elem`.
 * **Tracking Behavior**: Runtime cost reflects map entry traversal and
   allocation.
 
@@ -1008,26 +1053,56 @@ cost.MemberOverload("map_values",
 ### Pair Zipping into Composite Map
 
 * **CEL Expression**: `zipToMap(keys, values)`
-* **Complexity**: $O(\min(len_1, len_2))$ map allocation; composite map size
-  bounded by smaller input.
+* **Complexity**: $O(\min(len_1, len_2))$ map allocation; composite map entry
+  count bounded by smaller input length.
 * **Cost Model AST**:
 ```go
+entryCount := cost.Min(cost.Length(cost.Arg(0)), cost.Length(cost.Arg(1)))
 cost.Overload("zip_to_map_list_list",
     cost.EvalCost(cost.Sum(
         cost.Const(cost.MapCreateBaseCost),
-        cost.Scale(cost.Min(cost.Arg(0), cost.Arg(1)), 1.0),
+        cost.Scale(entryCount, 1.0),
     )),
     cost.ResultSize(cost.Map(
-        cost.Min(cost.Arg(0), cost.Arg(1)),
+        entryCount,
         cost.ArgElem(0),
         cost.ArgElem(1),
     )),
 )
 ```
 * **Estimation Behavior**: Constructs composite map `SizeEstimate` carrying key
-  size from argument $0$ and value size from argument $1$.
+  size from argument $0$ and value size from argument $1$, with entry count
+  bounded by `Min(Length(Arg(0)), Length(Arg(1)))`.
 * **Tracking Behavior**: Uses minimum runtime length of both lists plus map
   creation base cost.
+
+---
+
+### Map Entry Copy / Re-Keying with `KeyTotal` and `Length`
+
+* **CEL Expression**: `userMap.invert()`
+* **Complexity**: $O(n)$ map entry traversal plus scanning of every key and
+  value; result map swaps key and value sizes while preserving entry count.
+* **Cost Model AST**:
+```go
+cost.MemberOverload("map_invert",
+    cost.EvalCost(cost.Sum(
+        cost.Const(cost.MapCreateBaseCost),
+        cost.Length(cost.Target()),
+        cost.Scale(cost.Sum(cost.KeyTotal(cost.Target()), cost.ElemTotal(cost.Target())), 0.1),
+    )),
+    cost.ResultSize(cost.Map(
+        cost.Length(cost.Target()),
+        cost.TargetElem(),
+        cost.TargetKey(),
+    )),
+)
+```
+* **Estimation Behavior**: Uses `Length(Target())` for the top-level entry count
+  under any sizing strategy, bounds total key and value sizes via `KeyTotal` and
+  `ElemTotal`, and swaps `Key` and `Elem` metadata on the result map.
+* **Tracking Behavior**: Sums the exact runtime key and value sizes across the
+  map entries.
 
 ---
 
@@ -1043,7 +1118,7 @@ cost.Overload("zip_to_map_list_list",
 cost.MemberOverload("list_int_sort",
     cost.EvalCost(cost.Sum(
         cost.Const(cost.CallCost+cost.ListCreateBaseCost),
-        cost.Scale(cost.Square(cost.Target()), 2.0),
+        cost.Scale(cost.Square(cost.Length(cost.Target())), 2.0),
     )),
     cost.ResultSize(cost.Target()),
 )
@@ -1052,7 +1127,7 @@ cost.MemberOverload("list_int_sort",
 cost.MemberOverload("list_string_sort",
     cost.EvalCost(cost.Sum(
         cost.Const(cost.CallCost+cost.ListCreateBaseCost),
-        cost.Scale(cost.Square(cost.Target()), 2.0+cost.StringTraversalCostFactor),
+        cost.Scale(cost.Square(cost.Length(cost.Target())), 2.0+cost.StringTraversalCostFactor),
     )),
     cost.ResultSize(cost.Target()),
 )
@@ -1060,7 +1135,7 @@ cost.MemberOverload("list_string_sort",
 * **Estimation Behavior**: Dispatches to the overload matching the checked list
   element type and applies its constant rational factor.
 * **Tracking Behavior**: Charges the same per-overload factor against the
-  runtime list length (`Target()`).
+  runtime list length (`Length(Target())`).
 
 ---
 
@@ -1070,15 +1145,16 @@ cost.MemberOverload("list_string_sort",
 * **Complexity**: $O(N \times M)$ quadratic generation of paired tuples.
 * **Cost Model AST**:
 ```go
+pairCount := cost.Mul(cost.Length(cost.Target()), cost.Length(cost.Arg(0)))
 cost.MemberOverload("list_cross_list",
-    cost.EvalCost(cost.ListAlloc(cost.Mul(cost.Target(), cost.Arg(0)), 0.5)),
+    cost.EvalCost(cost.ListAlloc(pairCount, 0.5)),
     cost.ResultSize(cost.List(
-        cost.Mul(cost.Target(), cost.Arg(0)),
+        pairCount,
         cost.Sum(cost.TargetElem(), cost.ArgElem(0)),
     )),
 )
 ```
-* **Estimation Behavior**: Multiplies sizes
+* **Estimation Behavior**: Multiplies list lengths
   $[Min_1 \times Min_2, Max_1 \times Max_2]$; element size is sum of individual
   element sizes.
 * **Tracking Behavior**: Accurately computes $len(list1) \times len(list2)$.
@@ -1144,7 +1220,7 @@ import (
 
 var MyCustomOverloads = []cost.OverloadModel{
     cost.MemberOverload("string_reverse",
-        cost.EvalCost(cost.StringScan(cost.Target())),
+        cost.EvalCost(cost.StringScan(cost.Length(cost.Target()))),
         cost.ResultSize(cost.Target()),
     ),
 }

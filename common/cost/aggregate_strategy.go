@@ -56,6 +56,13 @@ func (a *aggregateSizingStrategy) TrackSize(ctx TrackContext, value ref.Val) (ui
 	if value == nil {
 		return 0, false
 	}
+	if inner, isOpt := optionalValueOf(value); isOpt {
+		if inner == nil {
+			// An empty optional has size 1, as every value does under this strategy.
+			return 1, true
+		}
+		value = inner
+	}
 	return uint64(a.calc.AggregateSize(value)), true
 }
 
@@ -163,12 +170,13 @@ func estimateAggregateMapSize(ctx EstimateContext, node AstNode) (SizeEstimate, 
 }
 
 // resolveElemBounds returns the [min, max] bounds for a child element/key/value in aggregate size
-// calculation. For variable-width elements with no hint (sz == nil), the lower bound is 1 unit and
-// the upper bound is math.MaxUint64; if the parent container can be non-empty, sz is populated with
-// UnknownSizeEstimate().
+// calculation. Every value has aggregate size at least 1, so each bound is at least 1 and a
+// container's size is at least 1 plus its length. For variable-width elements with no hint
+// (sz == nil), the upper bound is math.MaxUint64; if the parent container can be non-empty, sz is
+// populated with UnknownSizeEstimate().
 func resolveElemBounds(sz *SizeEstimate, nonEmptyContainer bool) (uint64, uint64, *SizeEstimate) {
 	if sz != nil {
-		return sz.Min, sz.Max, sz
+		return max(sz.Min, 1), max(sz.Max, 1), sz
 	}
 	if nonEmptyContainer {
 		u := UnknownSizeEstimate()

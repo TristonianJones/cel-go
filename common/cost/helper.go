@@ -21,6 +21,41 @@ import (
 	"cel.dev/cel-go/common/types"
 )
 
+// ContainerSizing describes what the size of a container measures under a sizing strategy.
+type ContainerSizing int
+
+const (
+	// SizedByLength means a container's size is its length, as under the default sizing strategy.
+	SizedByLength ContainerSizing = iota
+	// SizedByContent means a container's size is 1 plus the sizes of its entries, as under the
+	// aggregate sizing strategy.
+	SizedByContent
+	// SizedOpaque means the relationship between a container's size and its contents is not known,
+	// as under a custom sizing strategy.
+	SizedOpaque
+)
+
+// ContainerSizingOf reports what a container's size measures for the given Estimator.
+//
+// A hand-written FunctionEstimator which builds a result's size from lengths, rather than from
+// the sizes of its operands, uses it to report the size in the units of the sizing strategy. For
+// an Estimator which carries no strategy, sizes are lengths. Prefer describing an overload by an
+// OverloadModel, whose List and Map follow the strategy themselves.
+func ContainerSizingOf(estimator Estimator) ContainerSizing {
+	s, ok := estimator.(sizingStrategyContext)
+	if !ok {
+		return SizedByLength
+	}
+	switch s.sizingStrategy().(type) {
+	case defaultSizingStrategy:
+		return SizedByLength
+	case *aggregateSizingStrategy:
+		return SizedByContent
+	default:
+		return SizedOpaque
+	}
+}
+
 // sizingStrategyContext is implemented by EstimateContext values which expose their sizing
 // strategy. It is unexported because EstimateContext is an interface third parties may implement.
 type sizingStrategyContext interface {
@@ -43,6 +78,30 @@ type resultTypeContext interface {
 	resultType() (*types.Type, bool)
 }
 
+// operandKind returns the kind of the checked type of an Arg, Target or Result operand.
+func operandKind(ctx EstimateContext, e QuantityExpr) (types.Kind, bool) {
+	var t *types.Type
+	var ok bool
+	switch x := e.(type) {
+	case argExpr:
+		t, ok = ctx.ArgType(x.index)
+	case targetExpr:
+		t, ok = ctx.TargetType()
+	case resultExpr:
+		if rc, isRC := ctx.(resultTypeContext); isRC {
+			t, ok = rc.resultType()
+		}
+	}
+	if !ok || t == nil {
+		return types.UnspecifiedKind, false
+	}
+	switch t.Kind() {
+	case types.DynKind, types.AnyKind, types.TypeParamKind, types.UnspecifiedKind, types.ErrorKind:
+		return types.UnspecifiedKind, false
+	}
+	return t.Kind(), true
+}
+
 // hasUnitLength reports whether every value of a kind has length 1: those which are neither
 // strings, bytes nor containers.
 func hasUnitLength(k types.Kind) bool {
@@ -53,6 +112,58 @@ func hasUnitLength(k types.Kind) bool {
 	default:
 		return false
 	}
+}
+
+// totalEstimate bounds the summed size of one part of a container, its elements or its keys, from
+// the container's size estimate sz and the estimated size of one part. whole reports whether the
+// part is the container's entire content, as the elements of a list are, rather than a share of
+// it, as the keys or values of a map are.
+//
+//   - Default strategy: a container's size is its length, so the total is the length multiplied
+//     by the part size.
+//   - Aggregate strategy: a container's size is 1 plus the sizes of its entries, so every part
+//     totals at most the content size, sz-1. The content size is also the lower bound when the
+//     part is the whole content; otherwise the lower bound is 0.
+//   - Other strategies define no relationship between a container's size and its contents, so the
+//     total is unknown.
+//
+// A value which the checker typed as having no elements, such as a string, and a container which
+// may not hold anything, total 0. A container which may hold something, but whose part size is not
+// stated, has an unknown total under the default strategy.
+func totalEstimate(ctx EstimateContext, operand QuantityExpr, sz SizeEstimate, part *SizeEstimate, whole bool) SizeEstimate {
+	if !carriesElements(ctx, operand) || !mayHoldElements(ctx, sz) {
+		return FixedSizeEstimate(0)
+	}
+	switch strategyOf(ctx).(type) {
+	case defaultSizingStrategy:
+		if part == nil {
+			return UnknownSizeEstimate()
+		}
+		total := RangedSizeEstimate(sz.Min, sz.Max).Multiply(*part)
+		return RangedSizeEstimate(total.Min, total.Max)
+	case *aggregateSizingStrategy:
+		hi := SafeSubtract(sz.Max, 1)
+		if sz.Max == math.MaxUint64 {
+			hi = math.MaxUint64
+		}
+		lo := uint64(0)
+		if whole {
+			lo = SafeSubtract(sz.Min, 1)
+		}
+		return RangedSizeEstimate(min(lo, hi), hi)
+	default:
+		return UnknownSizeEstimate()
+	}
+}
+
+// isListOperand reports whether the operand of a total is a list, whose elements are its entire
+// content, rather than a map, whose values are only part of it. The checked type decides when it is
+// known; otherwise the metadata does, since a list states an element size but no key size.
+func isListOperand(ctx EstimateContext, operand QuantityExpr, sz SizeEstimate) bool {
+	if kind, known := operandKind(ctx, operand); known {
+		return kind == types.ListKind
+	}
+	return sz.Elem != nil && sz.Key == nil
 }
 
 // countBounds bounds the element count of a container from its size estimate under a strategy.
@@ -66,7 +177,7 @@ func hasUnitLength(k types.Kind) bool {
 // guarantee, so the count is unknown.
 func countBounds(strategy SizingStrategy, sz SizeEstimate) SizeEstimate {
 	switch strategy.(type) {
-	case nil, defaultSizingStrategy:
+	case defaultSizingStrategy:
 		return RangedSizeEstimate(sz.Min, sz.Max)
 	case *aggregateSizingStrategy:
 		entry := aggregateEntrySize(sz)
@@ -450,7 +561,7 @@ func containerSize(ctx EstimateContext, n, entry SizeEstimate) SizeEstimate {
 // so the size is unknown.
 func containerSizeFor(strategy SizingStrategy, n, entry SizeEstimate) SizeEstimate {
 	switch strategy.(type) {
-	case nil, defaultSizingStrategy:
+	case defaultSizingStrategy:
 		return RangedSizeEstimate(n.Min, n.Max)
 	case *aggregateSizingStrategy:
 		e := AtLeastOneSize(entry)

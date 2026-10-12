@@ -1327,7 +1327,7 @@ func TestMapCalculateSize(t *testing.T) {
 		{
 			name: "nil_proto_map",
 			val:  &protoMap{},
-			want: 0,
+			want: 1,
 		},
 	}
 

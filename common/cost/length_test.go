@@ -1,0 +1,122 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package cost
+
+import (
+	"testing"
+
+	"cel.dev/cel-go/common/types"
+	"cel.dev/cel-go/common/types/ref"
+)
+
+// typedArgNode returns an AstNode with the given checked type and size estimate.
+func typedArgNode(t *types.Type, sz SizeEstimate) AstNode {
+	return NewAstNode(nil, nil, t, &sz)
+}
+
+func TestLengthEstimate(t *testing.T) {
+	tests := []struct {
+		name     string
+		strategy SizingStrategy
+		argType  *types.Type
+		arg      SizeEstimate
+		want     CostEstimate
+	}{
+		{name: "default string", strategy: DefaultSizingStrategy(), argType: types.StringType,
+			arg: RangedSizeEstimate(3, 9), want: RangedCostEstimate(3, 9)},
+		{name: "aggregate string takes 1 to 4 bytes per code point", strategy: AggregateSizingStrategy(),
+			argType: types.StringType, arg: RangedSizeEstimate(9, 20), want: RangedCostEstimate(3, 20)},
+		{name: "aggregate string of size 1 may be empty", strategy: AggregateSizingStrategy(),
+			argType: types.StringType, arg: FixedSizeEstimate(1), want: RangedCostEstimate(0, 1)},
+		{name: "aggregate bytes", strategy: AggregateSizingStrategy(), argType: types.BytesType,
+			arg: RangedSizeEstimate(5, 8), want: RangedCostEstimate(5, 8)},
+		{name: "aggregate list", strategy: AggregateSizingStrategy(), argType: types.NewListType(types.IntType),
+			arg: ListSizeEstimate(FixedSizeEstimate(4), FixedSizeEstimate(1)), want: RangedCostEstimate(3, 4)},
+		{name: "int has length 1", strategy: AggregateSizingStrategy(), argType: types.IntType,
+			arg: FixedSizeEstimate(1), want: FixedCostEstimate(1)},
+		{name: "aggregate dyn", strategy: AggregateSizingStrategy(), argType: types.DynType,
+			arg: RangedSizeEstimate(2, 7), want: RangedCostEstimate(0, 7)},
+		{name: "custom strategy", strategy: opaqueSizingStrategy{}, argType: types.StringType,
+			arg: FixedSizeEstimate(4), want: UnknownCostEstimate()},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			m := Overload("test", EvalCost(Length(Arg(0))))
+			if err := m.Validate(); err != nil {
+				t.Fatalf("Validate() failed: %v", err)
+			}
+			est := m.FunctionEstimatorWithOptions(WithSizingStrategy(tc.strategy))(
+				nil, nil, []AstNode{typedArgNode(tc.argType, tc.arg)})
+			if est.CostEstimate != tc.want {
+				t.Errorf("Length(Arg(0)) estimate = %v, want %v", est.CostEstimate, tc.want)
+			}
+		})
+	}
+}
+
+// TestLengthTrack checks that Length charges the same under every strategy: the length cost.ActualSize
+// reports.
+func TestLengthTrack(t *testing.T) {
+	adapter := types.DefaultTypeAdapter
+	tests := []struct {
+		name string
+		val  ref.Val
+		want uint64
+	}{
+		{name: "string counts code points", val: types.String("héllo"), want: 5},
+		{name: "bytes", val: types.Bytes("héllo"), want: 6},
+		{name: "list", val: types.NewStringList(adapter, []string{"abc", "de"}), want: 2},
+		{name: "map", val: adapter.NativeToValue(map[string]int{"a": 1}), want: 1},
+		{name: "int", val: types.Int(42), want: 1},
+		{name: "error has no length", val: types.NewErr("failed"), want: 0},
+		{name: "optional has the length of its value", val: types.OptionalOf(types.String("abc")), want: 3},
+		{name: "empty optional", val: types.OptionalNone, want: 0},
+	}
+	for _, tc := range tests {
+		for _, strategy := range []SizingStrategy{DefaultSizingStrategy(), AggregateSizingStrategy()} {
+			if got := trackModelCost(t, Length(Arg(0)), strategy, tc.val); got != tc.want {
+				t.Errorf("%s: Length(Arg(0)) track = %d, want %d", tc.name, got, tc.want)
+			}
+		}
+	}
+}
+
+// TestOptionalTrackedSize checks that both strategies size an optional as the value it holds, as
+// it is estimated. An empty optional has size 0 under the default strategy, and 1 under the
+// aggregate strategy, where every value has size at least 1.
+func TestOptionalTrackedSize(t *testing.T) {
+	m := Overload("test", EvalCost(Arg(0)))
+	tests := []struct {
+		name     string
+		strategy SizingStrategy
+		val      ref.Val
+		want     uint64
+	}{
+		{name: "default", strategy: DefaultSizingStrategy(), val: types.OptionalOf(types.String("abcd")), want: 4},
+		{name: "default empty", strategy: DefaultSizingStrategy(), val: types.OptionalNone, want: 0},
+		{name: "aggregate", strategy: AggregateSizingStrategy(), val: types.OptionalOf(types.String("abcd")), want: 4},
+		{name: "aggregate empty", strategy: AggregateSizingStrategy(), val: types.OptionalNone, want: 1},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			tracker := m.FunctionTrackerWithOptions(WithSizingStrategy(tc.strategy))
+			if got := *tracker([]ref.Val{tc.val}, nil); got != tc.want {
+				t.Errorf("Arg(0) track = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}

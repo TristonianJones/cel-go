@@ -276,7 +276,7 @@ func TestProtoObjectCalculateSize(t *testing.T) {
 	}
 
 	nilObj := &protoObj{}
-	if got := nilObj.AggregateSize(NewSizeCalculator()); got != 0 {
-		t.Errorf("got nil protoObj aggregate size %d, want 0", got)
+	if got := nilObj.AggregateSize(NewSizeCalculator()); got != 1 {
+		t.Errorf("got nil protoObj aggregate size %d, want 1", got)
 	}
 }

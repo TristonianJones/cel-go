@@ -74,6 +74,16 @@ func TestOverloadModelValidate(t *testing.T) {
 			err:   "ElemTotal is not defined over Scale",
 		},
 		{
+			name:  "length_over_projection",
+			model: Overload("test_id", EvalCost(Length(ArgElem(0)))),
+			err:   "Length is not defined over ElemOf",
+		},
+		{
+			name:  "total_over_projection",
+			model: Overload("test_id", EvalCost(KeyTotal(ArgElem(0)))),
+			err:   "KeyTotal is not defined over ElemOf: it applies to Arg, Target and Result",
+		},
+		{
 			name:  "projection_without_operand",
 			model: Overload("test_id", EvalCost(ElemOf(nil))),
 			err:   "ElemOf: nil quantity expression",
@@ -92,7 +102,7 @@ func TestOverloadModelValidate(t *testing.T) {
 			name: "valid_manual_estimator_top_level",
 			model: Overload("test_id",
 				EvalCost(Const(1)),
-				ManualEstimator(func(Estimator, *AstNode, []AstNode) *CallEstimate { return nil }),
+				ManualEstimator(noEstimate),
 			),
 		},
 		{
@@ -100,13 +110,13 @@ func TestOverloadModelValidate(t *testing.T) {
 			model: Overload("test_id",
 				EvalCost(Const(1)),
 				ResultSize(Const(2)),
-				BeforeVersion(1, ManualEstimator(func(Estimator, *AstNode, []AstNode) *CallEstimate { return nil })),
+				BeforeVersion(1, ManualEstimator(noEstimate)),
 			),
 		},
 		{
 			name: "manual_estimator_missing_cost_top_level",
 			model: Overload("test_id",
-				ManualEstimator(func(Estimator, *AstNode, []AstNode) *CallEstimate { return nil }),
+				ManualEstimator(noEstimate),
 			),
 			err: `overload "test_id" requires an EvalCost expression or ManualCost`,
 		},
@@ -123,18 +133,15 @@ func TestOverloadModelValidate(t *testing.T) {
 			model: Overload("test_id",
 				EvalCost(Const(1)),
 				ResultSize(Const(2)),
-				ManualEstimator(func(Estimator, *AstNode, []AstNode) *CallEstimate { return nil }),
+				ManualEstimator(noEstimate),
 			),
 			err: `overload "test_id" cannot combine ManualEstimator with ResultSize`,
 		},
 		{
 			name: "manual_estimator_with_manual_cost",
 			model: Overload("test_id",
-				ManualCost(
-					func(Estimator, *AstNode, []AstNode) *CallEstimate { return nil },
-					func([]ref.Val, ref.Val) *uint64 { return nil },
-				),
-				ManualEstimator(func(Estimator, *AstNode, []AstNode) *CallEstimate { return nil }),
+				manualCost,
+				ManualEstimator(noEstimate),
 			),
 			err: `overload "test_id" cannot combine ManualCost with ManualEstimator`,
 		},
@@ -149,13 +156,68 @@ func TestOverloadModelValidate(t *testing.T) {
 		{
 			name: "before_version_result_size_only_without_parent_eval_cost",
 			model: Overload("test_id",
-				ManualCost(
-					func(Estimator, *AstNode, []AstNode) *CallEstimate { return nil },
-					func([]ref.Val, ref.Val) *uint64 { return nil },
-				),
+				 manualCost,
 				BeforeVersion(1, ResultSize(Const(1))),
 			),
 			err: `overload "test_id" before version 1: overload "test_id" requires an EvalCost expression or ManualCost`,
+		},
+		{
+			name:  "negative_arg_index",
+			model: Overload("test_id", EvalCost(StringScan(Arg(-1)))),
+			err:   "Arg index must be non-negative, got -1",
+		},
+		{
+			name:  "negative_arg_index_in_projection",
+			model: Overload("test_id", EvalCost(Const(1)), ResultSize(ArgElem(-2))),
+			err:   "Arg index must be non-negative, got -2",
+		},
+		{
+			name:  "negative_int_arg_index",
+			model: Overload("test_id", EvalCost(IntArg(-1, 0))),
+			err:   "IntArg index must be non-negative, got -1",
+		},
+		{
+			name:  "valid_before_version",
+			model: Overload("test_id", EvalCost(Const(1)), BeforeVersion(1, EvalCost(Const(1)), ResultSize(Arg(0))), BeforeVersion(2, EvalCost(Const(2))), BeforeVersion(3, manualCost)),
+		},
+		{
+			name:  "valid_manual_cost",
+			model: Overload("test_id", manualCost),
+		},
+		{
+			name:  "manual_cost_without_tracker",
+			model: Overload("test_id", ManualCost(noEstimate, nil)),
+			err:   `overload "test_id" ManualCost requires both a FunctionEstimator and a FunctionTracker`,
+		},
+		{
+			name:  "manual_cost_with_eval_cost",
+			model: Overload("test_id", manualCost, EvalCost(Const(1))),
+			err:   `overload "test_id" cannot combine ManualCost with EvalCost or ResultSize`,
+		},
+		{
+			name:  "before_version_missing_cost",
+			model: Overload("test_id", EvalCost(Const(1)), BeforeVersion(1)),
+			err:   `overload "test_id" before version 1: overload "test_id" requires an EvalCost expression or ManualCost`,
+		},
+		{
+			name:  "before_version_zero",
+			model: Overload("test_id", EvalCost(Const(1)), BeforeVersion(0, EvalCost(Const(1)))),
+			err:   "BeforeVersion requires a version >= 1, got 0",
+		},
+		{
+			name:  "duplicate_before_version",
+			model: Overload("test_id", EvalCost(Const(1)), BeforeVersion(1, EvalCost(Const(2))), BeforeVersion(1, EvalCost(Const(3)))),
+			err:   "duplicate BeforeVersion(1)",
+		},
+		{
+			name:  "before_version_global_referencing_target",
+			model: Overload("test_id", EvalCost(Const(1)), BeforeVersion(1, EvalCost(Target()))),
+			err:   `overload "test_id" before version 1: overload "test_id" is global but its model references the receiver; use MemberOverload`,
+		},
+		{
+			name:  "invalid_model_before_version",
+			model: Overload("test_id", EvalCost(Const(1)), BeforeVersion(1, EvalCost(unanswerable))),
+			err:   `overload "test_id" before version 1: overload "test_id" eval cost: ElemOf is not defined over Const`,
 		},
 	}
 	for _, tc := range tests {
@@ -214,6 +276,8 @@ func TestDescribeQuantityExprLabels(t *testing.T) {
 		{expr: ElemOf(Arg(0)), want: "ElemOf"},
 		{expr: KeyOf(Arg(0)), want: "KeyOf"},
 		{expr: ElemTotal(Arg(0)), want: "ElemTotal"},
+		{expr: KeyTotal(Arg(0)), want: "KeyTotal"},
+		{expr: Length(Arg(0)), want: "Length"},
 		{expr: Sum(Arg(0)), want: "Sum"},
 		{expr: Sub(Arg(0), Arg(1)), want: "Sub"},
 		{expr: Mul(Arg(0)), want: "Mul"},
@@ -247,6 +311,7 @@ func TestValidateTraversesOperands(t *testing.T) {
 		{name: "elem_of", expr: ElemOf(ElemOf(unanswerable))},
 		{name: "key_of", expr: KeyOf(ElemOf(unanswerable))},
 		{name: "elem_total", expr: ElemTotal(ElemOf(unanswerable))},
+		{name: "key_total", expr: KeyTotal(ElemOf(unanswerable))},
 		{name: "sum_first", expr: Sum(unanswerable, Arg(0))},
 		{name: "sum_last", expr: Sum(Arg(0), unanswerable)},
 		{name: "sub_lhs", expr: Sub(unanswerable, Arg(0))},
@@ -283,3 +348,9 @@ func TestValidateTraversesOperands(t *testing.T) {
 		})
 	}
 }
+
+var manualCost = ManualCost(noEstimate, noTrack)
+
+func noEstimate(Estimator, *AstNode, []AstNode) *CallEstimate { return nil }
+
+func noTrack([]ref.Val, ref.Val) *uint64 { return nil }

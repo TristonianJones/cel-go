@@ -496,7 +496,6 @@ func TestProjectionExprs_Track(t *testing.T) {
 		// The elements of the inner lists, not of the outer one.
 		{name: "elem_of_nested_list", expr: ElemOf(ArgElem(2)), expected: 4},
 		// Rejected by Validate, since no single size estimate bounds it; this pins the charge only.
-		{name: "elem_total_of_nested_list", expr: ElemTotal(ArgElem(2)), expected: 7},
 		// A list has no keys, and a string has no elements.
 		{name: "key_of_list", expr: ArgKey(0), expected: 0},
 		{name: "elem_of_absent_arg", expr: ArgElem(9), expected: 0},

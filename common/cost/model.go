@@ -348,36 +348,170 @@ type elemTotalExpr struct {
 
 func (e elemTotalExpr) estimate(ctx EstimateContext) SizeEstimate {
 	sz := e.expr.estimate(ctx)
-	if !carriesElements(ctx, e.expr) || !mayHoldElements(ctx, sz) {
-		return FixedSizeEstimate(0)
+	return totalEstimate(ctx, e.expr, sz, sz.Elem, isListOperand(ctx, e.expr, sz))
+}
+
+// singleValueOf resolves the value an ElemTotal, KeyTotal or Length operand denotes. Validate
+// restricts those operands to Arg, Target and Result.
+func singleValueOf(expr QuantityExpr, ctx TrackContext) (ref.Val, bool) {
+	switch x := expr.(type) {
+	case argExpr:
+		return ctx.ArgVal(x.index)
+	case targetExpr:
+		return ctx.TargetVal()
+	case resultExpr:
+		return ctx.ResultVal()
 	}
-	if sz.Elem == nil {
-		return UnknownSizeEstimate()
+	return nil, false
+}
+
+// sumSizes totals the sizes of the parts which each enumerates in the operand's value.
+func sumSizes(ctx TrackContext, operand QuantityExpr, each func(ref.Val, func(ref.Val))) uint64 {
+	total := uint64(0)
+	if val, ok := singleValueOf(operand, ctx); ok {
+		each(val, func(part ref.Val) {
+			total = SafeAdd(total, ctx.Size(part))
+		})
 	}
-	total := sz.Multiply(*sz.Elem)
-	// The total is a scalar quantity, not a container, so the operands' element and key sizes are
-	// deliberately dropped rather than inherited.
-	return RangedSizeEstimate(total.Min, total.Max)
+	return total
 }
 
 func (e elemTotalExpr) track(ctx TrackContext) uint64 {
-	total := uint64(0)
-	eachValueOf(e.expr, ctx, func(val ref.Val) {
-		eachElement(val, func(elem ref.Val) {
-			total = SafeAdd(total, ctx.Size(elem))
-		})
-	})
-	return total
+	return sumSizes(ctx, e.expr, eachElement)
 }
 
 func (e elemTotalExpr) hasTarget() bool {
 	return hasTarget(e.expr)
 }
 
-// ElemTotal creates an expression referencing the combined size of every element of another
-// expression: the length of a flattened list, or the number of bytes held by a list of strings.
+// ElemTotal creates an expression referencing the combined size of every element of a list, or
+// every value of a map, under the sizing strategy in effect: the length of a flattened list under
+// the default strategy, or the content size of a list under the aggregate strategy. See KeyTotal
+// for the keys of a map.
+//
+// The operand must be Arg, Target or Result; see OverloadModel.Validate. The estimate is derived
+// from the operand's size under the sizing strategy; see totalEstimate. At runtime this reports
+// the exact total.
 func ElemTotal(expr QuantityExpr) QuantityExpr {
 	return elemTotalExpr{expr: expr}
+}
+
+// keyTotalExpr represents the summed size of the keys of another quantity expression.
+type keyTotalExpr struct {
+	expr QuantityExpr
+}
+
+func (k keyTotalExpr) estimate(ctx EstimateContext) SizeEstimate {
+	sz := k.expr.estimate(ctx)
+	return totalEstimate(ctx, k.expr, sz, sz.Key, false)
+}
+
+func (k keyTotalExpr) track(ctx TrackContext) uint64 {
+	return sumSizes(ctx, k.expr, eachKey)
+}
+
+func (k keyTotalExpr) hasTarget() bool {
+	return hasTarget(k.expr)
+}
+
+// KeyTotal creates an expression referencing the combined size of every key of a map. A value
+// which is not a map has no keys.
+//
+// The operand must be Arg, Target or Result; see OverloadModel.Validate. The estimate is derived
+// from the operand's size under the sizing strategy; see totalEstimate. At runtime this reports
+// the exact total.
+func KeyTotal(expr QuantityExpr) QuantityExpr {
+	return keyTotalExpr{expr: expr}
+}
+
+// lengthExpr represents the shallow top-level length of a single value (its CEL size()): the
+// number of code points of a string, the number of bytes of a bytes value, the number of top-level
+// elements of a list or entries of a map, and 1 for any other value.
+type lengthExpr struct {
+	expr QuantityExpr
+}
+
+// Length creates an expression referencing the shallow top-level length of a single value (its CEL
+// size() / ActualSize), independent of the sizing strategy: the number of code points of a string,
+// bytes of a bytes value, top-level elements of a list or entries of a map, and 1 for any other
+// value. Unlike Arg(i), Target(), or Result(), which report the depth-based total content size
+// under AggregateSizingStrategy, Length always reports only the top-level container or value
+// length.
+//
+// The operand must be Arg, Target or Result; see OverloadModel.Validate. Length is a scalar and
+// carries no element or key size.
+//
+// Sizes follow the sizing strategy, so under the aggregate strategy Target() of a string is its
+// UTF-8 byte count and Target() of a list is its depth-based aggregate content size. Length lets a
+// model charge by top-level length under every strategy while still describing its result's size
+// through List and Map.
+func Length(expr QuantityExpr) QuantityExpr {
+	return lengthExpr{expr: expr}
+}
+
+// estimate bounds the length from the operand's size under the sizing strategy:
+//
+//   - Default strategy: the size is the length.
+//   - Aggregate strategy: a string's size is its UTF-8 byte count, at least 1, and each code point
+//     takes 1 to 4 bytes; a bytes value's size is its length, at least 1; a container's size is 1
+//     plus its entries (see countBounds); any other value has length 1.
+//   - Other strategies: unknown, except for the values whose length is always 1.
+//
+// The kind of value comes from the operand's checked type, or, for a result whose type is not
+// known, from its metadata: an estimate which states element or key sizes is a container.
+func (l lengthExpr) estimate(ctx EstimateContext) SizeEstimate {
+	sz := l.expr.estimate(ctx)
+	kind, known := operandKind(ctx, l.expr)
+	if known && hasUnitLength(kind) {
+		return FixedSizeEstimate(1)
+	}
+	switch strategyOf(ctx).(type) {
+	case defaultSizingStrategy:
+		return RangedSizeEstimate(sz.Min, sz.Max)
+	case *aggregateSizingStrategy:
+		switch {
+		case known && kind == types.StringKind:
+			lo := uint64(0)
+			if sz.Min > 1 {
+				lo = sz.Min/4 + min(sz.Min%4, 1)
+			}
+			return RangedSizeEstimate(lo, sz.Max)
+		case known && kind == types.BytesKind:
+			lo := uint64(0)
+			if sz.Min > 1 {
+				lo = sz.Min
+			}
+			return RangedSizeEstimate(lo, sz.Max)
+		case (known && (kind == types.ListKind || kind == types.MapKind)) || sz.Elem != nil || sz.Key != nil:
+			return countBounds(strategyOf(ctx), sz)
+		default:
+			// Any value: an empty string has length 0, and no length exceeds the size, which is at
+			// least 1.
+			return RangedSizeEstimate(0, max(sz.Max, 1))
+		}
+	default:
+		return UnknownSizeEstimate()
+	}
+}
+
+func (l lengthExpr) track(ctx TrackContext) uint64 {
+	val, ok := singleValueOf(l.expr, ctx)
+	// A call which fails produces an error rather than a result, which has no length.
+	if !ok || types.IsUnknownOrError(val) {
+		return 0
+	}
+	// An optional has the length of the value it holds, as it is estimated.
+	if inner, isOpt := optionalValueOf(val); isOpt {
+		if inner == nil {
+			return 0
+		}
+		val = inner
+	}
+	return ActualSize(val)
+}
+
+func (l lengthExpr) hasTarget() bool {
+	return hasTarget(l.expr)
 }
 
 // TargetKey creates an expression referencing the key size of the receiver / target object.
@@ -1303,11 +1437,18 @@ func (t *trackerEvalContext) Size(value ref.Val) uint64 {
 	if value == nil {
 		return 0
 	}
-	// defaultSizingStrategy.TrackSize is ActualSize, so the interface call is skipped for it.
-	if t.strategy != defaultSizing {
-		if sz, ok := t.strategy.TrackSize(t, value); ok {
-			return sz
+	// Inlines defaultSizingStrategy.TrackSize, avoiding an interface call and boxing the context.
+	if t.strategy == defaultSizing {
+		if inner, isOpt := optionalValueOf(value); isOpt {
+			if inner == nil {
+				return 0
+			}
+			value = inner
 		}
+		return ActualSize(value)
+	}
+	if sz, ok := t.strategy.TrackSize(t, value); ok {
+		return sz
 	}
 	return ActualSize(value)
 }

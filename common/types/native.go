@@ -520,7 +520,7 @@ func (o *nativeObj) AggregateSize(sizer AggregateSizer) uint32 {
 	}
 	refVal := reflect.Indirect(o.refValue)
 	if !refVal.IsValid() {
-		return 0
+		return 1
 	}
 	total := uint32(1)
 	for _, fieldType := range o.valType.fieldsByName {

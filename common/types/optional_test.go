@@ -189,8 +189,8 @@ func TestOptionalValue(t *testing.T) {
 func TestOptionalCalculateSize(t *testing.T) {
 	calc := NewSizeCalculator()
 	none := OptionalNone
-	if sizer, ok := any(none).(AggregateSizeVisitor); !ok || sizer.AggregateSize(calc) != 0 {
-		t.Errorf("expected 0 for OptionalNone")
+	if sizer, ok := any(none).(AggregateSizeVisitor); !ok || sizer.AggregateSize(calc) != 1 {
+		t.Errorf("expected 1 for OptionalNone")
 	}
 
 	someScalar := OptionalOf(Int(42))

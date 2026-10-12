@@ -315,7 +315,7 @@ func TestRegexCosts(t *testing.T) {
 			expr:            "regex.extract('hello world', 'goodbye (.*)') == optional.none()",
 			estimatedCost:   cost.RangedCostEstimate(7, 23),
 			estimatedCostV0: costV0(9, 22),
-			actualCost:      8,
+			actualCost:      7,
 		},
 		{
 			expr:            "regex.extractAll('id:123, id:456', 'assa') == []",

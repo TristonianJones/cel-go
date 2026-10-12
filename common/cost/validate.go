@@ -173,6 +173,16 @@ func validateQuantityExpr(expr QuantityExpr) error {
 				label, operandLabel)
 		}
 	}
+	if _, single := expr.(singleValueProjection); single {
+		switch operands[0].(type) {
+		case argExpr, targetExpr, resultExpr:
+		default:
+			operandLabel, _ := describeQuantityExpr(operands[0])
+			return fmt.Errorf(
+				"%s is not defined over %s: it applies to Arg, Target and Result, whose size bounds it",
+				label, operandLabel)
+		}
+	}
 	for _, operand := range operands {
 		if err := validateQuantityExpr(operand); err != nil {
 			return fmt.Errorf("%s: %w", label, err)
@@ -191,6 +201,20 @@ type projection interface {
 func (elemExpr) projects()      {}
 func (keyExpr) projects()       {}
 func (elemTotalExpr) projects() {}
+func (keyTotalExpr) projects()  {}
+func (lengthExpr) projects()    {}
+
+// singleValueProjection marks the projections whose estimate is derived from the size of a single
+// value, so the operand must denote exactly one value: a total or length of ElemOf(X) would range
+// over every element of X, which no single size estimate bounds.
+type singleValueProjection interface {
+	projection
+	singleValue()
+}
+
+func (elemTotalExpr) singleValue() {}
+func (keyTotalExpr) singleValue()  {}
+func (lengthExpr) singleValue()    {}
 
 // describeQuantityExpr reports the constructor name of a quantity expression and its operands.
 //
@@ -217,6 +241,10 @@ func describeQuantityExpr(expr QuantityExpr) (string, []QuantityExpr) {
 		return "KeyOf", []QuantityExpr{e.expr}
 	case elemTotalExpr:
 		return "ElemTotal", []QuantityExpr{e.expr}
+	case keyTotalExpr:
+		return "KeyTotal", []QuantityExpr{e.expr}
+	case lengthExpr:
+		return "Length", []QuantityExpr{e.expr}
 	case addExpr:
 		return "Sum", e.terms
 	case subExpr:

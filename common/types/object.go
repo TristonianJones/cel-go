@@ -172,7 +172,7 @@ func (o *protoObj) Value() any {
 // AggregateSize implements the AggregateSizeVisitor interface method.
 func (o *protoObj) AggregateSize(sizer AggregateSizer) uint32 {
 	if o.value == nil {
-		return 0
+		return 1
 	}
 	if sz := atomic.LoadUint32(&o.aggSize); sz != 0 {
 		return sz

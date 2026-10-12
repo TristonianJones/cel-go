@@ -1359,7 +1359,7 @@ func (m *protoMap) Size() ref.Val {
 // AggregateSize implements the AggregateSizeVisitor interface method.
 func (m *protoMap) AggregateSize(sizer AggregateSizer) uint32 {
 	if m.value == nil {
-		return 0
+		return 1
 	}
 	if sz := atomic.LoadUint32(&m.aggSize); sz != 0 {
 		return sz

@@ -226,7 +226,7 @@ func (c *sizeContext) aggregateSize(val any) uint32 {
 		}
 		return total
 	case traits.Sizer:
-		return safeUint32FromBoxedInt(v.Size().(Int))
+		return max(1, safeUint32FromBoxedInt(v.Size().(Int)))
 	case Bool, Int, Uint, Double, Duration, Timestamp, Null, *Type, *Err, *Unknown:
 		return 1
 	case ref.Val:
@@ -243,7 +243,7 @@ func (c *sizeContext) aggregateSize(val any) uint32 {
 		return getProtoMapAggregateSize(c, v)
 	case proto.Message:
 		if v == nil {
-			return 0
+			return 1
 		}
 		return getProtoMessageAggregateSize(c, v.ProtoReflect())
 	case string:
@@ -273,7 +273,7 @@ func (c *sizeContext) estimateAggregateSize(val any) ApproximateAggregateSize {
 
 func getProtoValueAggregateSize(c *sizeContext, v protoreflect.Value) uint32 {
 	if !v.IsValid() {
-		return 0
+		return 1
 	}
 	switch val := v.Interface().(type) {
 	case protoreflect.Message:
@@ -322,7 +322,7 @@ func getProtoFieldAggregateSize(c *sizeContext, fd protoreflect.FieldDescriptor,
 
 func getProtoMessageAggregateSize(c *sizeContext, m protoreflect.Message) uint32 {
 	if !m.IsValid() {
-		return 0
+		return 1
 	}
 	if !c.visitNode() {
 		return math.MaxUint32
@@ -337,7 +337,7 @@ func getProtoMessageAggregateSize(c *sizeContext, m protoreflect.Message) uint32
 
 func getProtoListAggregateSize(c *sizeContext, l protoreflect.List) uint32 {
 	if !l.IsValid() {
-		return 0
+		return 1
 	}
 	if !c.visitNode() {
 		return math.MaxUint32
@@ -351,7 +351,7 @@ func getProtoListAggregateSize(c *sizeContext, l protoreflect.List) uint32 {
 
 func getProtoMapAggregateSize(c *sizeContext, m protoreflect.Map) uint32 {
 	if !m.IsValid() {
-		return 0
+		return 1
 	}
 	if !c.visitNode() {
 		return math.MaxUint32
@@ -417,7 +417,7 @@ func getSliceElementsAggregateSize(sizer AggregateSizer, val any) (uint32, bool)
 		return total, true
 	case *structpb.ListValue:
 		if v == nil {
-			return 0, true
+			return 1, true
 		}
 		total := uint32(1)
 		for _, elem := range v.GetValues() {
@@ -461,7 +461,7 @@ func getMapElementsAggregateSize(sizer AggregateSizer, val any) (uint32, bool) {
 		return total, true
 	case *structpb.Struct:
 		if v == nil {
-			return 0, true
+			return 1, true
 		}
 		total := uint32(1)
 		for k, val := range v.GetFields() {
@@ -476,7 +476,7 @@ func getMapElementsAggregateSize(sizer AggregateSizer, val any) (uint32, bool) {
 
 func getReflectValueAggregateSize(c *sizeContext, fieldVal reflect.Value) uint32 {
 	if !fieldVal.IsValid() {
-		return 0
+		return 1
 	}
 	if !c.visitNode() {
 		return math.MaxUint32
@@ -532,7 +532,7 @@ func getReflectValueAggregateSize(c *sizeContext, fieldVal reflect.Value) uint32
 		return total
 	case reflect.Pointer, reflect.Interface:
 		if fieldVal.IsNil() {
-			return 0
+			return 1
 		}
 		if sz, ok := checkCustomSizer(c, fieldVal); ok {
 			return sz
@@ -582,16 +582,16 @@ func checkCustomSizer(c *sizeContext, fieldVal reflect.Value) (uint32, bool) {
 	}
 	if t.Implements(sizerType) {
 		if sizer, ok := fieldVal.Interface().(traits.Sizer); ok {
-			return safeUint32FromBoxedInt(sizer.Size().(Int)), true
+			return max(1, safeUint32FromBoxedInt(sizer.Size().(Int))), true
 		}
 	}
 	if t.Implements(protoMessageType) {
 		if fieldVal.Kind() == reflect.Pointer && fieldVal.IsNil() {
-			return 0, true
+			return 1, true
 		}
 		if sizer, ok := fieldVal.Interface().(proto.Message); ok {
 			if sizer == nil {
-				return 0, true
+				return 1, true
 			}
 			return getProtoMessageAggregateSize(c, sizer.ProtoReflect()), true
 		}

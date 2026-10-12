@@ -149,7 +149,7 @@ func TestCalculateSize(t *testing.T) {
 		{
 			name: "nil_proto_message",
 			val:  (*proto3pb.TestAllTypes)(nil),
-			want: 0,
+			want: 1,
 		},
 		{
 			name: "reflect_value",
@@ -300,8 +300,8 @@ func (c customVisitorVal) AggregateSize(sizer AggregateSizer) uint32 {
 
 func TestNativeObjCalculateSizeNil(t *testing.T) {
 	nilNative := &nativeObj{}
-	if got := nilNative.AggregateSize(NewSizeCalculator()); got != 0 {
-		t.Errorf("nil nativeObj.AggregateSize() got %d, want 0", got)
+	if got := nilNative.AggregateSize(NewSizeCalculator()); got != 1 {
+		t.Errorf("nil nativeObj.AggregateSize() got %d, want 1", got)
 	}
 }
 

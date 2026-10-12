@@ -178,7 +178,30 @@ func (defaultSizingStrategy) TrackSize(ctx TrackContext, value ref.Val) (uint64,
 	if value == nil {
 		return 0, false
 	}
+	if inner, isOpt := optionalValueOf(value); isOpt {
+		if inner == nil {
+			return 0, true
+		}
+		value = inner
+	}
 	return ActualSize(value), true
+}
+
+// optionalValueOf reports whether value is an optional, and if so returns the value it holds, or
+// nil when the optional is empty.
+//
+// An optional is estimated as the size of the value it holds, so that value() and orValue() keep
+// that size. Tracking sizes it the same way, so that a cost which reads an optional, such as a
+// comparison of two optionals, is charged in the units it was estimated in.
+func optionalValueOf(value ref.Val) (ref.Val, bool) {
+	opt, isOpt := value.(*types.Optional)
+	if !isOpt {
+		return nil, false
+	}
+	if !opt.HasValue() {
+		return nil, true
+	}
+	return opt.GetValue(), true
 }
 
 // listElemType extracts the element type of a list, defaulting to DynType if not parameterized.
