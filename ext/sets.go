@@ -115,24 +115,17 @@ func (setsLib) CompileOptions() []cel.EnvOption {
 		cel.Function("sets.intersects",
 			cel.Overload("list_sets_intersects_list", []*cel.Type{listType, listType}, cel.BoolType,
 				cel.BinaryBinding(setsIntersects))),
-		cel.CostEstimatorOptions(
-			cost.OverloadCostEstimate("list_sets_contains_list", estimateSetsCost(1)),
-			cost.OverloadCostEstimate("list_sets_intersects_list", estimateSetsCost(1)),
-			// equivalence requires potentially two m*n comparisons to ensure each list is contained by the other
-			cost.OverloadCostEstimate("list_sets_equivalent_list", estimateSetsCost(2)),
+		cel.CostModel(
+			setsCostModel("list_sets_contains_list", 1),
+			setsCostModel("list_sets_equivalent_list", 2),
+			setsCostModel("list_sets_intersects_list", 1),
 		),
 	}
 }
 
 // ProgramOptions implements the Library interface method.
 func (setsLib) ProgramOptions() []cel.ProgramOption {
-	return []cel.ProgramOption{
-		cel.CostTrackerOptions(
-			cost.OverloadTracker("list_sets_contains_list", trackSetsCost(1)),
-			cost.OverloadTracker("list_sets_intersects_list", trackSetsCost(1)),
-			cost.OverloadTracker("list_sets_equivalent_list", trackSetsCost(2)),
-		),
-	}
+	return []cel.ProgramOption{}
 }
 
 // NewSetMembershipOptimizer rewrites set membership tests using the `in` operator against a list
@@ -229,6 +222,13 @@ func setsEquivalent(listA, listB ref.Val) ref.Val {
 		return aContainsB
 	}
 	return setsContains(listB, listA)
+}
+
+func setsCostModel(id string, costFactor float64) cost.OverloadModel {
+	return cost.Overload(id,
+		cost.EvalCost(cost.Sum(cost.Const(cost.CallCost),
+			cost.Scale(cost.Mul(cost.Length(cost.Arg(0)), cost.Length(cost.Arg(1))), costFactor))),
+		cost.BeforeVersion(1, cost.ManualCost(estimateSetsCost(costFactor), trackSetsCost(costFactor))))
 }
 
 func estimateSetsCost(costFactor float64) cost.FunctionEstimator {
