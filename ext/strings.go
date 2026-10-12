@@ -590,57 +590,33 @@ func (lib *stringLib) CompileOptions() []cel.EnvOption {
 	}
 
 	if lib.version >= 5 {
-		// Cost estimators for string extension functions.
-		estimators := []cost.CostOption{
-			// Format is captured in the core cost estimator logic and needs to be extracted out.
-			cost.OverloadCostEstimate("string_char_at_int", estimateStringCharAtCost),
-			cost.OverloadCostEstimate("string_index_of_string", estimateStringSearchCost),
-			cost.OverloadCostEstimate("string_index_of_string_int", estimateStringSearchCost),
-			cost.OverloadCostEstimate("string_last_index_of_string", estimateStringSearchCost),
-			cost.OverloadCostEstimate("string_last_index_of_string_int", estimateStringSearchCost),
-			cost.OverloadCostEstimate("string_lower_ascii", estimateStringFixedTransformCost),
-			cost.OverloadCostEstimate("string_upper_ascii", estimateStringFixedTransformCost),
-			cost.OverloadCostEstimate("string_replace_string_string", estimateStringReplaceCost),
-			cost.OverloadCostEstimate("string_replace_string_string_int", estimateStringReplaceCost),
-			cost.OverloadCostEstimate("string_split_string", estimateStringSplitCost),
-			cost.OverloadCostEstimate("string_split_string_int", estimateStringSplitCost),
-			cost.OverloadCostEstimate("string_substring_int", estimateSubstringCost),
-			cost.OverloadCostEstimate("string_substring_int_int", estimateSubstringCost),
-			cost.OverloadCostEstimate("string_trim", estimateStringVariableTransformCost),
-			cost.OverloadCostEstimate("string_reverse", estimateStringFixedTransformCost),
-			cost.OverloadCostEstimate("list_join", estimateStringJoinCost),
-			cost.OverloadCostEstimate("list_join_string", estimateStringJoinCost),
-		}
-		opts = append(opts, cel.CostEstimatorOptions(estimators...))
+		opts = append(opts,
+			cel.CostModel(
+				stringCharAtCostModel("string_char_at_int"),
+				stringSearchCostModel("string_index_of_string"),
+				stringSearchCostModel("string_index_of_string_int"),
+				stringSearchCostModel("string_last_index_of_string"),
+				stringSearchCostModel("string_last_index_of_string_int"),
+				stringFixedTransformCostModel("string_lower_ascii"),
+				stringFixedTransformCostModel("string_upper_ascii"),
+				stringFixedTransformCostModel("string_reverse"),
+				stringTrimCostModel("string_trim"),
+				stringSubstringCostModel("string_substring_int"),
+				stringSubstringRangeCostModel("string_substring_int_int"),
+				listJoinCostModel("list_join"),
+				listJoinStringCostModel("list_join_string"),
+				stringReplaceCostModel("string_replace_string_string"),
+				stringReplaceCostModel("string_replace_string_string_int"),
+				stringSplitCostModel("string_split_string"),
+				stringSplitCostModel("string_split_string_int"),
+			),
+		)
 	}
 	return opts
 }
 
 // ProgramOptions implements the Library interface method.
 func (lib *stringLib) ProgramOptions() []cel.ProgramOption {
-	if lib.version >= 5 {
-		return []cel.ProgramOption{
-			cel.CostTrackerOptions(
-				cost.OverloadTracker("string_char_at_int", trackStringCharAtCost),
-				cost.OverloadTracker("string_index_of_string", trackStringSearchCost),
-				cost.OverloadTracker("string_index_of_string_int", trackStringSearchCost),
-				cost.OverloadTracker("string_last_index_of_string", trackStringSearchCost),
-				cost.OverloadTracker("string_last_index_of_string_int", trackStringSearchCost),
-				cost.OverloadTracker("string_lower_ascii", trackStringTransformCost),
-				cost.OverloadTracker("string_upper_ascii", trackStringTransformCost),
-				cost.OverloadTracker("string_replace_string_string", trackStringReplaceCost),
-				cost.OverloadTracker("string_replace_string_string_int", trackStringReplaceCost),
-				cost.OverloadTracker("string_split_string", trackStringSplitCost),
-				cost.OverloadTracker("string_split_string_int", trackStringSplitCost),
-				cost.OverloadTracker("string_substring_int", trackStringTransformCost),
-				cost.OverloadTracker("string_substring_int_int", trackStringTransformCost),
-				cost.OverloadTracker("string_trim", trackStringTransformCost),
-				cost.OverloadTracker("string_reverse", trackStringTransformCost),
-				cost.OverloadTracker("list_join", trackStringJoinCost),
-				cost.OverloadTracker("list_join_string", trackStringJoinCost),
-			),
-		}
-	}
 	return []cel.ProgramOption{}
 }
 
@@ -896,37 +872,6 @@ var (
 // the input string(s), ensuring that the CEL cost system accurately reflects the
 // computational work performed by string operations.
 
-// estimateStringFixedTransformCost estimates cost for O(n) string operations such as
-// lowerAscii, upperAsciil, reverse and quote.
-func estimateStringFixedTransformCost(estimator cost.Estimator, target *cost.AstNode, args []cost.AstNode) *cost.CallEstimate {
-	if target == nil {
-		return nil
-	}
-	evalCost, size := cost.EstimateStringScan(cost.EstimateSize(estimator, *target))
-	return cost.NewCallEstimate(evalCost.Add(cost.CallCostEstimate).Add(size.AsCost()), size)
-}
-
-// estimateStringVariableTransformCost estimates cost for O(n) string operations that result
-// in a variable sized string which may be empty to the exact input string.
-func estimateStringVariableTransformCost(estimator cost.Estimator, target *cost.AstNode, args []cost.AstNode) *cost.CallEstimate {
-	if target == nil {
-		return nil
-	}
-	evalCost, size := cost.EstimateStringScan(cost.EstimateSize(estimator, *target))
-	transformSize := cost.RangedSizeEstimate(0, size.Max)
-	return cost.NewCallEstimate(evalCost.Add(cost.CallCostEstimate).Add(transformSize.AsCost()), &transformSize)
-}
-
-// estimateStringCharAtCost includes a cost of 1 for the allocation, plus the string traversal cost.
-func estimateStringCharAtCost(estimator cost.Estimator, target *cost.AstNode, args []cost.AstNode) *cost.CallEstimate {
-	if target == nil || len(args) != 1 {
-		return nil
-	}
-	evalCost, _ := cost.EstimateStringScan(cost.EstimateSize(estimator, *target))
-	resultSize := cost.RangedSizeEstimate(0, 1)
-	return cost.NewCallEstimate(evalCost.Add(cost.CallCostEstimate).Add(cost.CallCostEstimate), &resultSize)
-}
-
 // estimateSubstringCost estimates the cost for an O(n) traversal and allocation.
 func estimateSubstringCost(estimator cost.Estimator, target *cost.AstNode, args []cost.AstNode) *cost.CallEstimate {
 	if target == nil || len(args) < 1 || len(args) > 2 {
@@ -940,172 +885,144 @@ func estimateSubstringCost(estimator cost.Estimator, target *cost.AstNode, args 
 	if len(args) == 2 {
 		end = cost.NodeAsUintValue(args[1], end)
 	}
-	var resultSize cost.SizeEstimate
-	if cost.ModelVersionOf(estimator) >= 1 {
-		maxLen := cost.SafeSubtract(end, start)
-		fixedStart := isUintLiteral(args[0])
-		fixedEnd := (len(args) == 1 && targetSize.Min == targetSize.Max) || (len(args) == 2 && isUintLiteral(args[1]))
-		if fixedStart && fixedEnd {
-			resultSize = cost.FixedSizeEstimate(maxLen)
-		} else {
-			resultSize = cost.RangedSizeEstimate(0, maxLen)
-		}
-	} else {
-		resultSize = cost.FixedSizeEstimate(end - start)
-	}
+	resultSize := cost.FixedSizeEstimate(end - start)
 	return cost.NewCallEstimate(evalCost.Add(cost.CallCostEstimate).Add(resultSize.AsCost()), &resultSize)
 }
 
-// estimateStringSearchCost estimates cost for O(n*m) string search operations
-// such as indexOf and lastIndexOf.
-func estimateStringSearchCost(estimator cost.Estimator, target *cost.AstNode, args []cost.AstNode) *cost.CallEstimate {
-	if target == nil || len(args) < 1 {
-		return nil
-	}
-	targetSize := cost.EstimateSize(estimator, *target)
-	needleSize := cost.EstimateSize(estimator, args[0])
-	searchSize := targetSize.Multiply(needleSize)
-	searchCost, _ := cost.EstimateStringScan(searchSize)
-	// Search cost is proportional to target size * substring size.
-	return cost.NewCallEstimate(searchCost.Add(cost.CallCostEstimate), nil)
-}
-
-// estimateStringReplaceCost estimates cost for string replace operations.
-// The cost accounts for search (O(n*m)) and potential output size growth.
-func estimateStringReplaceCost(estimator cost.Estimator, target *cost.AstNode, args []cost.AstNode) *cost.CallEstimate {
-	if target == nil || len(args) < 2 {
-		return nil
-	}
-	// Compute the search for the replacement string, by 'm' times
-	targetSize := cost.EstimateSize(estimator, *target)
-	needleSize := cost.AtLeastOneSize(cost.EstimateSize(estimator, args[0]))
-	searchCost := cost.AtLeastOneSize(targetSize).Multiply(needleSize).MultiplyByCostFactor(cost.StringCostFactor)
-
-	rawReplacementSize := cost.EstimateSize(estimator, args[1])
-	replacementSize := rawReplacementSize.Add(cost.FixedSizeEstimate(1))
-	allReplacedSize := cost.SafeMultiply(cost.SafeAdd(targetSize.Max, 1), replacementSize.Max)
-	resultMinSize := targetSize.Min
-	if cost.ModelVersionOf(estimator) >= 1 {
-		if resultMinSize > rawReplacementSize.Min {
-			resultMinSize = rawReplacementSize.Min
-		}
-	} else {
-		if resultMinSize > replacementSize.Min {
-			resultMinSize = replacementSize.Min
-		}
-	}
-	resultSize := cost.RangedSizeEstimate(resultMinSize, allReplacedSize)
-	return cost.NewCallEstimate(
-		searchCost.Add(resultSize.AsCost()).Add(cost.CallCostEstimate), &resultSize,
+// splitSize bounds the size of the parts of a string of size n: at most n + 1 parts of at most n
+// each. Under the aggregate strategy the parts hold at most the string's content plus one unit
+// for each part, an empty string having size 1, so the list's size is at most 2n + 2, which also
+// bounds the default strategy's n + 1 parts.
+func splitSize(s cost.QuantityExpr) cost.QuantityExpr {
+	return cost.Min(
+		cost.List(cost.AtMost(cost.Sum(s, cost.Const(1))), cost.AtMost(s)),
+		cost.Sum(cost.Scale(s, 2), cost.Const(2)),
 	)
 }
 
-// estimateStringSplitCost estimates cost for string split operations.
-// Split creates a list of substrings, so cost includes both traversal and
-// list allocation proportional to the input size.
-func estimateStringSplitCost(estimator cost.Estimator, target *cost.AstNode, args []cost.AstNode) *cost.CallEstimate {
-	if target == nil || len(args) < 1 {
-		return nil
-	}
-	targetSize := cost.EstimateSize(estimator, *target)
-	// Traversal cost proportional to input size.
-	traversalCost := targetSize.Add(cost.FixedSizeEstimate(1)).MultiplyByCostFactor(cost.StringCostFactor)
-	// Worst case: split("") produces N elements for a string of size N, and split(unmatched)
-	// produces 1 element of size N; splitting on a delimiter produces up to N+1 pieces.
-	maxPieces := targetSize.Max
-	if cost.ModelVersionOf(estimator) >= 1 {
-		maxPieces = cost.SafeAdd(targetSize.Max, 1)
-	}
-	elemSize := cost.RangedSizeEstimate(0, targetSize.Max)
-	resultSize := cost.ListSizeEstimate(cost.RangedSizeEstimate(0, maxPieces), elemSize)
-	// Include list creation base cost plus allocation for each element.
-	allocationCost := resultSize.MultiplyByCostFactor(1).Add(cost.FixedCostEstimate(cost.ListCreateBaseCost))
-	evalCost := traversalCost.Add(allocationCost).Add(cost.CallCostEstimate)
-	return cost.NewCallEstimate(evalCost, &resultSize)
+// stringTransformEvalCost is the EvalCost of the O(n) string transforms: a scan of the receiver
+// and the result's length.
+func stringTransformEvalCost() cost.OverloadModelOption {
+	return cost.EvalCost(cost.Sum(cost.Const(cost.CallCost), cost.StringScan(cost.Length(cost.Target())), cost.Length(cost.Result())))
 }
 
-// estimateStringJoinCost estimates cost for string join operations.
-// Join iterates over all list elements and concatenates them, so cost is
-// proportional to the total size of all elements plus separator overhead.
-func estimateStringJoinCost(estimator cost.Estimator, target *cost.AstNode, args []cost.AstNode) *cost.CallEstimate {
-	if target == nil {
-		return nil
-	}
-	targetSize := cost.EstimateSize(estimator, *target)
-	sepSize := cost.FixedSizeEstimate(0)
-	if len(args) >= 1 {
-		sepSize = cost.EstimateSize(estimator, args[0])
-	}
-	// Traversal cost proportional to the number of list elements.
-	traversalCost := targetSize.Add(cost.FixedSizeEstimate(1)).MultiplyByCostFactor(cost.StringCostFactor)
-	// Result size: sum of element sizes + (n-1) * separator size.
-	// Worst case estimate: use list size * max element size + list size * separator size.
-	elemMax := uint64(1)
-	if cost.ModelVersionOf(estimator) >= 1 {
-		itemSize := estimateItemSize(estimator, *target)
-		elemMax = itemSize.Max
-	}
-	maxResultSize := cost.SafeAdd(cost.SafeMultiply(targetSize.Max, cost.SafeAdd(elemMax, sepSize.Max)), sepSize.Max)
-	resultSize := cost.RangedSizeEstimate(0, maxResultSize)
-	estimate := traversalCost.Add(resultSize.MultiplyByCostFactor(1)).Add(cost.CallCostEstimate)
-	return cost.NewCallEstimate(estimate, &resultSize)
+// stringCharAtCostModel models charAt: it scans the receiver and returns a single code point, which
+// is at most 4 UTF-8 bytes under the aggregate strategy and never above the receiver's size.
+func stringCharAtCostModel(id string) cost.OverloadModel {
+	return cost.MemberOverload(id,
+		cost.EvalCost(cost.Sum(cost.Const(cost.CallCost+1), cost.StringScan(cost.Length(cost.Target())))),
+		cost.ResultSize(cost.AtMost(cost.Min(cost.Target(), cost.Const(4)))),
+		cost.BeforeVersion(1, cost.ResultSize(cost.AtMost(cost.Const(1)))),
+	)
 }
 
-// Runtime cost tracking functions for string extensions.
-//
-// These functions compute the actual cost of string operations after evaluation,
-// using the real sizes of the inputs and outputs.
-
-// trackStringCharAtCost tracks runtime cost for O(n) string operations.
-func trackStringCharAtCost(args []ref.Val, result ref.Val) *uint64 {
-	total := cost.SafeAdd(cost.CallCost, cost.SafeMultiplyByFactor(cost.ActualSize(args[0]), cost.StringCostFactor), 1)
-	return &total
+func stringSearchCostModel(id string) cost.OverloadModel {
+	return cost.MemberOverload(id,
+		cost.EvalCost(cost.Sum(cost.Const(cost.CallCost), cost.StringScan(cost.Mul(cost.Length(cost.Target()), cost.Length(cost.Arg(0)))))),
+	)
 }
 
-// trackStringTransformCost tracks runtime cost for O(n) string operations.
-func trackStringTransformCost(args []ref.Val, result ref.Val) *uint64 {
-	transformCost := cost.SafeMultiplyByFactor(cost.ActualSize(args[0]), cost.StringCostFactor)
-	resultSize := cost.ActualSize(result)
-	total := cost.SafeAdd(cost.CallCost, transformCost, resultSize)
-	return &total
+func stringFixedTransformCostModel(id string) cost.OverloadModel {
+	return cost.MemberOverload(id,
+		stringTransformEvalCost(),
+		cost.ResultSize(cost.Target()),
+	)
 }
 
-// trackStringSearchCost tracks runtime cost for O(n*m) string search operations.
-func trackStringSearchCost(args []ref.Val, _ ref.Val) *uint64 {
-	searchSize := cost.SafeMultiply(cost.ActualSize(args[0]), cost.ActualSize(args[1]))
-	total := cost.SafeAdd(cost.SafeMultiplyByFactor(searchSize, cost.StringCostFactor), cost.CallCost)
-	return &total
+func stringTrimCostModel(id string) cost.OverloadModel {
+	return cost.MemberOverload(id,
+		stringTransformEvalCost(),
+		cost.ResultSize(cost.AtMost(cost.Target())),
+	)
 }
 
-// trackStringReplaceCost tracks runtime cost for string replace operations,
-// accounting for search cost and the size of the result.
-func trackStringReplaceCost(args []ref.Val, result ref.Val) *uint64 {
-	targetSize := cost.ActualSize(args[0])
-	if targetSize == 0 {
-		targetSize = 1
-	}
-	needleSize := cost.ActualSize(args[1])
-	if needleSize == 0 {
-		needleSize = 1
-	}
-	searchCost := cost.SafeMultiplyByFactor(cost.SafeMultiply(targetSize, needleSize), cost.StringCostFactor)
-	total := cost.SafeAdd(cost.CallCost, searchCost, cost.ActualSize(result))
-	return &total
+// stringSubstringCostModel models s.substring(start): it drops at least start units of the
+// receiver, and at most 4 times as many under the aggregate strategy (where each code point takes
+// 1 to 4 UTF-8 bytes).
+func stringSubstringCostModel(id string) cost.OverloadModel {
+	return cost.MemberOverload(id,
+		stringTransformEvalCost(),
+		cost.ResultSize(cost.Ranged(
+			cost.Sub(cost.Target(), cost.Scale(cost.IntArg(0, 0), 4)),
+			cost.Sub(cost.Target(), cost.IntArg(0, 0)),
+		)),
+		cost.BeforeVersion(1, cost.ManualEstimator(estimateSubstringCost)),
+	)
 }
 
-// trackStringSplitCost tracks runtime cost for string split operations,
-// accounting for traversal and list allocation.
-func trackStringSplitCost(args []ref.Val, result ref.Val) *uint64 {
-	traversalCost := cost.SafeMultiplyByFactor(cost.SafeAdd(cost.ActualSize(args[0]), 1), cost.StringCostFactor)
-	resultSize := cost.ActualSize(result)
-	total := cost.SafeAdd(cost.CallCost, traversalCost, resultSize, cost.ListCreateBaseCost)
-	return &total
+// stringSubstringRangeCostModel models s.substring(start, end): the result has end - start code
+// points, sized between that length and 4 times it under the aggregate strategy, and never above
+// the remaining suffix of the receiver.
+func stringSubstringRangeCostModel(id string) cost.OverloadModel {
+	length := cost.Sub(cost.IntArg(1, 0), cost.IntArg(0, 0))
+	return cost.MemberOverload(id,
+		stringTransformEvalCost(),
+		cost.ResultSize(cost.Ranged(
+			length,
+			cost.Min(cost.Sub(cost.Target(), cost.IntArg(0, 0)), cost.Scale(length, 4)),
+		)),
+		cost.BeforeVersion(1, cost.ManualEstimator(estimateSubstringCost)),
+	)
 }
 
-// trackStringJoinCost tracks runtime cost for string join operations,
-// accounting for traversal and the size of the result.
-func trackStringJoinCost(args []ref.Val, result ref.Val) *uint64 {
-	traversalCost := cost.SafeMultiplyByFactor(cost.SafeAdd(cost.ActualSize(args[0]), 1), cost.StringCostFactor)
-	total := cost.SafeAdd(cost.CallCost, traversalCost, cost.ActualSize(result))
-	return &total
+// listJoinCostModel models l.join(): it reads the list once and builds the concatenated result.
+func listJoinCostModel(id string) cost.OverloadModel {
+	return cost.MemberOverload(id,
+		cost.EvalCost(cost.Sum(cost.Const(cost.CallCost), cost.StringScan(cost.Sum(cost.Length(cost.Target()), cost.Const(1))), cost.Length(cost.Result()))),
+		cost.ResultSize(cost.AtMost(cost.ElemTotal(cost.Target()))),
+		cost.BeforeVersion(1, cost.ResultSize(cost.AtMost(cost.Length(cost.Target())))),
+	)
 }
+
+// listJoinStringCostModel models l.join(delim): it reads the list once and builds the result with
+// delimiters between elements.
+func listJoinStringCostModel(id string) cost.OverloadModel {
+	return cost.MemberOverload(id,
+		cost.EvalCost(cost.Sum(cost.Const(cost.CallCost), cost.StringScan(cost.Sum(cost.Length(cost.Target()), cost.Const(1))), cost.Length(cost.Result()))),
+		cost.ResultSize(cost.AtMost(cost.Sum(
+			cost.ElemTotal(cost.Target()),
+			cost.Mul(cost.Length(cost.Target()), cost.Arg(0)),
+		))),
+		cost.BeforeVersion(1, cost.ResultSize(cost.AtMost(cost.Sum(
+			cost.Mul(cost.Length(cost.Target()), cost.Sum(cost.Const(1), cost.Arg(0))),
+			cost.Arg(0),
+		)))),
+	)
+}
+
+// stringReplaceCostModel models replace: it searches the receiver for the needle and builds the
+// result. Without a match the result is the receiver, and with one it contains the replacement, so
+// it is at least the smaller of the two. Each of the at most n + 1 matches adds at most the
+// replacement.
+func stringReplaceCostModel(id string) cost.OverloadModel {
+	one := cost.Const(1)
+	maxSize := cost.Mul(cost.Sum(cost.Target(), one), cost.Sum(cost.Arg(1), one))
+	return cost.MemberOverload(id,
+		cost.EvalCost(cost.Sum(
+			cost.Const(cost.CallCost),
+			cost.StringScan(cost.Mul(
+				cost.AtLeastOneQuantity(cost.Length(cost.Target())),
+				cost.AtLeastOneQuantity(cost.Length(cost.Arg(0))),
+			)),
+			cost.Length(cost.Result()),
+		)),
+		cost.ResultSize(cost.Ranged(cost.Min(cost.Target(), cost.Arg(1)), maxSize)),
+		cost.BeforeVersion(1, cost.ResultSize(cost.Ranged(
+			cost.Min(cost.Target(), cost.Sum(cost.Arg(1), one)),
+			maxSize,
+		))),
+	)
+}
+
+// stringSplitCostModel models split: it scans the receiver and allocates the parts.
+func stringSplitCostModel(id string) cost.OverloadModel {
+	return cost.MemberOverload(id,
+		cost.EvalCost(cost.AllocList(
+			cost.StringScan(cost.Sum(cost.Length(cost.Target()), cost.Const(1))),
+			cost.Length(cost.Result()),
+		)),
+		cost.ResultSize(splitSize(cost.Target())),
+		cost.BeforeVersion(1, cost.ResultSize(cost.List(cost.AtMost(cost.Target()), cost.AtMost(cost.Target())))),
+	)
+}
+
