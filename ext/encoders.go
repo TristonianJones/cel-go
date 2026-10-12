@@ -196,13 +196,12 @@ func (lib *encoderLib) CompileOptions() []cel.EnvOption {
 				}))),
 	}
 	if lib.version >= 1 {
-		estimators := []cost.Option{
-			cost.OverloadCostEstimate("base64_decode_string", estimateDecode),
-			cost.OverloadCostEstimate("base64_encode_bytes", estimateEncode),
-			cost.OverloadCostEstimate("json_encode_dyn", estimateJSONEncode),
-		}
 		opts = append(opts,
-			cel.CostEstimatorOptions(estimators...),
+			cel.CostModel(
+				base64DecodeCostModel("base64_decode_string"),
+				base64EncodeCostModel("base64_encode_bytes"),
+				unboundedCostModel("json_encode_dyn"),
+			),
 			cel.Function("json.encode",
 				cel.Overload("json_encode_dyn", []*cel.Type{cel.DynType}, cel.StringType,
 					cel.UnaryBinding(func(val ref.Val) ref.Val {
@@ -211,20 +210,18 @@ func (lib *encoderLib) CompileOptions() []cel.EnvOption {
 		)
 	}
 	if lib.version >= 2 {
-		estimators := []cost.Option{
-			cost.OverloadCostEstimate("base64_decode_url_string", estimateDecode),
-			cost.OverloadCostEstimate("base64_encode_url_bytes", estimateEncode),
-			cost.OverloadCostEstimate("json_parse_string", estimateJSONParse),
-			cost.OverloadCostEstimate("json_parse_string_type", estimateJSONParse),
-			cost.OverloadCostEstimate("yaml_encode_dyn", estimateYAMLEncode),
-			cost.OverloadCostEstimate("yaml_parse_string", estimateYAMLParse),
-			cost.OverloadCostEstimate("yaml_parse_string_type", estimateYAMLParse),
-		}
-
 		var adapt types.Adapter = types.DefaultTypeAdapter
 		var prov types.Provider
-		opts = append(opts, cel.CostEstimatorOptions(estimators...))
 		opts = append(opts,
+			cel.CostModel(
+				base64DecodeCostModel("base64_decode_url_string"),
+				base64EncodeCostModel("base64_encode_url_bytes"),
+				unboundedCostModel("json_parse_string"),
+				unboundedCostModel("json_parse_string_type"),
+				unboundedCostModel("yaml_encode_dyn"),
+				unboundedCostModel("yaml_parse_string"),
+				unboundedCostModel("yaml_parse_string_type"),
+			),
 			func(e *cel.Env) (*cel.Env, error) {
 				adapt = e.CELTypeAdapter()
 				prov = e.CELTypeProvider()
@@ -291,28 +288,7 @@ func (lib *encoderLib) CompileOptions() []cel.EnvOption {
 }
 
 func (lib *encoderLib) ProgramOptions() []cel.ProgramOption {
-	var opts []cel.ProgramOption
-	if lib.version >= 1 {
-		trackers := []cost.TrackerOption{
-			cost.OverloadTracker("base64_decode_string", trackDecode),
-			cost.OverloadTracker("base64_encode_bytes", trackEncode),
-			cost.OverloadTracker("json_encode_dyn", trackJSONEncode),
-		}
-		opts = append(opts, cel.CostTrackerOptions(trackers...))
-	}
-	if lib.version >= 2 {
-		trackers := []cost.TrackerOption{
-			cost.OverloadTracker("base64_decode_url_string", trackDecode),
-			cost.OverloadTracker("base64_encode_url_bytes", trackEncode),
-			cost.OverloadTracker("json_parse_string", trackJSONParse),
-			cost.OverloadTracker("json_parse_string_type", trackJSONParse),
-			cost.OverloadTracker("yaml_encode_dyn", trackYAMLEncode),
-			cost.OverloadTracker("yaml_parse_string", trackYAMLParse),
-			cost.OverloadTracker("yaml_parse_string_type", trackYAMLParse),
-		}
-		opts = append(opts, cel.CostTrackerOptions(trackers...))
-	}
-	return opts
+	return nil
 }
 
 // YAMLEncode encodes a CEL ref.Val to its YAML string representation.
@@ -442,38 +418,6 @@ func estimateEncode(estimator cost.Estimator, target *cost.AstNode, args []cost.
 	return &cost.CallEstimate{CostEstimate: estimate, ResultSize: &resSize}
 }
 
-func estimateJSONEncode(estimator cost.Estimator, target *cost.AstNode, args []cost.AstNode) *cost.CallEstimate {
-	if len(args) != 1 {
-		return nil
-	}
-	size := estimateJSONEncodeSize()
-	return &cost.CallEstimate{CostEstimate: cost.UnknownCostEstimate(), ResultSize: &size}
-}
-
-func estimateJSONParse(estimator cost.Estimator, target *cost.AstNode, args []cost.AstNode) *cost.CallEstimate {
-	if len(args) < 1 || len(args) > 2 {
-		return nil
-	}
-	size := cost.UnknownSizeEstimate()
-	return &cost.CallEstimate{CostEstimate: cost.UnknownCostEstimate(), ResultSize: &size}
-}
-
-func estimateYAMLEncode(estimator cost.Estimator, target *cost.AstNode, args []cost.AstNode) *cost.CallEstimate {
-	if len(args) != 1 {
-		return nil
-	}
-	size := cost.UnknownSizeEstimate()
-	return &cost.CallEstimate{CostEstimate: cost.UnknownCostEstimate(), ResultSize: &size}
-}
-
-func estimateYAMLParse(estimator cost.Estimator, target *cost.AstNode, args []cost.AstNode) *cost.CallEstimate {
-	if len(args) < 1 || len(args) > 2 {
-		return nil
-	}
-	size := cost.UnknownSizeEstimate()
-	return &cost.CallEstimate{CostEstimate: cost.UnknownCostEstimate(), ResultSize: &size}
-}
-
 func estimateDecode(estimator cost.Estimator, target *cost.AstNode, args []cost.AstNode) *cost.CallEstimate {
 	if len(args) != 1 {
 		return nil
@@ -484,49 +428,6 @@ func estimateDecode(estimator cost.Estimator, target *cost.AstNode, args []cost.
 	return &cost.CallEstimate{CostEstimate: estimate, ResultSize: &resSize}
 }
 
-func trackEncode(args []ref.Val, _ ref.Val) *uint64 {
-	sz := cost.ActualSize(args[0])
-	total := cost.SafeAdd(cost.SafeMultiplyByFactor(sz, cost.StringCostFactor), cost.CallCost)
-	return &total
-}
-
-// trackJSONEncode charges the maximum possible cost.
-//
-// This is deliberate, not an unfinished estimate. Encoding walks a value of unbounded shape, and no
-// cheaper bound has been established that is safe to charge, so the call is priced at the maximum.
-// The practical consequence is that json.encode cannot be used under a cost limit.
-//
-// estimateJSONEncode reports UnknownCostEstimate to match; the estimate and the charge agree.
-func trackJSONEncode(args []ref.Val, _ ref.Val) *uint64 {
-	maxCost := uint64(math.MaxUint64)
-	return &maxCost
-}
-
-// trackJSONParse charges the maximum possible cost.
-//
-// Deliberate, for the same reason as trackJSONEncode: parsing produces a value whose size and shape
-// are not known from the input alone. json.parse likewise cannot be used under a cost limit.
-func trackJSONParse(args []ref.Val, _ ref.Val) *uint64 {
-	maxCost := uint64(math.MaxUint64)
-	return &maxCost
-}
-
-func trackYAMLEncode(args []ref.Val, _ ref.Val) *uint64 {
-	maxCost := uint64(math.MaxUint64)
-	return &maxCost
-}
-
-func trackYAMLParse(args []ref.Val, _ ref.Val) *uint64 {
-	maxCost := uint64(math.MaxUint64)
-	return &maxCost
-}
-
-func trackDecode(args []ref.Val, _ ref.Val) *uint64 {
-	sz := cost.ActualSize(args[0])
-	total := cost.SafeAdd(cost.SafeMultiplyByFactor(sz, cost.StringCostFactor), cost.CallCost)
-	return &total
-}
-
 func estimateEncodeSize(sz cost.SizeEstimate) cost.SizeEstimate {
 	minVal := (sz.Min*4 + 2) / 3
 	maxVal := (sz.Max*4 + 2) / 3
@@ -534,11 +435,6 @@ func estimateEncodeSize(sz cost.SizeEstimate) cost.SizeEstimate {
 		maxVal = math.MaxUint64
 	}
 	return cost.SizeEstimate{Min: minVal, Max: maxVal}
-}
-
-func estimateJSONEncodeSize() cost.SizeEstimate {
-	// TODO: provide a more sophisticated size estimate based on the CEL value's type.
-	return cost.UnknownSizeEstimate()
 }
 
 func estimateDecodeSize(sz cost.SizeEstimate) cost.SizeEstimate {
@@ -1221,4 +1117,34 @@ func normalizeJSONNumber(val any) any {
 	default:
 		return val
 	}
+}
+
+func base64EncodeCostModel(id string) cost.OverloadModel {
+	scaled := cost.Scale(cost.Length(cost.Arg(0)), 4.0/3)
+	return cost.Overload(id,
+		cost.EvalCost(cost.Sum(cost.Const(cost.CallCost), cost.StringScan(cost.Length(cost.Arg(0))))),
+		// base64 of n bytes is 4 * ceil(n / 3) characters, between 4n/3 and 4n/3 + 3.
+		cost.ResultSize(cost.Ranged(scaled, cost.Sum(scaled, cost.Const(3)))),
+		cost.BeforeVersion(1, cost.ManualEstimator(estimateEncode)),
+	)
+}
+
+func base64DecodeCostModel(id string) cost.OverloadModel {
+	return cost.Overload(id,
+		cost.EvalCost(cost.Sum(cost.Const(cost.CallCost), cost.StringScan(cost.Length(cost.Arg(0))))),
+		// Decoding n characters yields at most 3n/4 bytes. It yields fewer for padding and for the
+		// carriage returns and newlines the decoder skips, so there is no lower bound. A bytes value
+		// has size at least 1 under the aggregate strategy.
+		cost.ResultSize(cost.AtMost(cost.AtLeastOneQuantity(cost.Scale(cost.Length(cost.Arg(0)), 0.75)))),
+		cost.BeforeVersion(1, cost.ManualEstimator(estimateDecode)),
+	)
+}
+
+// unboundedCostModel charges the maximum cost and reports an unbounded result size for JSON and
+// YAML functions: encoding traverses an arbitrary container tree without inspecting it through the
+// cost tracker, and parsing/decoding (especially with YAML anchors and aliases) can construct an
+// arbitrarily deeply nested or large value graph not bounded by the input length.
+func unboundedCostModel(id string) cost.OverloadModel {
+	unbounded := cost.AtMost(cost.Const(math.MaxUint64))
+	return cost.Overload(id, cost.EvalCost(unbounded), cost.ResultSize(unbounded))
 }

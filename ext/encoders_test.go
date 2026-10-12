@@ -685,11 +685,12 @@ func TestEncodersCosts(t *testing.T) {
 			version:       1,
 		},
 		{
-			name:          "decode_string_v1_literal",
-			expr:          "base64.decode('aGVsbG8=') == b'hello'",
-			estimatedCost: cost.FixedCostEstimate(3),
-			actualCost:    3,
-			version:       1,
+			name:            "decode_string_v1_literal",
+			expr:            "base64.decode('aGVsbG8=') == b'hello'",
+			estimatedCost:   cost.RangedCostEstimate(2, 3),
+			estimatedCostV0: costV0(3, 3),
+			actualCost:      3,
+			version:         1,
 		},
 		{
 			name:          "encode_empty_bytes_v1_literal",
@@ -1955,15 +1956,6 @@ func TestEncodersEstimatorsAndEdgeCases(t *testing.T) {
 	}
 	if estimateDecode(nil, nil, []checker.AstNode{}) != nil {
 		t.Errorf("expected nil from estimateDecode with empty args")
-	}
-	if estimateJSONEncode(nil, nil, []checker.AstNode{}) != nil {
-		t.Errorf("expected nil from estimateJSONEncode with empty args")
-	}
-	if estimateJSONParse(nil, nil, []checker.AstNode{}) != nil {
-		t.Errorf("expected nil from estimateJSONParse with empty args")
-	}
-	if estimateJSONParse(nil, nil, []checker.AstNode{nil, nil, nil}) != nil {
-		t.Errorf("expected nil from estimateJSONParse with 3 args")
 	}
 
 	// Test estimateEncodeSize overflow guard
