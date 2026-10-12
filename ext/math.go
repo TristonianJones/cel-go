@@ -582,34 +582,23 @@ func (lib *mathLib) CompileOptions() []cel.EnvOption {
 		)
 	}
 	if lib.version >= 3 {
-		estimators := []cost.CostOption{
-			cost.OverloadCostEstimate("math_@min_list_double", estimateMathListCost),
-			cost.OverloadCostEstimate("math_@min_list_int", estimateMathListCost),
-			cost.OverloadCostEstimate("math_@min_list_uint", estimateMathListCost),
-			cost.OverloadCostEstimate("math_@max_list_double", estimateMathListCost),
-			cost.OverloadCostEstimate("math_@max_list_int", estimateMathListCost),
-			cost.OverloadCostEstimate("math_@max_list_uint", estimateMathListCost),
-		}
-		opts = append(opts, cel.CostEstimatorOptions(estimators...))
+		opts = append(opts,
+			cel.CostModel(
+				mathListCostModel("math_@min_list_double"),
+				mathListCostModel("math_@min_list_int"),
+				mathListCostModel("math_@min_list_uint"),
+				mathListCostModel("math_@max_list_double"),
+				mathListCostModel("math_@max_list_int"),
+				mathListCostModel("math_@max_list_uint"),
+			),
+		)
 	}
 	return opts
 }
 
 // ProgramOptions implements the Library interface method.
 func (lib *mathLib) ProgramOptions() []cel.ProgramOption {
-	var opts []cel.ProgramOption
-	if lib.version >= 3 {
-		trackers := []cost.TrackerOption{
-			cost.OverloadTracker("math_@min_list_double", trackMathListCost),
-			cost.OverloadTracker("math_@min_list_int", trackMathListCost),
-			cost.OverloadTracker("math_@min_list_uint", trackMathListCost),
-			cost.OverloadTracker("math_@max_list_double", trackMathListCost),
-			cost.OverloadTracker("math_@max_list_int", trackMathListCost),
-			cost.OverloadTracker("math_@max_list_uint", trackMathListCost),
-		}
-		opts = append(opts, cel.CostTrackerOptions(trackers...))
-	}
-	return opts
+	return nil
 }
 
 func mathLeast(meh cel.MacroExprFactory, target ast.Expr, args []ast.Expr) (ast.Expr, *cel.Error) {
@@ -983,4 +972,12 @@ func trackMathListCost(args []ref.Val, _ ref.Val) *uint64 {
 	sz := cost.ActualSize(args[0])
 	total := cost.SafeAdd(sz, cost.CallCost)
 	return &total
+}
+
+func mathListCostModel(id string) cost.OverloadModel {
+	return cost.Overload(id,
+		cost.EvalCost(cost.Sum(cost.Const(cost.CallCost), cost.Length(cost.Arg(0)))),
+		cost.ResultSize(cost.Const(1)),
+		cost.BeforeVersion(1, cost.ManualCost(estimateMathListCost, trackMathListCost)),
+	)
 }
