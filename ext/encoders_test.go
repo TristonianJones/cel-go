@@ -521,12 +521,12 @@ func TestEncodersYAMLWithoutOptionalTypes(t *testing.T) {
 		{
 			name:    "undeclared_optional_of",
 			expr:    "yaml.parse('hello') == optional.of('hello')",
-			wantErr: "undeclared reference to 'optional'",
+			wantErr: "undeclared reference to 'optional.of'",
 		},
 		{
 			name:    "undeclared_optional_none",
 			expr:    "yaml.parse(': invalid') == optional.none()",
-			wantErr: "undeclared reference to 'optional'",
+			wantErr: "undeclared reference to 'optional.none'",
 		},
 		{
 			name:    "unsupported_hasValue",
