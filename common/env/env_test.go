@@ -1648,3 +1648,11 @@ func unmarshalJSON(t *testing.T, data []byte) *Config {
 	}
 	return config
 }
+
+func TestOverloadAsFunctionOptionInvalid(t *testing.T) {
+	var od *Overload
+	if _, err := od.AsFunctionOption(nil); err == nil {
+		t.Error("nil Overload.AsFunctionOption(nil) = nil, wanted error")
+	}
+}
+

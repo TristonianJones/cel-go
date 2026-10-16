@@ -26,6 +26,36 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
+// YAML and JSON Serialization Methodology:
+//
+// Several Config sub-types support both structured object representations and shorthand/alias
+// forms when decoding (e.g., TypeDesc specifier strings like "map<string, int>", scalar Overload
+// IDs, "type" aliases on ContextVariable, and inline vs nested TypeDesc fields on Variable), while
+// normalizing to canonical shorthand representations when encoding.
+//
+// To keep YAML and JSON handling symmetric while satisfying each library's canonical interfaces:
+//
+//  1. Unmarshaling: Each customized type implements an internal `unmarshal(func(any) error) error`
+//     method that decodes into a parallel internal struct (avoiding recursive Unmarshaler loops).
+//     - `UnmarshalYAML(unmarshal func(any) error) error` passes the active `yaml.v3` decoder
+//       closure directly to `unmarshal(...)`. Using the `func(any) error` signature (rather than
+//       `UnmarshalYAML(*yaml.Node)`) preserves the outer `yaml.Decoder`'s `KnownFields` setting
+//       when `StrictDecoding(true)` is enabled, whereas `(*yaml.Node).Decode` constructs a fresh
+//       decoder with `KnownFields` disabled.
+//     - `UnmarshalJSON(data []byte) error` satisfies `encoding/json.Unmarshaler` and adapts
+//       `json.Unmarshal` to the same `func(any) error` signature via `jsonUnmarshaler(data)`.
+//
+//  2. Marshaling: Types that require custom output formatting (`Variable` and `TypeDesc`) implement
+//     an internal `marshal() any` method returning the canonical value to serialize:
+//     - `MarshalYAML() (any, error)` returns `marshal(), nil` for `yaml.v3` to encode.
+//     - `MarshalJSON() ([]byte, error)` encodes `marshal()` via `marshalJSONNoEscape` so type
+//       specifier brackets (`<`, `>`) are not HTML-escaped.
+//     - `Variable` requires an explicit marshaler because it embeds `*TypeDesc` (`yaml:",inline"`),
+//       and `yaml.v3` omits inlined structs that implement `Unmarshaler` during `yaml.Marshal`
+//       (while `encoding/json` would otherwise promote `TypeDesc.MarshalJSON` to `Variable`).
+//       Delegating `Variable.marshal()` to `&internalVariable{..., Type: v.GetType()}` allows both
+//       `yaml.v3` and `encoding/json` to invoke `TypeDesc`'s respective marshaler on `Type`.
+
 type internalContextVariable struct {
 	Type     string `yaml:"type,omitempty" json:"type,omitempty"`
 	TypeName string `yaml:"type_name,omitempty" json:"typeName,omitempty"`
@@ -41,7 +71,7 @@ type internalVariable struct {
 	Name        string      `yaml:"name" json:"name"`
 	Description string      `yaml:"description,omitempty" json:"description,omitempty"`
 	Type        *TypeDesc   `yaml:"type,omitempty" json:"type,omitempty"`
-	TypeName    string      `yaml:"type_name" json:"typeName,omitempty"`
+	TypeName    string      `yaml:"type_name,omitempty" json:"typeName,omitempty"`
 	Params      []*TypeDesc `yaml:"params,omitempty" json:"params,omitempty"`
 	IsTypeParam bool        `yaml:"is_type_param,omitempty" json:"isTypeParam,omitempty"`
 }
@@ -54,8 +84,7 @@ func jsonUnmarshaler(data []byte) func(any) error {
 	}
 }
 
-// UnmarshalYAML implements yaml.Unmarshaler.
-func (ctx *ContextVariable) UnmarshalYAML(unmarshal func(any) error) error {
+func (ctx *ContextVariable) unmarshal(unmarshal func(any) error) error {
 	var buf internalContextVariable
 	if err := unmarshal(&buf); err != nil {
 		return err
@@ -68,13 +97,17 @@ func (ctx *ContextVariable) UnmarshalYAML(unmarshal func(any) error) error {
 	return nil
 }
 
-// UnmarshalJSON implements json.Unmarshaler.
-func (ctx *ContextVariable) UnmarshalJSON(data []byte) error {
-	return ctx.UnmarshalYAML(jsonUnmarshaler(data))
+// UnmarshalYAML implements yaml.Unmarshaler.
+func (ctx *ContextVariable) UnmarshalYAML(unmarshal func(any) error) error {
+	return ctx.unmarshal(unmarshal)
 }
 
-// UnmarshalYAML implements yaml.Unmarshaler.
-func (od *Overload) UnmarshalYAML(unmarshal func(any) error) error {
+// UnmarshalJSON implements json.Unmarshaler.
+func (ctx *ContextVariable) UnmarshalJSON(data []byte) error {
+	return ctx.unmarshal(jsonUnmarshaler(data))
+}
+
+func (od *Overload) unmarshal(unmarshal func(any) error) error {
 	var id string
 	if err := unmarshal(&id); err == nil {
 		od.ID = id
@@ -88,43 +121,21 @@ func (od *Overload) UnmarshalYAML(unmarshal func(any) error) error {
 	return nil
 }
 
-// UnmarshalJSON implements json.Unmarshaler.
-func (od *Overload) UnmarshalJSON(data []byte) error {
-	return od.UnmarshalYAML(jsonUnmarshaler(data))
+// UnmarshalYAML implements yaml.Unmarshaler.
+func (od *Overload) UnmarshalYAML(unmarshal func(any) error) error {
+	return od.unmarshal(unmarshal)
 }
 
-// UnmarshalYAML implements yaml.Unmarshaler.
-func (v *Variable) UnmarshalYAML(unmarshal func(any) error) error {
+// UnmarshalJSON implements json.Unmarshaler.
+func (od *Overload) UnmarshalJSON(data []byte) error {
+	return od.unmarshal(jsonUnmarshaler(data))
+}
+
+func (v *Variable) unmarshal(unmarshal func(any) error) error {
 	var buf internalVariable
 	if err := unmarshal(&buf); err != nil {
 		return err
 	}
-	v.fromInternal(&buf)
-	return nil
-}
-
-// MarshalYAML implements yaml.Marshaler.
-func (v *Variable) MarshalYAML() (any, error) {
-	// The presence of an unmarshaller alters the default marshaller behavior so
-	// provide a simple marshal implementation.
-	return v.toInternal(), nil
-}
-
-// UnmarshalJSON implements json.Unmarshaler.
-func (v *Variable) UnmarshalJSON(data []byte) error {
-	return v.UnmarshalYAML(jsonUnmarshaler(data))
-}
-
-// MarshalJSON implements json.Marshaler.
-func (v *Variable) MarshalJSON() ([]byte, error) {
-	return marshalJSONNoEscape(&internalVariable{
-		Name:        v.Name,
-		Description: v.Description,
-		Type:        v.GetType(),
-	}, "")
-}
-
-func (v *Variable) fromInternal(buf *internalVariable) {
 	v.Name = buf.Name
 	v.Description = buf.Description
 	if buf.TypeName != "" {
@@ -136,23 +147,38 @@ func (v *Variable) fromInternal(buf *internalVariable) {
 	} else if buf.Type != nil {
 		v.TypeDesc = buf.Type
 	}
-}
-
-func (v *Variable) toInternal() *internalVariable {
-	buf := &internalVariable{
-		Name:        v.Name,
-		Description: v.Description,
-	}
-	if t := v.GetType(); t != nil {
-		buf.TypeName = t.TypeName
-		buf.Params = t.Params
-		buf.IsTypeParam = t.IsTypeParam
-	}
-	return buf
+	return nil
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler.
-func (td *TypeDesc) UnmarshalYAML(unmarshal func(any) error) error {
+func (v *Variable) UnmarshalYAML(unmarshal func(any) error) error {
+	return v.unmarshal(unmarshal)
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (v *Variable) UnmarshalJSON(data []byte) error {
+	return v.unmarshal(jsonUnmarshaler(data))
+}
+
+func (v *Variable) marshal() any {
+	return &internalVariable{
+		Name:        v.Name,
+		Description: v.Description,
+		Type:        v.GetType(),
+	}
+}
+
+// MarshalYAML implements yaml.Marshaler.
+func (v *Variable) MarshalYAML() (any, error) {
+	return v.marshal(), nil
+}
+
+// MarshalJSON implements json.Marshaler.
+func (v *Variable) MarshalJSON() ([]byte, error) {
+	return marshalJSONNoEscape(v.marshal(), "")
+}
+
+func (td *TypeDesc) unmarshal(unmarshal func(any) error) error {
 	var str string
 	if err := unmarshal(&str); err == nil {
 		o, err := ParseTypeDesc(str)
@@ -170,23 +196,36 @@ func (td *TypeDesc) UnmarshalYAML(unmarshal func(any) error) error {
 	return nil
 }
 
-// MarshalJSON implements json.Marshaler.
-func (td *TypeDesc) MarshalJSON() ([]byte, error) {
-	if td == nil {
-		return []byte("null"), nil
-	}
-	return marshalJSONNoEscape(td.SpecifierFormat(), "")
+// UnmarshalYAML implements yaml.Unmarshaler.
+func (td *TypeDesc) UnmarshalYAML(unmarshal func(any) error) error {
+	return td.unmarshal(unmarshal)
 }
 
 // UnmarshalJSON implements json.Unmarshaler.
 func (td *TypeDesc) UnmarshalJSON(data []byte) error {
-	return td.UnmarshalYAML(jsonUnmarshaler(data))
+	return td.unmarshal(jsonUnmarshaler(data))
 }
 
-// UnmarshalJSON implements json.Unmarshaler.
-func (v *Validator) UnmarshalJSON(data []byte) error {
+func (td *TypeDesc) marshal() any {
+	if td == nil {
+		return nil
+	}
+	return td.SpecifierFormat()
+}
+
+// MarshalYAML implements yaml.Marshaler.
+func (td *TypeDesc) MarshalYAML() (any, error) {
+	return td.marshal(), nil
+}
+
+// MarshalJSON implements json.Marshaler.
+func (td *TypeDesc) MarshalJSON() ([]byte, error) {
+	return marshalJSONNoEscape(td.marshal(), "")
+}
+
+func (v *Validator) unmarshal(unmarshal func(any) error) error {
 	var buf internalValidator
-	if err := json.Unmarshal(data, &buf); err != nil {
+	if err := unmarshal(&buf); err != nil {
 		return err
 	}
 	for k, val := range buf.Config {
@@ -196,6 +235,16 @@ func (v *Validator) UnmarshalJSON(data []byte) error {
 	}
 	*v = Validator(buf)
 	return nil
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler.
+func (v *Validator) UnmarshalYAML(unmarshal func(any) error) error {
+	return v.unmarshal(unmarshal)
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (v *Validator) UnmarshalJSON(data []byte) error {
+	return v.unmarshal(jsonUnmarshaler(data))
 }
 
 type typeDescParser struct {

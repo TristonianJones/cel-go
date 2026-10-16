@@ -1082,13 +1082,12 @@ name: repl-session
 container: google
 variables:
     - name: x
-      type_name: int
+      type: int
 functions:
     - name: fn
       overloads:
         - id: fn
-          return:
-            type_name: int
+          return: int
 features:
     - name: cel.feature.macro_call_tracking
       enabled: true
@@ -1144,15 +1143,14 @@ name: repl-session
 container: google
 variables:
     - name: x
-      type_name: int
+      type: int
 functions:
     - name: fn
       overloads:
         - id: fn
           args:
-            - type_name: int
-          return:
-            type_name: int
+            - int
+          return: int
 features:
     - name: cel.feature.macro_call_tracking
       enabled: true

@@ -140,9 +140,6 @@ func TestParseTypeDescErrors(t *testing.T) {
 }
 
 func TestConfigToYAML(t *testing.T) {
-	// Parsing will accept shorthand for type specifiers, but we always output the
-	// structured map nodes so not fully reversible.
-	//
 	tcs := []struct {
 		name    string
 		confIn  *Config
@@ -156,7 +153,7 @@ func TestConfigToYAML(t *testing.T) {
 			yamlOut: `name: foo
 variables:
     - name: foo
-      type_name: int
+      type: int
 `,
 		},
 	}
@@ -172,12 +169,15 @@ variables:
 			}
 		})
 	}
+	var nilTD *TypeDesc
+	if v, err := nilTD.MarshalYAML(); err != nil || v != nil {
+		t.Errorf("nil TypeDesc.MarshalYAML() = %v, %v, want nil, nil", v, err)
+	}
 }
 
 func TestYAMLRoundTrip(t *testing.T) {
-	// Parsing will accept shorthand for type specifiers, but we always output the
-	// structured map nodes so not fully reversible.
-	//
+	// Parsing will accept both shorthand and structured type specifiers, and
+	// outputs shorthand specifier strings in YAML.
 	tcs := []struct {
 		name    string
 		yamlIn  string
@@ -193,7 +193,7 @@ variables:
 			yamlOut: `name: foo
 variables:
     - name: foo
-      type_name: int
+      type: int
 `,
 		},
 		{
@@ -206,7 +206,23 @@ variables:
 			yamlOut: `name: foo
 variables:
     - name: foo
-      type_name: int
+      type: int
+`,
+		},
+		{
+			name: "nested structured variable type",
+			yamlIn: `name: foo
+variables:
+    - name: foo
+      type:
+        type_name: list
+        params:
+          - type_name: string
+`,
+			yamlOut: `name: foo
+variables:
+    - name: foo
+      type: list<string>
 `,
 		},
 		{
@@ -219,23 +235,21 @@ variables:
 			yamlOut: `name: foo
 variables:
     - name: foo
-      type_name: map
-      params:
-        - type_name: int
-        - type_name: string
+      type: map<int, string>
 `,
 		},
 		{
-			name: "function",
+			name: "function with shorthand and structured types",
 			yamlIn: `name: foo
 functions:
     - name: getOrDefault
       overloads:
           - id: getOrDefault
             target: map<string, ~V>
-            params:
+            args:
                 - string
-                - ~V
+                - type_name: V
+                  is_type_param: true
             return: ~V
 `,
 			yamlOut: `name: foo
@@ -243,15 +257,11 @@ functions:
     - name: getOrDefault
       overloads:
         - id: getOrDefault
-          target:
-            type_name: map
-            params:
-                - type_name: string
-                - type_name: V
-                  is_type_param: true
-          return:
-            type_name: V
-            is_type_param: true
+          target: map<string, ~V>
+          args:
+            - string
+            - ~V
+          return: ~V
 `,
 		},
 		{
@@ -270,17 +280,9 @@ variables:
 			yamlOut: `name: user_env
 variables:
     - name: user_lookup_table
-      type_name: map
-      params:
-        - type_name: string
-        - type_name: list
-          params:
-            - type_name: string
+      type: map<string, list<string>>
     - name: permissions
-      type_name: map
-      params:
-        - type_name: string
-        - type_name: int
+      type: map<string, int>
 `,
 		},
 		{
@@ -293,6 +295,7 @@ stdlib:
     - name: "_+_"
       overloads:
         - add_bytes
+        - id: add_list
 `,
 			yamlOut: `name: subset_env
 stdlib:
@@ -300,6 +303,7 @@ stdlib:
         - name: _+_
           overloads:
             - id: add_bytes
+            - id: add_list
 context_variable:
     type_name: google.expr.proto3.test.TestAllTypes
 `,
@@ -318,6 +322,72 @@ context_variable:
 			}
 			if diff := cmp.Diff(tc.yamlOut, string(b)); diff != "" {
 				t.Errorf("ConfigToYAML() has diff (+got -want):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestConfigFromYAMLErrors(t *testing.T) {
+	tcs := []struct {
+		name    string
+		yamlIn  string
+		wantErr string
+	}{
+		{
+			name:    "invalid yaml",
+			yamlIn:  "name: [unclosed",
+			wantErr: "yaml:",
+		},
+		{
+			name:    "invalid variable yaml",
+			yamlIn:  "variables:\n  - not-an-object\n",
+			wantErr: "cannot unmarshal !!str",
+		},
+		{
+			name:    "unsupported yaml type for TypeDesc",
+			yamlIn:  "variables:\n  - name: x\n    type: [1, 2]\n",
+			wantErr: "unsupported type description encoding",
+		},
+		{
+			name:    "invalid type specifier in TypeDesc",
+			yamlIn:  "variables:\n  - name: x\n    type: \"list<\"\n",
+			wantErr: "failed to parse type",
+		},
+		{
+			name:    "invalid structured TypeDesc",
+			yamlIn:  "variables:\n  - name: x\n    type:\n      type_name: [1]\n",
+			wantErr: "cannot unmarshal !!seq",
+		},
+		{
+			name:    "invalid validator yaml",
+			yamlIn:  "validators:\n  - not-an-object\n",
+			wantErr: "cannot unmarshal !!str",
+		},
+		{
+			name:    "invalid context variable yaml",
+			yamlIn:  "context_variable: not-an-object\n",
+			wantErr: "cannot unmarshal !!str",
+		},
+		{
+			name:    "unsupported yaml type for Overload",
+			yamlIn:  "functions:\n  - name: f\n    overloads:\n      - [1, 2]\n",
+			wantErr: "unsupported overload encoding",
+		},
+		{
+			name:    "invalid structured Overload",
+			yamlIn:  "functions:\n  - name: f\n    overloads:\n      - id: [1, 2]\n",
+			wantErr: "cannot unmarshal !!seq",
+		},
+	}
+
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ConfigFromYAML([]byte(tc.yamlIn))
+			if err == nil {
+				t.Fatalf("ConfigFromYAML(%q) = nil, wanted error containing %q", tc.yamlIn, tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("ConfigFromYAML(%q) = %v, wanted error containing %q", tc.yamlIn, err, tc.wantErr)
 			}
 		})
 	}
@@ -888,5 +958,13 @@ func TestStrictDecodingJSON(t *testing.T) {
 			}
 		})
 	}
+
+	invalidConfig := NewConfig("bad").AddValidators(
+		NewValidator("bad").SetConfig(map[string]any{"fn": func() {}}),
+	)
+	if _, err := ConfigToJSON(invalidConfig); err == nil {
+		t.Error("ConfigToJSON(invalidConfig) = nil, wanted error")
+	}
 }
+
 
