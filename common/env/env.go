@@ -461,10 +461,12 @@ func (od *Overload) AsFunctionOption(tp types.Provider) (decls.FunctionOpt, erro
 			return nil, errors.Join(append(errs, err)...)
 		}
 		args = append([]*types.Type{t}, args...)
-		return decls.MemberOverload(od.ID, args, result), nil
 	}
 	if len(errs) != 0 {
 		return nil, errors.Join(errs...)
+	}
+	if od.Target != nil {
+		return decls.MemberOverload(od.ID, args, result, decls.OverloadExamples(od.Examples...)), nil
 	}
 	return decls.Overload(od.ID, args, result, decls.OverloadExamples(od.Examples...)), nil
 }

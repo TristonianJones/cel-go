@@ -958,6 +958,9 @@ func TestFunctionAsCELFunction(t *testing.T) {
 			assertFuncEquals(t, gotFn, tc.want.(*decls.FunctionDecl))
 		})
 	}
+	if _, err := (&Overload{}).AsFunctionOption(tp); err == nil {
+		t.Errorf("(&Overload{}).AsFunctionOption() got nil error, wanted error")
+	}
 }
 
 func TestTypeDescAsCELTypeErrors(t *testing.T) {
@@ -1526,6 +1529,9 @@ func assertFuncEquals(t *testing.T, got, want *decls.FunctionDecl) {
 		}
 		if !gotOverload.ResultType().IsExactType(wantOverload.ResultType()) {
 			t.Errorf("got result type %v, wanted %v", gotOverload.ResultType(), wantOverload.ResultType())
+		}
+		if !reflect.DeepEqual(gotOverload.Examples(), wantOverload.Examples()) {
+			t.Errorf("got examples %v, wanted %v", gotOverload.Examples(), wantOverload.Examples())
 		}
 	}
 }
