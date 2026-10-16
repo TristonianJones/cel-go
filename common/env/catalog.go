@@ -42,11 +42,11 @@ const (
 
 // CatalogSymbol represents a symbol in the environment catalog.
 type CatalogSymbol struct {
-	Name       string     `yaml:"name"`
-	Kind       SymbolKind `yaml:"kind"`
-	Library    string     `yaml:"library,omitempty"`
-	Option     string     `yaml:"option,omitempty"`
-	MinVersion uint32     `yaml:"min_version,omitempty"`
+	Name       string     `yaml:"name" json:"name"`
+	Kind       SymbolKind `yaml:"kind" json:"kind"`
+	Library    string     `yaml:"library,omitempty" json:"library,omitempty"`
+	Option     string     `yaml:"option,omitempty" json:"option,omitempty"`
+	MinVersion uint32     `yaml:"min_version,omitempty" json:"minVersion,omitempty"`
 }
 
 // Catalog holds an index of symbols from the active environment and available libraries.

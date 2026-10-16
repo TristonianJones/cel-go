@@ -23,8 +23,6 @@ import (
 	"strings"
 	"testing"
 
-	"go.yaml.in/yaml/v3"
-
 	"cel.dev/cel-go/common"
 	"cel.dev/cel-go/common/decls"
 	"cel.dev/cel-go/common/operators"
@@ -228,95 +226,120 @@ func TestConfig(t *testing.T) {
 			if err != nil {
 				t.Fatalf("os.ReadFile(%q) failed: %v", fileName, err)
 			}
-			got := unmarshalYAML(t, data)
-			if err := got.Validate(); err != nil {
-				t.Errorf("Validate() got %v, wanted nil error", err)
-			}
-			if got.Container != tc.want.Container {
-				t.Errorf("Container got %s, wanted %s", got.Container, tc.want.Container)
-			}
-			if !reflect.DeepEqual(got.Imports, tc.want.Imports) {
-				t.Errorf("Imports got %v, wanted %v", got.Imports, tc.want.Imports)
-			}
-			if !reflect.DeepEqual(got.StdLib, tc.want.StdLib) {
-				t.Errorf("StdLib got %v, wanted %v", got.StdLib, tc.want.StdLib)
-			}
-			if !reflect.DeepEqual(got.ContextVariable, tc.want.ContextVariable) {
-				t.Errorf("ContextVariable got %v, wanted %v", got.ContextVariable, tc.want.ContextVariable)
-			}
-			if len(got.Variables) != len(tc.want.Variables) {
-				t.Errorf("Variables count got %d, wanted %d", len(got.Variables), len(tc.want.Variables))
+			var got *Config
+			if strings.HasSuffix(tc.name, ".json") {
+				got = unmarshalJSON(t, data)
 			} else {
-				for i, v := range got.Variables {
-					wv := tc.want.Variables[i]
-					if !reflect.DeepEqual(v, wv) {
-						t.Errorf("Variables[%d] not equal, got %v, wanted %v", i, v.Description, wv.Description)
-					}
-				}
+				got = unmarshalYAML(t, data)
 			}
-			if len(got.Functions) != len(tc.want.Functions) {
-				t.Errorf("Functions count got %d, wanted %d", len(got.Functions), len(tc.want.Functions))
-			} else {
-				for i, f := range got.Functions {
-					wf := tc.want.Functions[i]
-					if f.Name != wf.Name {
-						t.Errorf("Functions[%d] not equal, got %v, wanted %v", i, f.Name, wf.Name)
-					}
-					if f.Description != wf.Description {
-						t.Errorf("Functions[%d] description not equal, got %v, wanted %v", i, f.Description, wf.Description)
-					}
-					if len(f.Overloads) != len(wf.Overloads) {
-						t.Errorf("Function %s got overload count: %d, wanted %d", f.Name, len(f.Overloads), len(wf.Overloads))
-					}
-					for j, o := range f.Overloads {
-						wo := wf.Overloads[j]
-						if !reflect.DeepEqual(o, wo) {
-							t.Error(o.Examples)
-							t.Errorf("Overload[%d] got %v, wanted %v", j, o, wo)
-						}
-					}
-				}
+			assertConfigEquals(t, got, tc.want)
+
+			// Verify JSON round-trip
+			jsonData, err := ConfigToJSON(got)
+			if err != nil {
+				t.Fatalf("ConfigToJSON() failed: %v", err)
 			}
-			if len(got.Features) != len(tc.want.Features) {
-				t.Errorf("Features count got %d, wanted %d", len(got.Features), len(tc.want.Features))
-			} else {
-				for i, f := range got.Features {
-					wf := tc.want.Features[i]
-					if f.Name != wf.Name {
-						t.Errorf("Features[%d] got name %s, wanted %s", i, f.Name, wf.Name)
-					}
-					if f.Enabled != wf.Enabled {
-						t.Errorf("Features[%d] got enabled %t, wanted %t", i, f.Enabled, wf.Enabled)
-					}
-				}
+			gotFromJSON := unmarshalJSON(t, jsonData)
+			assertConfigEquals(t, gotFromJSON, tc.want)
+
+			// Verify YAML round-trip
+			yamlData, err := ConfigToYAML(got)
+			if err != nil {
+				t.Fatalf("ConfigToYAML() failed: %v", err)
 			}
-			if len(got.Limits) != len(tc.want.Limits) {
-				t.Errorf("Limits count got %d, wanted %d", len(got.Limits), len(tc.want.Limits))
-			} else {
-				for i, l := range got.Limits {
-					wl := tc.want.Limits[i]
-					if l.Name != wl.Name {
-						t.Errorf("Limits[%d] got name %s, wanted %s", i, l.Name, wl.Name)
-					}
-					if l.Value != wl.Value {
-						t.Errorf("Limits[%d] got enabled %d, wanted %d", i, l.Value, wl.Value)
-					}
-				}
-			}
-			if len(got.Validators) != len(tc.want.Validators) {
-				t.Errorf("Validators count got %d, wanted %d", len(got.Validators), len(tc.want.Validators))
-			} else {
-				for i, f := range got.Validators {
-					wf := tc.want.Validators[i]
-					if f.Name != wf.Name {
-						t.Errorf("Validators[%d] got name %s, wanted %s", i, f.Name, wf.Name)
-					}
-					if !reflect.DeepEqual(f.Config, wf.Config) {
-						t.Errorf("Validators[%d] got enabled %v, wanted %v", i, f.Config, wf.Config)
-					}
-				}
-			}
+			gotFromYAML := unmarshalYAML(t, yamlData)
+			assertConfigEquals(t, gotFromYAML, tc.want)
 		})
+	}
+}
+
+func assertConfigEquals(t *testing.T, got, want *Config) {
+	t.Helper()
+	if err := got.Validate(); err != nil {
+		t.Errorf("Validate() got %v, wanted nil error", err)
+	}
+	if got.Container != want.Container {
+		t.Errorf("Container got %s, wanted %s", got.Container, want.Container)
+	}
+	if !reflect.DeepEqual(got.Imports, want.Imports) {
+		t.Errorf("Imports got %v, wanted %v", got.Imports, want.Imports)
+	}
+	if !reflect.DeepEqual(got.StdLib, want.StdLib) {
+		t.Errorf("StdLib got %v, wanted %v", got.StdLib, want.StdLib)
+	}
+	if !reflect.DeepEqual(got.ContextVariable, want.ContextVariable) {
+		t.Errorf("ContextVariable got %v, wanted %v", got.ContextVariable, want.ContextVariable)
+	}
+	if len(got.Variables) != len(want.Variables) {
+		t.Errorf("Variables count got %d, wanted %d", len(got.Variables), len(want.Variables))
+	} else {
+		for i, v := range got.Variables {
+			wv := want.Variables[i]
+			if !reflect.DeepEqual(v, wv) {
+				t.Errorf("Variables[%d] not equal, got %v, wanted %v", i, v, wv)
+			}
+		}
+	}
+	if len(got.Functions) != len(want.Functions) {
+		t.Errorf("Functions count got %d, wanted %d", len(got.Functions), len(want.Functions))
+	} else {
+		for i, f := range got.Functions {
+			wf := want.Functions[i]
+			if f.Name != wf.Name {
+				t.Errorf("Functions[%d] not equal, got %v, wanted %v", i, f.Name, wf.Name)
+			}
+			if f.Description != wf.Description {
+				t.Errorf("Functions[%d] description not equal, got %v, wanted %v", i, f.Description, wf.Description)
+			}
+			if len(f.Overloads) != len(wf.Overloads) {
+				t.Errorf("Function %s got overload count: %d, wanted %d", f.Name, len(f.Overloads), len(wf.Overloads))
+			}
+			for j, o := range f.Overloads {
+				wo := wf.Overloads[j]
+				if !reflect.DeepEqual(o, wo) {
+					t.Errorf("Overload[%d] got %v, wanted %v", j, o, wo)
+				}
+			}
+		}
+	}
+	if len(got.Features) != len(want.Features) {
+		t.Errorf("Features count got %d, wanted %d", len(got.Features), len(want.Features))
+	} else {
+		for i, f := range got.Features {
+			wf := want.Features[i]
+			if f.Name != wf.Name {
+				t.Errorf("Features[%d] got name %s, wanted %s", i, f.Name, wf.Name)
+			}
+			if f.Enabled != wf.Enabled {
+				t.Errorf("Features[%d] got enabled %t, wanted %t", i, f.Enabled, wf.Enabled)
+			}
+		}
+	}
+	if len(got.Limits) != len(want.Limits) {
+		t.Errorf("Limits count got %d, wanted %d", len(got.Limits), len(want.Limits))
+	} else {
+		for i, l := range got.Limits {
+			wl := want.Limits[i]
+			if l.Name != wl.Name {
+				t.Errorf("Limits[%d] got name %s, wanted %s", i, l.Name, wl.Name)
+			}
+			if l.Value != wl.Value {
+				t.Errorf("Limits[%d] got value %d, wanted %d", i, l.Value, wl.Value)
+			}
+		}
+	}
+	if len(got.Validators) != len(want.Validators) {
+		t.Errorf("Validators count got %d, wanted %d", len(got.Validators), len(want.Validators))
+	} else {
+		for i, f := range got.Validators {
+			wf := want.Validators[i]
+			if f.Name != wf.Name {
+				t.Errorf("Validators[%d] got name %s, wanted %s", i, f.Name, wf.Name)
+			}
+			if !reflect.DeepEqual(f.Config, wf.Config) {
+				t.Errorf("Validators[%d] got config %v, wanted %v", i, f.Config, wf.Config)
+			}
+		}
 	}
 }
 
@@ -381,6 +404,16 @@ func TestConfigValidateErrors(t *testing.T) {
 			in:   NewConfig("invalid validator").AddValidators(NewValidator("")),
 			want: errors.New("invalid validator"),
 		},
+		{
+			name: "invalid limit",
+			in:   NewConfig("invalid limit").AddLimits(NewLimit("", 0)),
+			want: errors.New("invalid limit"),
+		},
+		{
+			name: "nil limit",
+			in:   NewConfig("nil limit").AddLimits(nil),
+			want: errors.New("invalid limit: nil"),
+		},
 	}
 
 	for _, tst := range tests {
@@ -436,6 +469,21 @@ func TestConfigAddVariableDecls(t *testing.T) {
 			name: "proto var decl with doc",
 			in:   decls.NewVariableWithDoc("var", types.NewObjectType("google.type.Expr"), "API-friendly CEL expression type"),
 			out:  NewVariableWithDoc("var", NewTypeDesc("google.type.Expr"), "API-friendly CEL expression type"),
+		},
+		{
+			name: "error var decl",
+			in:   decls.NewVariable("var", types.ErrorType),
+			out:  NewVariable("var", NewTypeDesc("*error*")),
+		},
+		{
+			name: "unknown var decl",
+			in:   decls.NewVariable("var", types.UnknownType),
+			out:  NewVariable("var", NewTypeDesc("*unknown*")),
+		},
+		{
+			name: "unspecified var decl",
+			in:   decls.NewVariable("var", &types.Type{}),
+			out:  NewVariable("var", NewTypeDesc("*unspecified type*")),
 		},
 	}
 	for _, tst := range tests {
@@ -745,6 +793,56 @@ func TestVariableAsCELVariable(t *testing.T) {
 				TypeDesc: NewTypeDesc("string_wrapper"),
 			},
 			want: decls.NewVariable("msg", types.NewNullableType(types.StringType)),
+		},
+		{
+			name: "duration alias variable",
+			v:    NewVariable("d", NewTypeDesc("duration")),
+			want: decls.NewVariable("d", types.DurationType),
+		},
+		{
+			name: "timestamp alias variable",
+			v:    NewVariable("ts", NewTypeDesc("timestamp")),
+			want: decls.NewVariable("ts", types.TimestampType),
+		},
+		{
+			name: "any alias variable",
+			v:    NewVariable("a", NewTypeDesc("any")),
+			want: decls.NewVariable("a", types.AnyType),
+		},
+		{
+			name: "null alias variable",
+			v:    NewVariable("n", NewTypeDesc("null")),
+			want: decls.NewVariable("n", types.NullType),
+		},
+		{
+			name: "bool_wrapper alias variable",
+			v:    NewVariable("b", NewTypeDesc("bool_wrapper")),
+			want: decls.NewVariable("b", types.NewNullableType(types.BoolType)),
+		},
+		{
+			name: "bytes_wrapper alias variable",
+			v:    NewVariable("by", NewTypeDesc("bytes_wrapper")),
+			want: decls.NewVariable("by", types.NewNullableType(types.BytesType)),
+		},
+		{
+			name: "double_wrapper alias variable",
+			v:    NewVariable("db", NewTypeDesc("double_wrapper")),
+			want: decls.NewVariable("db", types.NewNullableType(types.DoubleType)),
+		},
+		{
+			name: "int_wrapper alias variable",
+			v:    NewVariable("i", NewTypeDesc("int_wrapper")),
+			want: decls.NewVariable("i", types.NewNullableType(types.IntType)),
+		},
+		{
+			name: "uint_wrapper alias variable",
+			v:    NewVariable("u", NewTypeDesc("uint_wrapper")),
+			want: decls.NewVariable("u", types.NewNullableType(types.UintType)),
+		},
+		{
+			name: "undefined type param",
+			v:    NewVariable("t", NewTypeDesc("type", NewTypeDesc("undefined"))),
+			want: errors.New("undefined type name"),
 		},
 	}
 
@@ -1081,7 +1179,7 @@ func TestLibrarySubsetValidate(t *testing.T) {
 	}{
 		{
 			name: "nil library",
-			lib:  NewLibrarySubset(),
+			lib:  nil,
 		},
 		{
 			name: "empty library",
@@ -1527,6 +1625,9 @@ func assertFuncEquals(t *testing.T, got, want *decls.FunctionDecl) {
 		if !gotOverload.ResultType().IsExactType(wantOverload.ResultType()) {
 			t.Errorf("got result type %v, wanted %v", gotOverload.ResultType(), wantOverload.ResultType())
 		}
+		if !reflect.DeepEqual(gotOverload.Examples(), wantOverload.Examples()) {
+			t.Errorf("got examples %v, wanted %v", gotOverload.Examples(), wantOverload.Examples())
+		}
 	}
 }
 
@@ -1539,11 +1640,11 @@ func unmarshalYAML(t *testing.T, data []byte) *Config {
 	return config
 }
 
-func marshalYAML(t *testing.T, config *Config) []byte {
+func unmarshalJSON(t *testing.T, data []byte) *Config {
 	t.Helper()
-	data, err := yaml.Marshal(config)
+	config, err := ConfigFromJSON(data)
 	if err != nil {
-		t.Fatalf("yaml.Marshal(%q) failed: %v", string(data), err)
+		t.Fatalf("ConfigFromJSON(%q) failed: %v", string(data), err)
 	}
-	return data
+	return config
 }
