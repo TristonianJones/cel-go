@@ -140,7 +140,7 @@ func TestConfig(t *testing.T) {
 		},
 		{
 			name: "json_env.json",
-			want: NewConfig("extended-env").
+			want: NewConfig("json-env").
 				SetContainer("google.expr").
 				AddExtensions(
 					NewExtension("optional", 2),
@@ -258,6 +258,12 @@ func assertConfigEquals(t *testing.T, got, want *Config) {
 	if err := got.Validate(); err != nil {
 		t.Errorf("Validate() got %v, wanted nil error", err)
 	}
+	if got.Name != want.Name {
+		t.Errorf("Name got %s, wanted %s", got.Name, want.Name)
+	}
+	if got.Description != want.Description {
+		t.Errorf("Description got %s, wanted %s", got.Description, want.Description)
+	}
 	if got.Container != want.Container {
 		t.Errorf("Container got %s, wanted %s", got.Container, want.Container)
 	}
@@ -266,6 +272,9 @@ func assertConfigEquals(t *testing.T, got, want *Config) {
 	}
 	if !reflect.DeepEqual(got.StdLib, want.StdLib) {
 		t.Errorf("StdLib got %v, wanted %v", got.StdLib, want.StdLib)
+	}
+	if !reflect.DeepEqual(got.Extensions, want.Extensions) {
+		t.Errorf("Extensions got %v, wanted %v", got.Extensions, want.Extensions)
 	}
 	if !reflect.DeepEqual(got.ContextVariable, want.ContextVariable) {
 		t.Errorf("ContextVariable got %v, wanted %v", got.ContextVariable, want.ContextVariable)

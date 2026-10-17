@@ -15,6 +15,7 @@
 package env
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -156,6 +157,20 @@ variables:
       type: int
 `,
 		},
+		{
+			name: "extension version latest",
+			confIn: NewConfig("foo").AddExtensions(
+				NewExtension("optional", math.MaxUint32),
+				NewExtension("strings", 1),
+			),
+			yamlOut: `name: foo
+extensions:
+    - name: optional
+      version: latest
+    - name: strings
+      version: "1"
+`,
+		},
 	}
 
 	for _, tc := range tcs {
@@ -167,6 +182,11 @@ variables:
 			if diff := cmp.Diff(tc.yamlOut, string(b)); diff != "" {
 				t.Errorf("ConfigToYAML() has diff (+got -want):\n%s", diff)
 			}
+			got, err := ConfigFromYAML(b)
+			if err != nil {
+				t.Fatalf("ConfigFromYAML() = (err) %v", err)
+			}
+			assertConfigEquals(t, got, tc.confIn)
 		})
 	}
 	var nilTD *TypeDesc
@@ -414,6 +434,26 @@ func TestConfigToJSON(t *testing.T) {
   ]
 }`,
 		},
+		{
+			name: "extension version latest",
+			confIn: NewConfig("foo").AddExtensions(
+				NewExtension("optional", math.MaxUint32),
+				NewExtension("strings", 1),
+			),
+			jsonOut: `{
+  "name": "foo",
+  "extensions": [
+    {
+      "name": "optional",
+      "version": "latest"
+    },
+    {
+      "name": "strings",
+      "version": "1"
+    }
+  ]
+}`,
+		},
 	}
 
 	for _, tc := range tcs {
@@ -425,6 +465,11 @@ func TestConfigToJSON(t *testing.T) {
 			if diff := cmp.Diff(tc.jsonOut, string(b)); diff != "" {
 				t.Errorf("ConfigToJSON() has diff (-want +got):\n%s", diff)
 			}
+			got, err := ConfigFromJSON(b)
+			if err != nil {
+				t.Fatalf("ConfigFromJSON() = (err) %v", err)
+			}
+			assertConfigEquals(t, got, tc.confIn)
 		})
 	}
 	var nilTD *TypeDesc
