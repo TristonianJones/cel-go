@@ -980,19 +980,22 @@ func TestCostEstimateAndTracking(t *testing.T) {
 			wantTrack: trackPtr(20),
 		},
 		{
-			name:      "variable cost function",
-			expr:      `input.matches('[0-9]')`,
-			vars:      []*decls.VariableDecl{decls.NewVariable("input", types.StringType)},
-			hints:     map[string]uint64{"input": 500},
-			in:        map[string]any{"input": string(randSeq(500))},
-			wantEst:   estPtr(cost.RangedCostEstimate(3, 103)),
-			wantTrack: trackPtr(103),
+			name:  "variable cost function",
+			expr:  `input.matches('[0-9]')`,
+			vars:  []*decls.VariableDecl{decls.NewVariable("input", types.StringType)},
+			hints: map[string]uint64{"input": 500},
+			in:    map[string]any{"input": string(randSeq(500))},
+			// Version 1 rounds the product once: ⌈(500 + 1) * 5 / 40⌉ = 63 rather than ⌈50.1⌉ * ⌈1.25⌉.
+			wantEst:   estPtr(cost.RangedCostEstimate(2, 64)),
+			wantEstV0: estPtr(cost.RangedCostEstimate(3, 103)),
+			wantTrack: trackPtr(64),
 		},
 		{
 			name:      "variable cost function with constant",
 			expr:      `'123'.matches('[0-9]')`,
-			wantEst:   estPtr(cost.FixedCostEstimate(2)),
-			wantTrack: trackPtr(2),
+			wantEst:   estPtr(cost.FixedCostEstimate(1)),
+			wantEstV0: estPtr(cost.FixedCostEstimate(2)),
+			wantTrack: trackPtr(1),
 		},
 		{
 			name:      "or",
@@ -1183,8 +1186,9 @@ func TestCostEstimateAndTracking(t *testing.T) {
 			},
 			hints:     map[string]uint64{"input": 500},
 			in:        map[string]any{"input": string(randSeq(500)), "arg1": string(randSeq(500))},
-			wantEst:   estPtr(cost.CostEstimate{Min: 3, Max: 103}),
-			wantTrack: trackPtr(103),
+			wantEst:   estPtr(cost.CostEstimate{Min: 2, Max: 102}),
+			wantEstV0: estPtr(cost.CostEstimate{Min: 3, Max: 103}),
+			wantTrack: trackPtr(102),
 		},
 		{
 			name: "matches global",
@@ -1194,8 +1198,9 @@ func TestCostEstimateAndTracking(t *testing.T) {
 			},
 			hints:     map[string]uint64{"input": 500},
 			in:        map[string]any{"input": string(randSeq(500))},
-			wantEst:   estPtr(cost.CostEstimate{Min: 3, Max: 103}),
-			wantTrack: trackPtr(103),
+			wantEst:   estPtr(cost.CostEstimate{Min: 2, Max: 102}),
+			wantEstV0: estPtr(cost.CostEstimate{Min: 3, Max: 103}),
+			wantTrack: trackPtr(102),
 		},
 		{
 			name: "startsWith",
@@ -1328,10 +1333,11 @@ func TestCostEstimateAndTracking(t *testing.T) {
 				decls.NewVariable("str1", types.StringType),
 				decls.NewVariable("str2", types.StringType),
 			},
-			hints:     map[string]uint64{"str1": 10, "str2": 10},
-			in:        map[string]any{"str1": "val1", "str2": "val2222222"},
-			wantEst:   estPtr(cost.CostEstimate{Min: 2, Max: 6}),
-			wantTrack: trackPtr(6),
+			hints:   map[string]uint64{"str1": 10, "str2": 10},
+			in:      map[string]any{"str1": "val1", "str2": "val2222222"},
+			wantEst: estPtr(cost.CostEstimate{Min: 2, Max: 6}),
+			// Version 1 charges contains as ⌈7 * 14 / 100⌉ = 1 rather than ⌈0.7⌉ * ⌈1.4⌉ = 2.
+			wantTrack: trackPtr(5),
 		},
 		{
 			name: "str concat custom cost estimate",
@@ -1970,8 +1976,8 @@ func TestCostEstimateAndTracking(t *testing.T) {
 				decls.NewVariable("str2", types.StringType),
 			},
 			in:        map[string]any{"str1": "val1", "str2": "val2222222"},
-			limit:     6,
-			wantTrack: trackPtr(6),
+			limit:     5,
+			wantTrack: trackPtr(5),
 		},
 		{
 			name: "above limit",
@@ -1981,7 +1987,7 @@ func TestCostEstimateAndTracking(t *testing.T) {
 				decls.NewVariable("str2", types.StringType),
 			},
 			in:                 map[string]any{"str1": "val1", "str2": "val2222222"},
-			limit:              5,
+			limit:              4,
 			expectExceedsLimit: true,
 		},
 		{
@@ -2189,12 +2195,11 @@ func TestCustomSizingStrategy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Cost() failed: %v", err)
 	}
-	// 'abc' has length 3, cost traversal factor 0.1 -> ceil(3 * 0.1) = 1
-	// custom_str has min 10, max 20 -> min ceil(10 * 0.1) = 1, max ceil(20 * 0.1) = 2
-	// contains cost: min 1 * 1 = 1, max 2 * 1 = 2
+	// custom_str has min 10, max 20, and 'abc' has length 3. contains costs
+	// ⌈target * substring / 100⌉: min ⌈10 * 3 / 100⌉ = 1, max ⌈20 * 3 / 100⌉ = 1.
 	// ident cost = 1
-	// total = ident(1) + call(min 1, max 2) = min 2, max 3
-	if res.Min != 2 || res.Max != 3 {
-		t.Errorf("got cost %v, wanted {Min: 2, Max: 3}", res)
+	// total = ident(1) + call(1) = 2
+	if res.Min != 2 || res.Max != 2 {
+		t.Errorf("got cost %v, wanted {Min: 2, Max: 2}", res)
 	}
 }

@@ -589,9 +589,10 @@ func TestCostModelEstimateAndTrackingAlignment(t *testing.T) {
 				Variable("str1", StringType),
 				Variable("str2", StringType),
 			},
-			hints:    map[string]uint64{"str1": 20, "str2": 10},
-			in:       map[string]any{"str1": "hello_world_test!", "str2": "world"},
-			wantEst:  cost.RangedCostEstimate(3, 8),
+			hints: map[string]uint64{"str1": 20, "str2": 10},
+			in:    map[string]any{"str1": "hello_world_test!", "str2": "world"},
+			// contains costs at most ⌈20 * 11 / 100⌉ = 3 (model version 1).
+			wantEst:  cost.RangedCostEstimate(3, 7),
 			wantCost: 5,
 		},
 		{

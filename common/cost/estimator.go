@@ -631,7 +631,11 @@ func (c *coster) costComprehension(e ast.Expr) CostEstimate {
 	c.localVars.pop(comp.AccuVar())
 
 	// Estimate the cost of the loop.
-	rangeCnt := c.sizeOrUnknown(comp.IterRange())
+	rangeSize := c.sizeOrUnknown(comp.IterRange())
+	// The loop runs once per element or entry of the range, which the sizing strategy may
+	// size by content rather than by length.
+	rangeCnt := countBounds(c.sizingStrategy, rangeSize)
+	rangeCnt.Key, rangeCnt.Elem = rangeSize.Key, rangeSize.Elem
 	rangeCost := rangeCnt.MultiplyByCost(stepCost.Add(loopCost))
 	sum = sum.Add(rangeCost)
 

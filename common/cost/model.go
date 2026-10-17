@@ -348,6 +348,9 @@ type elemTotalExpr struct {
 
 func (e elemTotalExpr) estimate(ctx EstimateContext) SizeEstimate {
 	sz := e.expr.estimate(ctx)
+	if !carriesElements(ctx, e.expr) || !mayHoldElements(ctx, sz) {
+		return FixedSizeEstimate(0)
+	}
 	if sz.Elem == nil {
 		return UnknownSizeEstimate()
 	}
