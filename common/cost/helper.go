@@ -18,7 +18,9 @@ import (
 	"math"
 	"math/bits"
 
+	"cel.dev/cel-go/common/ast"
 	"cel.dev/cel-go/common/types"
+	"cel.dev/cel-go/common/types/ref"
 )
 
 // ContainerSizing describes what the size of a container measures under a sizing strategy.
@@ -100,6 +102,26 @@ func operandKind(ctx EstimateContext, e QuantityExpr) (types.Kind, bool) {
 		return types.UnspecifiedKind, false
 	}
 	return t.Kind(), true
+}
+
+// operandNodeContext is implemented by EstimateContext values which know the AST nodes of the
+// call being estimated. It is unexported because EstimateContext is an interface third parties may
+// implement.
+type operandNodeContext interface {
+	operandNode(e QuantityExpr) (AstNode, bool)
+}
+
+// operandLiteral returns the value of an Arg or Target operand which is a literal.
+func operandLiteral(ctx EstimateContext, e QuantityExpr) (ref.Val, bool) {
+	oc, ok := ctx.(operandNodeContext)
+	if !ok {
+		return nil, false
+	}
+	node, ok := oc.operandNode(e)
+	if !ok || node == nil || node.Expr() == nil || node.Expr().Kind() != ast.LiteralKind {
+		return nil, false
+	}
+	return node.Expr().AsLiteral(), true
 }
 
 // hasUnitLength reports whether every value of a kind has length 1: those which are neither

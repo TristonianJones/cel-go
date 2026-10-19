@@ -449,7 +449,8 @@ func Length(expr QuantityExpr) QuantityExpr {
 	return lengthExpr{expr: expr}
 }
 
-// estimate bounds the length from the operand's size under the sizing strategy:
+// estimate reports the exact length of a literal operand, as Size() counts it at runtime. Otherwise
+// it bounds the length from the operand's size under the sizing strategy:
 //
 //   - Default strategy: the size is the length.
 //   - Aggregate strategy: a string's size is its UTF-8 byte count, at least 1, and each code point
@@ -460,6 +461,9 @@ func Length(expr QuantityExpr) QuantityExpr {
 // The kind of value comes from the operand's checked type, or, for a result whose type is not
 // known, from its metadata: an estimate which states element or key sizes is a container.
 func (l lengthExpr) estimate(ctx EstimateContext) SizeEstimate {
+	if lit, ok := operandLiteral(ctx, l.expr); ok {
+		return FixedSizeEstimate(ActualSize(lit))
+	}
 	sz := l.expr.estimate(ctx)
 	kind, known := operandKind(ctx, l.expr)
 	if known && hasUnitLength(kind) {
@@ -471,9 +475,8 @@ func (l lengthExpr) estimate(ctx EstimateContext) SizeEstimate {
 	case *aggregateSizingStrategy:
 		switch {
 		case known && kind == types.StringKind:
-			// TODO(tswadell): Replace this with the actual UTF-8 cost of the string.
-			// String.size() returns the number of UTF-8 code points, not bytes.
-			// The code below is an approximation.
+			// The code point count of a non-literal string is unknown: its n bytes hold between
+			// ceil(n/4) and n code points. A size of 1 may be the empty string.
 			lo := uint64(0)
 			if sz.Min > 1 {
 				lo = sz.Min/4 + min(sz.Min%4, 1)
@@ -1270,6 +1273,21 @@ func (e *estimatorEvalContext) sizingStrategy() SizingStrategy {
 func (e *estimatorEvalContext) resultType() (*types.Type, bool) {
 	if rc, ok := e.estimator.(resultTypeContext); ok {
 		return rc.resultType()
+	}
+	return nil, false
+}
+
+// operandNode implements operandNodeContext for Arg and Target operands.
+func (e *estimatorEvalContext) operandNode(q QuantityExpr) (AstNode, bool) {
+	switch x := q.(type) {
+	case argExpr:
+		if x.index >= 0 && x.index < len(e.args) {
+			return e.args[x.index], true
+		}
+	case targetExpr:
+		if e.target != nil {
+			return *e.target, true
+		}
 	}
 	return nil, false
 }

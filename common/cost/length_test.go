@@ -17,6 +17,7 @@ package cost
 import (
 	"testing"
 
+	"cel.dev/cel-go/common/ast"
 	"cel.dev/cel-go/common/types"
 	"cel.dev/cel-go/common/types/ref"
 )
@@ -64,6 +65,40 @@ func TestLengthEstimate(t *testing.T) {
 				t.Errorf("Length(Arg(0)) estimate = %v, want %v", est.CostEstimate, tc.want)
 			}
 		})
+	}
+}
+
+// TestLengthEstimateLiteral checks that the length of a literal is estimated exactly under every
+// strategy, as Size() reports it at runtime: code points for a string, rather than its UTF-8 bytes.
+func TestLengthEstimateLiteral(t *testing.T) {
+	fac := ast.NewExprFactory()
+	tests := []struct {
+		name string
+		lit  ref.Val
+		typ  *types.Type
+		want uint64
+	}{
+		{name: "multi-byte string counts code points", lit: types.String("héllo"), typ: types.StringType, want: 5},
+		{name: "empty string", lit: types.String(""), typ: types.StringType, want: 0},
+		{name: "bytes", lit: types.Bytes("héllo"), typ: types.BytesType, want: 6},
+		{name: "int", lit: types.Int(42), typ: types.IntType, want: 1},
+	}
+	for _, tc := range tests {
+		for _, strategy := range []SizingStrategy{DefaultSizingStrategy(), AggregateSizingStrategy()} {
+			node := NewAstNode(fac.NewLiteral(1, tc.lit), nil, tc.typ, nil)
+			want := FixedCostEstimate(tc.want)
+			global := Overload("test", EvalCost(Length(Arg(0)))).FunctionEstimatorWithOptions(WithSizingStrategy(strategy))
+			if got := global(nil, nil, []AstNode{node}).CostEstimate; got != want {
+				t.Errorf("%s: Length(Arg(0)) estimate = %v, want %v", tc.name, got, want)
+			}
+			member := MemberOverload("test", EvalCost(Length(Target()))).FunctionEstimatorWithOptions(WithSizingStrategy(strategy))
+			if got := member(nil, &node, nil).CostEstimate; got != want {
+				t.Errorf("%s: Length(Target()) estimate = %v, want %v", tc.name, got, want)
+			}
+			if got := trackModelCost(t, Length(Arg(0)), strategy, tc.lit); got != tc.want {
+				t.Errorf("%s: Length(Arg(0)) track = %d, want %d", tc.name, got, tc.want)
+			}
+		}
 	}
 }
 
