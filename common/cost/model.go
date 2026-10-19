@@ -471,6 +471,9 @@ func (l lengthExpr) estimate(ctx EstimateContext) SizeEstimate {
 	case *aggregateSizingStrategy:
 		switch {
 		case known && kind == types.StringKind:
+			// TODO(tswadell): Replace this with the actual UTF-8 cost of the string.
+			// String.size() returns the number of UTF-8 code points, not bytes.
+			// The code below is an approximation.
 			lo := uint64(0)
 			if sz.Min > 1 {
 				lo = sz.Min/4 + min(sz.Min%4, 1)
