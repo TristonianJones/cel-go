@@ -250,17 +250,29 @@ func (r *attrFactory) NewQualifier(objType *types.Type, qualID int64, val any, o
 	// Before creating a new qualifier check to see if this is a protobuf message field access.
 	// If so, use the precomputed GetFrom qualification method rather than the standard
 	// stringQualifier.
-	str, isStr := val.(string)
-	if isStr && objType != nil && objType.Kind() == types.StructKind {
-		ft, found := r.provider.FindStructFieldType(objType.TypeName(), str)
-		if found && ft.IsSet != nil && ft.GetFrom != nil {
-			return &fieldQualifier{
-				id:        qualID,
-				Name:      str,
-				FieldType: ft,
-				adapter:   r.adapter,
-				optional:  opt,
-			}, nil
+	var str string
+	var isStr bool
+	switch v := val.(type) {
+	case string:
+		str, isStr = v, true
+	case types.String:
+		str, isStr = string(v), true
+	}
+	if isStr && objType != nil {
+		if objType.Kind() == types.OpaqueKind && objType.TypeName() == "optional_type" && len(objType.Parameters()) == 1 {
+			objType = objType.Parameters()[0]
+		}
+		if objType.Kind() == types.StructKind {
+			ft, found := r.provider.FindStructFieldType(objType.TypeName(), str)
+			if found && ft.IsSet != nil && ft.GetFrom != nil {
+				return &fieldQualifier{
+					id:        qualID,
+					Name:      str,
+					FieldType: ft,
+					adapter:   r.adapter,
+					optional:  opt,
+				}, nil
+			}
 		}
 	}
 	return newQualifier(r.adapter, qualID, val, opt, r.errorOnBadPresenceTest)

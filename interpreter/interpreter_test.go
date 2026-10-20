@@ -1392,6 +1392,26 @@ func testData(t testing.TB) []testCase {
 			out: types.OptionalOf(types.Int(101)),
 		},
 		{
+			name:      "select_pb3_optional_fields",
+			expr:      `a.?single_nested_message.?bb`,
+			container: "google.expr.proto3.test",
+			typeOpts:  []types.RegistryOption{types.ProtoTypeDefs(&proto3pb.TestAllTypes{})},
+			vars: []*decls.VariableDecl{
+				decls.NewVariable("a",
+					types.NewObjectType("google.expr.proto3.test.TestAllTypes")),
+			},
+			in: map[string]any{
+				"a": &proto3pb.TestAllTypes{
+					NestedType: &proto3pb.TestAllTypes_SingleNestedMessage{
+						SingleNestedMessage: &proto3pb.TestAllTypes_NestedMessage{
+							Bb: 101,
+						},
+					},
+				},
+			},
+			out: types.OptionalOf(types.Int(101)),
+		},
+		{
 			name: "select_relative",
 			expr: `json('{"hi":"world"}').hi == 'world'`,
 			funcs: []*decls.FunctionDecl{
@@ -1997,49 +2017,57 @@ func TestInterpreter(t *testing.T) {
 }
 
 func TestInterpreter_ProtoAttributeOpt(t *testing.T) {
-	inst, _, err := program(t, &testCase{
-		name:     "nested_proto_field_with_index",
-		expr:     `pb3.map_int64_nested_type[0].child.payload.single_int32`,
-		typeOpts: []types.RegistryOption{types.ProtoTypeDefs(&proto3pb.TestAllTypes{})},
-		vars: []*decls.VariableDecl{
-			decls.NewVariable("pb3",
-				types.NewObjectType("google.expr.proto3.test.TestAllTypes")),
-		},
-		in: map[string]any{
-			"pb3": &proto3pb.TestAllTypes{
-				MapInt64NestedType: map[int64]*proto3pb.NestedTestAllTypes{
-					0: {
-						Child: &proto3pb.NestedTestAllTypes{
-							Payload: &proto3pb.TestAllTypes{
-								SingleInt32: 1,
+	for _, expr := range []string{
+		`pb3.map_int64_nested_type[0].child.payload.single_int32`,
+		`pb3.map_int64_nested_type[0].?child.?payload.?single_int32`,
+		`pb3.map_int64_nested_type[0].?child.payload.?single_int32`,
+	} {
+		t.Run(expr, func(t *testing.T) {
+			inst, _, err := program(t, &testCase{
+				name:     "nested_proto_field_with_index",
+				expr:     expr,
+				typeOpts: []types.RegistryOption{types.ProtoTypeDefs(&proto3pb.TestAllTypes{})},
+				vars: []*decls.VariableDecl{
+					decls.NewVariable("pb3",
+						types.NewObjectType("google.expr.proto3.test.TestAllTypes")),
+				},
+				in: map[string]any{
+					"pb3": &proto3pb.TestAllTypes{
+						MapInt64NestedType: map[int64]*proto3pb.NestedTestAllTypes{
+							0: {
+								Child: &proto3pb.NestedTestAllTypes{
+									Payload: &proto3pb.TestAllTypes{
+										SingleInt32: 1,
+									},
+								},
 							},
 						},
 					},
 				},
-			},
-		},
-	}, Optimize())
-	if err != nil {
-		t.Fatal(err)
-	}
-	attr, ok := inst.(InterpretableAttribute)
-	if !ok {
-		t.Fatalf("got %v, expected attribute value", inst)
-	}
-	absAttr, ok := attr.Attr().(NamespacedAttribute)
-	if !ok {
-		t.Fatalf("got %v, expected global attribute", attr.Attr())
-	}
-	quals := absAttr.Qualifiers()
-	if len(quals) != 5 {
-		t.Errorf("got %d qualifiers, wanted 5", len(quals))
-	}
-	if !isFieldQual(quals[0], "map_int64_nested_type") ||
-		!isConstQual(quals[1], types.IntZero) ||
-		!isFieldQual(quals[2], "child") ||
-		!isFieldQual(quals[3], "payload") ||
-		!isFieldQual(quals[4], "single_int32") {
-		t.Error("unoptimized qualifier types present in optimized attribute")
+			}, Optimize())
+			if err != nil {
+				t.Fatal(err)
+			}
+			attr, ok := inst.(InterpretableAttribute)
+			if !ok {
+				t.Fatalf("got %v, expected attribute value", inst)
+			}
+			absAttr, ok := attr.Attr().(NamespacedAttribute)
+			if !ok {
+				t.Fatalf("got %v, expected global attribute", attr.Attr())
+			}
+			quals := absAttr.Qualifiers()
+			if len(quals) != 5 {
+				t.Errorf("got %d qualifiers, wanted 5", len(quals))
+			}
+			if !isFieldQual(quals[0], "map_int64_nested_type") ||
+				!isConstQual(quals[1], types.IntZero) ||
+				!isFieldQual(quals[2], "child") ||
+				!isFieldQual(quals[3], "payload") ||
+				!isFieldQual(quals[4], "single_int32") {
+				t.Error("unoptimized qualifier types present in optimized attribute")
+			}
+		})
 	}
 }
 

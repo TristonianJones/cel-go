@@ -983,6 +983,35 @@ func BenchmarkResolverFieldQualifier(b *testing.B) {
 	attr.AddQualifier(makeQualifier(b, attrs, testExprTypeToType(b, opType), 2, "single_nested_message"))
 	attr.AddQualifier(makeQualifier(b, attrs, testExprTypeToType(b, fieldType), 3, "bb"))
 	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := attr.Resolve(vars)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkResolverOptionalFieldQualifier(b *testing.B) {
+	msg := &proto3pb.TestAllTypes{
+		NestedType: &proto3pb.TestAllTypes_SingleNestedMessage{
+			SingleNestedMessage: &proto3pb.TestAllTypes_NestedMessage{
+				Bb: 123,
+			},
+		},
+	}
+	reg := newTestRegistry(b, types.ProtoTypeDefs(msg))
+	attrs := NewAttributeFactory(containers.DefaultContainer, reg, reg)
+	vars, _ := NewActivation(map[string]any{
+		"msg": msg,
+	})
+	attr := attrs.AbsoluteAttribute(1, "msg")
+	opType := types.NewObjectType("google.expr.proto3.test.TestAllTypes")
+	fieldType := types.NewObjectType("google.expr.proto3.test.TestAllTypes.NestedMessage")
+	attr.AddQualifier(makeOptQualifier(b, attrs, opType, 2, types.String("single_nested_message")))
+	attr.AddQualifier(makeOptQualifier(b, attrs, types.NewOptionalType(fieldType), 3, types.String("bb")))
+	b.ResetTimer()
+	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_, err := attr.Resolve(vars)
 		if err != nil {
