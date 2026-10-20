@@ -6689,3 +6689,123 @@ func TestLateBoundFunctionSingleActivation(t *testing.T) {
 		}
 	})
 }
+
+func TestProtoMessageComprehensions(t *testing.T) {
+	allTwoVar := ReceiverMacro("all", 3,
+		func(mef MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *Error) {
+			return mef.NewComprehensionTwoVar(
+				target,
+				args[0].AsIdent(),
+				args[1].AsIdent(),
+				mef.AccuIdentName(),
+				mef.NewLiteral(types.True),
+				mef.NewCall(operators.NotStrictlyFalse, mef.NewAccuIdent()),
+				mef.NewCall(operators.LogicalAnd, mef.NewAccuIdent(), args[2]),
+				mef.NewAccuIdent(),
+			), nil
+		})
+	existsTwoVar := ReceiverMacro("exists", 3,
+		func(mef MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *Error) {
+			return mef.NewComprehensionTwoVar(
+				target,
+				args[0].AsIdent(),
+				args[1].AsIdent(),
+				mef.AccuIdentName(),
+				mef.NewLiteral(types.False),
+				mef.NewCall(operators.NotStrictlyFalse, mef.NewCall(operators.LogicalNot, mef.NewAccuIdent())),
+				mef.NewCall(operators.LogicalOr, mef.NewAccuIdent(), args[2]),
+				mef.NewAccuIdent(),
+			), nil
+		})
+
+	env, err := NewEnv(
+		OptionalTypes(),
+		Macros(allTwoVar, existsTwoVar),
+		Types(&proto3pb.TestAllTypes{}),
+		Variable("msg", ObjectType("google.expr.proto3.test.TestAllTypes")),
+	)
+	if err != nil {
+		t.Fatalf("NewEnv() failed: %v", err)
+	}
+
+	msg := &proto3pb.TestAllTypes{
+		RepeatedNestedMessage: []*proto3pb.TestAllTypes_NestedMessage{
+			{Bb: 1},
+			{Bb: 2},
+			{Bb: 3},
+		},
+		MapInt64NestedType: map[int64]*proto3pb.NestedTestAllTypes{
+			1: {
+				Payload: &proto3pb.TestAllTypes{
+					SingleInt32: 10,
+					NestedType: &proto3pb.TestAllTypes_SingleNestedMessage{
+						SingleNestedMessage: &proto3pb.TestAllTypes_NestedMessage{Bb: 1},
+					},
+				},
+			},
+			2: {
+				Payload: &proto3pb.TestAllTypes{
+					SingleInt32: 20,
+					NestedType: &proto3pb.TestAllTypes_SingleNestedMessage{
+						SingleNestedMessage: &proto3pb.TestAllTypes_NestedMessage{Bb: 2},
+					},
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name string
+		expr string
+	}{
+		{
+			name: "1-var repeated message filter and map field selection",
+			expr: `msg.repeated_nested_message.filter(m, m.bb > 0).map(m, m.bb) == [1, 2, 3]`,
+		},
+		{
+			name: "1-var repeated message exists presence",
+			expr: `msg.repeated_nested_message.exists(m, has(m.bb))`,
+		},
+		{
+			name: "1-var repeated message optional selection",
+			expr: `msg.repeated_nested_message.map(m, m.?bb.orValue(0)) == [1, 2, 3]`,
+		},
+		{
+			name: "2-var repeated message all field selection",
+			expr: `msg.repeated_nested_message.all(i, m, m.bb > 0)`,
+		},
+		{
+			name: "2-var repeated message all presence and optional selection",
+			expr: `msg.repeated_nested_message.all(i, m, has(m.bb) && m.?bb.orValue(0) == i + 1)`,
+		},
+		{
+			name: "1-var proto map message value selection, presence, and optional selection",
+			expr: `msg.map_int64_nested_type.all(k, has(msg.map_int64_nested_type[k].payload) && msg.map_int64_nested_type[k].payload.single_int32 > 0 && msg.map_int64_nested_type[k].?payload.single_nested_message.bb.orValue(0) == k)`,
+		},
+		{
+			name: "2-var proto map message value selection, presence, and optional selection",
+			expr: `msg.map_int64_nested_type.all(k, m, has(m.payload) && m.payload.single_int32 > 0 && has(m.payload.single_nested_message.bb) && m.payload.single_nested_message.bb > 0 && m.?payload.single_nested_message.bb.orValue(0) == k)`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ast, iss := env.Compile(tc.expr)
+			if iss.Err() != nil {
+				t.Fatalf("Compile(%q) failed: %v", tc.expr, iss.Err())
+			}
+			prg, err := env.Program(ast)
+			if err != nil {
+				t.Fatalf("Program() failed: %v", err)
+			}
+			out, _, err := prg.Eval(map[string]any{"msg": msg})
+			if err != nil {
+				t.Fatalf("Eval() failed: %v", err)
+			}
+			if out != types.True {
+				t.Errorf("Eval(%q) = %v, wanted true", tc.expr, out)
+			}
+		})
+	}
+}
+

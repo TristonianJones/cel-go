@@ -245,18 +245,20 @@ func TestFieldDescriptionGetFrom(t *testing.T) {
 		if !found {
 			t.Fatalf("td.FieldByName(%q) not found", field)
 		}
-		got, err := f.GetFrom(msg)
-		if err != nil {
-			t.Fatalf("field.GetFrom() failed: %v", err)
-		}
-		switch g := got.(type) {
-		case proto.Message:
-			if !proto.Equal(g, want.(proto.Message)) {
-				t.Errorf("got field %s value %v, wanted %v", field, g, want)
+		for _, target := range []any{msg, msg.ProtoReflect()} {
+			got, err := f.GetFrom(target)
+			if err != nil {
+				t.Fatalf("field.GetFrom(%T) failed: %v", target, err)
 			}
-		default:
-			if !reflect.DeepEqual(g, want) {
-				t.Errorf("got field %s value %v, wanted %v", field, g, want)
+			switch g := got.(type) {
+			case proto.Message:
+				if !proto.Equal(g, want.(proto.Message)) {
+					t.Errorf("got field %s value %v, wanted %v", field, g, want)
+				}
+			default:
+				if !reflect.DeepEqual(g, want) {
+					t.Errorf("got field %s value %v, wanted %v", field, g, want)
+				}
 			}
 		}
 	}
@@ -286,7 +288,17 @@ func TestFieldDescriptionIsSet(t *testing.T) {
 			isSet: true,
 		},
 		{
+			msg:   (&proto3pb.TestAllTypes{SingleBool: true}).ProtoReflect(),
+			field: "single_bool",
+			isSet: true,
+		},
+		{
 			msg:   &proto3pb.TestAllTypes{},
+			field: "single_bool",
+			isSet: false,
+		},
+		{
+			msg:   (&proto3pb.TestAllTypes{}).ProtoReflect(),
 			field: "single_bool",
 			isSet: false,
 		},
