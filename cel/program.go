@@ -401,11 +401,17 @@ func newProgram(e *Env, a *ast.AST, opts []ProgramOption) (Program, error) {
 		}
 		if p.evalOpts&OptTrackCost == OptTrackCost {
 			trackerOpts := p.costModel.tracker
-			costOptCount := len(trackerOpts) + len(p.costOptions)
+			costOptCount := len(trackerOpts) + len(p.costOptions) + 1
 			if p.costLimit != nil {
 				costOptCount++
 			}
 			costOpts := make([]cost.TrackerOption, 0, costOptCount)
+			costOpts = append(costOpts, cost.TrackerLimitExceededHandler(func() {
+				panic(interpreter.EvalCancelledError{
+					Cause:   interpreter.CostLimitExceeded,
+					Message: "operation cancelled: actual cost limit exceeded",
+				})
+			}))
 			costOpts = append(costOpts, trackerOpts...)
 			costOpts = append(costOpts, p.costOptions...)
 			if p.costLimit != nil {
@@ -492,6 +498,11 @@ func (p *prog) Eval(input any) (out ref.Val, det *EvalDetails, err error) {
 			switch t := r.(type) {
 			case interpreter.EvalCancelledError:
 				err = t
+			case cost.LimitExceededError:
+				err = interpreter.EvalCancelledError{
+					Cause:   interpreter.CostLimitExceeded,
+					Message: t.Message,
+				}
 			default:
 				err = fmt.Errorf("internal error: %v", r)
 			}
@@ -647,6 +658,14 @@ func (p *prog) ConcurrentEval(ctx context.Context, input any) <-chan EvalResult 
 			switch t := r.(type) {
 			case interpreter.EvalCancelledError:
 				resCh <- EvalResult{EvalDetails: det, Err: t}
+			case cost.LimitExceededError:
+				resCh <- EvalResult{
+					EvalDetails: det,
+					Err: interpreter.EvalCancelledError{
+						Cause:   interpreter.CostLimitExceeded,
+						Message: t.Message,
+					},
+				}
 			default:
 				resCh <- EvalResult{EvalDetails: det, Err: fmt.Errorf("internal error: %v", r)}
 			}

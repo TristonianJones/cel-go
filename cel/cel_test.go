@@ -2098,7 +2098,7 @@ func TestCostLimit(t *testing.T) {
 			},
 			in:        map[string]any{"val1": 1, "val2": 2},
 			costLimit: 0,
-			err:       errors.New("actual cost limit exceeded"),
+			err:       errors.New("operation cancelled: actual cost limit exceeded"),
 		},
 	}
 
@@ -2151,12 +2151,117 @@ func TestCostLimit(t *testing.T) {
 						est.Min, est.Max)
 				}
 			} else {
-				if !strings.Contains(err.Error(), tc.err.Error()) {
-					t.Fatalf("program.Eval() got error %v, wanted error containing %v", err, tc.err)
+				if err.Error() != tc.err.Error() {
+					t.Fatalf("program.Eval() got error %q, wanted %q", err.Error(), tc.err.Error())
+				}
+				var cancelErr interpreter.EvalCancelledError
+				if !errors.As(err, &cancelErr) {
+					t.Fatalf("errors.As(%v, &interpreter.EvalCancelledError{}) = false, wanted true", err)
+				}
+				if cancelErr.Cause != interpreter.CostLimitExceeded {
+					t.Errorf("cancelErr.Cause = %v, wanted %v", cancelErr.Cause, interpreter.CostLimitExceeded)
 				}
 			}
 		})
 	}
+}
+
+func TestCostLimitExceededCancellation(t *testing.T) {
+	const wantMsg = "operation cancelled: actual cost limit exceeded"
+	env := testEnv(t,
+		Variable("val1", IntType),
+		Variable("val2", IntType),
+		Function("limit_panic",
+			Overload("global_limit_panic", []*Type{}, BoolType,
+				FunctionBinding(func(args ...ref.Val) ref.Val {
+					panic(cost.LimitExceededError{Message: wantMsg})
+				}),
+			),
+		),
+	)
+
+	t.Run("CostLimitOption", func(t *testing.T) {
+		ast, iss := env.Compile(`val1 > val2`)
+		if iss.Err() != nil {
+			t.Fatalf("env.Compile() failed: %v", iss.Err())
+		}
+		prg, err := env.Program(ast, CostLimit(0))
+		if err != nil {
+			t.Fatalf("env.Program() failed: %v", err)
+		}
+		in := map[string]any{"val1": 1, "val2": 2}
+
+		_, _, err = prg.Eval(in)
+		if err == nil {
+			t.Fatal("prg.Eval() got nil error, wanted error")
+		}
+		if err.Error() != wantMsg {
+			t.Errorf("prg.Eval() error = %q, want %q", err.Error(), wantMsg)
+		}
+		var cancelErr interpreter.EvalCancelledError
+		if !errors.As(err, &cancelErr) {
+			t.Fatalf("errors.As(err, &interpreter.EvalCancelledError{}) = false for %T (%v)", err, err)
+		}
+		if cancelErr.Cause != interpreter.CostLimitExceeded {
+			t.Errorf("cancelErr.Cause = %v, want %v", cancelErr.Cause, interpreter.CostLimitExceeded)
+		}
+
+		res := <-prg.ConcurrentEval(context.Background(), in)
+		if res.Err == nil {
+			t.Fatal("prg.ConcurrentEval() got nil error, wanted error")
+		}
+		if res.Err.Error() != wantMsg {
+			t.Errorf("prg.ConcurrentEval() error = %q, want %q", res.Err.Error(), wantMsg)
+		}
+		var asyncCancelErr interpreter.EvalCancelledError
+		if !errors.As(res.Err, &asyncCancelErr) {
+			t.Fatalf("errors.As(res.Err, &interpreter.EvalCancelledError{}) = false for %T (%v)", res.Err, res.Err)
+		}
+		if asyncCancelErr.Cause != interpreter.CostLimitExceeded {
+			t.Errorf("asyncCancelErr.Cause = %v, want %v", asyncCancelErr.Cause, interpreter.CostLimitExceeded)
+		}
+	})
+
+	t.Run("LimitExceededErrorPanic", func(t *testing.T) {
+		ast, iss := env.Compile(`limit_panic()`)
+		if iss.Err() != nil {
+			t.Fatalf("env.Compile() failed: %v", iss.Err())
+		}
+		prg, err := env.Program(ast)
+		if err != nil {
+			t.Fatalf("env.Program() failed: %v", err)
+		}
+
+		_, _, err = prg.Eval(NoVars())
+		if err == nil {
+			t.Fatal("prg.Eval() got nil error, wanted error")
+		}
+		if err.Error() != wantMsg {
+			t.Errorf("prg.Eval() error = %q, want %q", err.Error(), wantMsg)
+		}
+		var cancelErr interpreter.EvalCancelledError
+		if !errors.As(err, &cancelErr) {
+			t.Fatalf("errors.As(err, &interpreter.EvalCancelledError{}) = false for %T (%v)", err, err)
+		}
+		if cancelErr.Cause != interpreter.CostLimitExceeded {
+			t.Errorf("cancelErr.Cause = %v, want %v", cancelErr.Cause, interpreter.CostLimitExceeded)
+		}
+
+		res := <-prg.ConcurrentEval(context.Background(), NoVars())
+		if res.Err == nil {
+			t.Fatal("prg.ConcurrentEval() got nil error, wanted error")
+		}
+		if res.Err.Error() != wantMsg {
+			t.Errorf("prg.ConcurrentEval() error = %q, want %q", res.Err.Error(), wantMsg)
+		}
+		var asyncCancelErr interpreter.EvalCancelledError
+		if !errors.As(res.Err, &asyncCancelErr) {
+			t.Fatalf("errors.As(res.Err, &interpreter.EvalCancelledError{}) = false for %T (%v)", res.Err, res.Err)
+		}
+		if asyncCancelErr.Cause != interpreter.CostLimitExceeded {
+			t.Errorf("asyncCancelErr.Cause = %v, want %v", asyncCancelErr.Cause, interpreter.CostLimitExceeded)
+		}
+	})
 }
 
 func TestCostTrackingConsistentAcrossEvals(t *testing.T) {
