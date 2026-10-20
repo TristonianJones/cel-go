@@ -261,6 +261,13 @@ func TestFieldDescriptionGetFrom(t *testing.T) {
 				}
 			}
 		}
+		// Mismatched message descriptor should return an error rather than panic.
+		if _, err := f.GetFrom(&proto3pb.TestAllTypes_NestedMessage{Bb: 1}); err == nil {
+			t.Errorf("field.GetFrom(mismatched message) succeeded for %s, wanted error", field)
+		}
+		if _, err := f.GetFrom((&proto3pb.TestAllTypes_NestedMessage{Bb: 1}).ProtoReflect()); err == nil {
+			t.Errorf("field.GetFrom(mismatched protoreflect.Message) succeeded for %s, wanted error", field)
+		}
 	}
 }
 
@@ -309,6 +316,21 @@ func TestFieldDescriptionIsSet(t *testing.T) {
 		},
 		{
 			msg:   (&proto3pb.TestAllTypes{}),
+			field: "single_bool",
+			isSet: false,
+		},
+		{
+			msg:   (*proto3pb.TestAllTypes)(nil),
+			field: "single_bool",
+			isSet: false,
+		},
+		{
+			msg:   &proto3pb.TestAllTypes_NestedMessage{Bb: 1},
+			field: "single_bool",
+			isSet: false,
+		},
+		{
+			msg:   (&proto3pb.TestAllTypes_NestedMessage{Bb: 1}).ProtoReflect(),
 			field: "single_bool",
 			isSet: false,
 		},

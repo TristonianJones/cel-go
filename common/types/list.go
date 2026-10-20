@@ -70,7 +70,7 @@ func NewDynamicList(adapter Adapter, value any) traits.Lister {
 	}
 	rt := reflect.TypeOf(value)
 	if meta := getDynamicSliceMeta(rt); meta.supported {
-		sh := (*unsafeSlice)((*emptyInterface)(unsafe.Pointer(&value)).ptr)
+		sh := (*unsafeSlice)(anyDataPtr(value))
 		isNil := sh == nil || sh.Data == nil
 		if meta.isPtrElem {
 			var elems []unsafe.Pointer
@@ -213,35 +213,6 @@ func MaybeReverseList(adapter Adapter, list traits.Lister) (traits.Lister, bool)
 		out.Index(n - 1 - i).Set(rv.Index(i))
 	}
 	return NewDynamicList(adapter, out.Interface()), true
-}
-
-// elemTypePtrFor returns the runtime *_type pointer for T if and only if T is a non-empty
-// struct that Go's ABI stores indirectly in an emptyInterface (i.e. e.ptr points to &T),
-// or the *_type pointer for *T if T is a 1-pointer direct-interface struct.
-//
-// This optimization mirrors Go runtime's internal empty interface representation:
-//
-//	type eface struct {
-//	    _type *_type
-//	    data  unsafe.Pointer
-//	}
-//
-// For indirect interface types, data points to the struct instance. For direct interface
-// types (e.g. single-word pointer structs), data contains the pointer itself.
-func elemTypePtrFor[T any]() unsafe.Pointer {
-	t := reflect.TypeFor[T]()
-	if t == nil || t.Kind() != reflect.Struct || t.Size() == 0 {
-		return nil
-	}
-	var z T
-	var a any = z
-	e := (*emptyInterface)(unsafe.Pointer(&a))
-	if e.ptr == nil {
-		var zp *T
-		var ap any = zp
-		return (*emptyInterface)(unsafe.Pointer(&ap)).typ
-	}
-	return e.typ
 }
 
 // baseList points to a list containing elements of any type.
@@ -804,13 +775,30 @@ func (l *sliceList[T]) nativeSliceValue() any {
 			Len:  n,
 			Cap:  n,
 		}
-		var out any
-		e := (*emptyInterface)(unsafe.Pointer(&out))
-		e.typ = l.meta.sliceTypePtr
-		e.ptr = unsafe.Pointer(hdr)
-		return out
+		return packAny(l.meta.sliceTypePtr, unsafe.Pointer(hdr))
 	}
 	return l.elems
+}
+
+func (l *sliceList[T]) rawElemAt(ind int) (any, bool) {
+	switch s := any(l).(type) {
+	case *sliceList[unsafe.Pointer]:
+		if s.elemTypePtr != nil {
+			ptr := s.elems[ind]
+			if ptr == nil {
+				return NullValue, true
+			}
+			return packAny(s.elemTypePtr, ptr), true
+		}
+	case *sliceList[uint8]:
+		if s.meta != nil && s.meta.elemStride > 0 && s.elemTypePtr != nil {
+			return packAny(s.elemTypePtr, unsafe.Pointer(&s.elems[uintptr(ind)*s.meta.elemStride])), true
+		}
+	}
+	if l.elemTypePtr != nil {
+		return packAny(l.elemTypePtr, unsafe.Pointer(&l.elems[ind])), true
+	}
+	return nil, false
 }
 
 func (l *sliceList[T]) getElem(ind int) ref.Val {
@@ -832,14 +820,9 @@ func (l *sliceList[T]) getElem(ind int) ref.Val {
 	case *sliceList[uint32]:
 		return Uint(s.elems[ind])
 	case *sliceList[uint8]:
-		if s.meta != nil && s.meta.elemStride > 0 && s.elemTypePtr != nil {
-			var a any
-			e := (*emptyInterface)(unsafe.Pointer(&a))
-			e.typ = s.elemTypePtr
-			e.ptr = unsafe.Pointer(&s.elems[uintptr(ind)*s.meta.elemStride])
-			return s.Adapter.NativeToValue(a)
+		if s.meta == nil {
+			return Uint(s.elems[ind])
 		}
-		return Uint(s.elems[ind])
 	case *sliceList[float64]:
 		return Double(s.elems[ind])
 	case *sliceList[float32]:
@@ -851,25 +834,9 @@ func (l *sliceList[T]) getElem(ind int) ref.Val {
 		return False
 	case *sliceList[[]byte]:
 		return Bytes(s.elems[ind])
-	case *sliceList[unsafe.Pointer]:
-		if s.elemTypePtr != nil {
-			ptr := s.elems[ind]
-			if ptr == nil {
-				return NullValue
-			}
-			var a any
-			e := (*emptyInterface)(unsafe.Pointer(&a))
-			e.typ = s.elemTypePtr
-			e.ptr = ptr
-			return s.Adapter.NativeToValue(a)
-		}
 	}
-	if l.elemTypePtr != nil {
-		var a any
-		e := (*emptyInterface)(unsafe.Pointer(&a))
-		e.typ = l.elemTypePtr
-		e.ptr = unsafe.Pointer(&l.elems[ind])
-		return l.Adapter.NativeToValue(a)
+	if raw, ok := l.rawElemAt(ind); ok {
+		return l.Adapter.NativeToValue(raw)
 	}
 	return l.Adapter.NativeToValue(l.elems[ind])
 }
@@ -886,34 +853,8 @@ func (l *sliceList[T]) GetInt64Index(ind int64) (any, bool) {
 	if !l.qualifyRawVal {
 		return l.getElem(i), true
 	}
-	switch s := any(l).(type) {
-	case *sliceList[unsafe.Pointer]:
-		if s.elemTypePtr != nil {
-			ptr := s.elems[i]
-			if ptr == nil {
-				return NullValue, true
-			}
-			var a any
-			e := (*emptyInterface)(unsafe.Pointer(&a))
-			e.typ = s.elemTypePtr
-			e.ptr = ptr
-			return a, true
-		}
-	case *sliceList[uint8]:
-		if s.meta != nil && s.meta.elemStride > 0 && s.elemTypePtr != nil {
-			var a any
-			e := (*emptyInterface)(unsafe.Pointer(&a))
-			e.typ = s.elemTypePtr
-			e.ptr = unsafe.Pointer(&s.elems[uintptr(i)*s.meta.elemStride])
-			return a, true
-		}
-	}
-	if l.elemTypePtr != nil {
-		var a any
-		e := (*emptyInterface)(unsafe.Pointer(&a))
-		e.typ = l.elemTypePtr
-		e.ptr = unsafe.Pointer(&l.elems[i])
-		return a, true
+	if raw, ok := l.rawElemAt(i); ok {
+		return raw, true
 	}
 	return l.elems[i], true
 }
@@ -1242,11 +1183,7 @@ func (l *sliceList[T]) Fold(f traits.Folder) {
 			stride := s.meta.elemStride
 			n := len(s.elems) / int(stride)
 			for i := 0; i < n; i++ {
-				var a any
-				e := (*emptyInterface)(unsafe.Pointer(&a))
-				e.typ = s.elemTypePtr
-				e.ptr = unsafe.Pointer(&s.elems[uintptr(i)*stride])
-				if !f.FoldEntry(i, a) {
+				if !f.FoldEntry(i, packAny(s.elemTypePtr, unsafe.Pointer(&s.elems[uintptr(i)*stride]))) {
 					break
 				}
 			}
@@ -1294,11 +1231,7 @@ func (l *sliceList[T]) Fold(f traits.Folder) {
 					}
 					continue
 				}
-				var a any
-				e := (*emptyInterface)(unsafe.Pointer(&a))
-				e.typ = s.elemTypePtr
-				e.ptr = ptr
-				if !f.FoldEntry(i, a) {
+				if !f.FoldEntry(i, packAny(s.elemTypePtr, ptr)) {
 					break
 				}
 			}
@@ -1307,11 +1240,7 @@ func (l *sliceList[T]) Fold(f traits.Folder) {
 	default:
 		if l.elemTypePtr != nil {
 			for i := range l.elems {
-				var a any
-				e := (*emptyInterface)(unsafe.Pointer(&a))
-				e.typ = l.elemTypePtr
-				e.ptr = unsafe.Pointer(&l.elems[i])
-				if !f.FoldEntry(i, a) {
+				if !f.FoldEntry(i, packAny(l.elemTypePtr, unsafe.Pointer(&l.elems[i]))) {
 					break
 				}
 			}

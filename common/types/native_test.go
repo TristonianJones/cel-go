@@ -35,6 +35,7 @@ import (
 	"cel.dev/cel-go/test"
 
 	structpb "google.golang.org/protobuf/types/known/structpb"
+	wrapperspb "google.golang.org/protobuf/types/known/wrapperspb"
 
 	proto3pb "cel.dev/cel-go/test/proto3pb"
 )
@@ -4360,7 +4361,168 @@ func TestNativeInterfaceFieldsExpressions(t *testing.T) {
 	}
 }
 
+type DirectPtrItem struct {
+	Child *NestedElem
+}
 
+type NativeProtoAndCollectionHolder struct {
+	ValItems    []TestNestedSliceType
+	PtrItems    []*NestedElem
+	DirectItems []DirectPtrItem
+	ValMap      map[string]TestNestedSliceType
+	PtrMap      map[string]*NestedElem
+	DirectMap   map[string]DirectPtrItem
+	PbMsg       *proto3pb.TestAllTypes
+	NilPbMsg    *proto3pb.TestAllTypes
+	PbList      []*proto3pb.TestAllTypes
+	PbMap       map[string]*proto3pb.TestAllTypes
+	WrapInt     *wrapperspb.Int64Value
+	NilWrapInt  *wrapperspb.Int64Value
+}
 
+func TestNativeStructComprehensionsAndFieldSelection(t *testing.T) {
+	env, err := cel.NewEnv(
+		cel.OptionalTypes(),
+		ext.TwoVarComprehensions(),
+		ext.NativeTypes(
+			reflect.TypeFor[TestNestedSliceType](),
+			reflect.TypeFor[NestedElem](),
+			reflect.TypeFor[DirectPtrItem](),
+			reflect.TypeFor[NativeProtoAndCollectionHolder](),
+		),
+		cel.Types(&proto3pb.TestAllTypes{}),
+		cel.Variable("h", cel.ObjectType("types_test.NativeProtoAndCollectionHolder")),
+	)
+	if err != nil {
+		t.Fatalf("cel.NewEnv() failed: %v", err)
+	}
 
+	holder := &NativeProtoAndCollectionHolder{
+		ValItems: []TestNestedSliceType{
+			{Value: "v1"},
+			{Value: "v2"},
+		},
+		PtrItems: []*NestedElem{
+			{Name: "p1"},
+			{Name: "p2"},
+		},
+		DirectItems: []DirectPtrItem{
+			{Child: &NestedElem{Name: "d1"}},
+			{Child: &NestedElem{Name: "d2"}},
+		},
+		ValMap: map[string]TestNestedSliceType{
+			"k1": {Value: "mv1"},
+			"k2": {Value: "mv2"},
+		},
+		PtrMap: map[string]*NestedElem{
+			"k1": {Name: "mp1"},
+			"k2": {Name: "mp2"},
+		},
+		DirectMap: map[string]DirectPtrItem{
+			"k1": {Child: &NestedElem{Name: "md1"}},
+			"k2": {Child: &NestedElem{Name: "md2"}},
+		},
+		PbMsg: &proto3pb.TestAllTypes{
+			SingleInt32: 42,
+			RepeatedNestedMessage: []*proto3pb.TestAllTypes_NestedMessage{
+				{Bb: 7},
+				{Bb: 8},
+			},
+		},
+		PbList: []*proto3pb.TestAllTypes{
+			{
+				SingleInt32: 10,
+				NestedType: &proto3pb.TestAllTypes_SingleNestedMessage{
+					SingleNestedMessage: &proto3pb.TestAllTypes_NestedMessage{Bb: 1},
+				},
+			},
+			{
+				SingleInt32: 20,
+				NestedType: &proto3pb.TestAllTypes_SingleNestedMessage{
+					SingleNestedMessage: &proto3pb.TestAllTypes_NestedMessage{Bb: 2},
+				},
+			},
+		},
+		PbMap: map[string]*proto3pb.TestAllTypes{
+			"a": {SingleInt32: 100},
+			"b": {SingleInt32: 200},
+		},
+		WrapInt:    wrapperspb.Int64(99),
+		NilWrapInt: nil,
+	}
+
+	tests := []struct {
+		name string
+		expr string
+	}{
+		{
+			name: "1-var and chained comprehensions on value struct slice",
+			expr: `h.ValItems.filter(x, has(x.Value)).map(x, x.?Value.orValue('')) == ['v1', 'v2']`,
+		},
+		{
+			name: "2-var comprehension on value struct slice",
+			expr: `h.ValItems.all(i, x, has(x.Value) && x.Value != '' && x.?Value.orValue('') == h.ValItems[i].Value)`,
+		},
+		{
+			name: "1-var and chained comprehensions on pointer struct slice",
+			expr: `h.PtrItems.filter(x, has(x.Name)).map(x, x.?Name.orValue('')) == ['p1', 'p2']`,
+		},
+		{
+			name: "2-var comprehension on pointer struct slice",
+			expr: `h.PtrItems.all(i, x, has(x.Name) && x.Name == h.PtrItems[i].Name)`,
+		},
+		{
+			name: "1-var and chained comprehensions on direct-interface struct slice",
+			expr: `h.DirectItems.filter(x, has(x.Child)).map(x, x.Child.Name) == ['d1', 'd2']`,
+		},
+		{
+			name: "2-var comprehension and indexing on direct-interface struct slice",
+			expr: `h.DirectItems.all(i, x, has(x.Child) && x.?Child.Name.orValue('') == h.DirectItems[i].Child.Name)`,
+		},
+		{
+			name: "1-var and 2-var comprehensions on value struct map",
+			expr: `h.ValMap.all(k, has(h.ValMap[k].Value)) && h.ValMap.all(k, v, has(v.Value) && v.?Value.orValue('') == h.ValMap[k].Value)`,
+		},
+		{
+			name: "1-var and 2-var comprehensions on pointer struct map",
+			expr: `h.PtrMap.all(k, has(h.PtrMap[k].Name)) && h.PtrMap.all(k, v, has(v.Name) && v.?Name.orValue('') == h.PtrMap[k].Name)`,
+		},
+		{
+			name: "1-var and 2-var comprehensions on direct-interface struct map",
+			expr: `h.DirectMap.all(k, has(h.DirectMap[k].Child)) && h.DirectMap.all(k, v, has(v.Child) && v.?Child.Name.orValue('') == h.DirectMap[k].Child.Name)`,
+		},
+		{
+			name: "native struct holding proto message and nil proto message",
+			expr: `has(h.PbMsg) && h.PbMsg.single_int32 == 42 && !has(h.NilPbMsg) && h.NilPbMsg.single_int32 == 0 && h.PbMsg.repeated_nested_message.all(i, m, m.bb == i + 7)`,
+		},
+		{
+			name: "native struct holding slice and map of proto messages",
+			expr: `h.PbList.all(i, m, m.single_int32 == (i + 1) * 10 && m.?single_nested_message.bb.orValue(0) == i + 1) && h.PbMap.all(k, m, has(m.single_int32) && m.single_int32 == h.PbMap[k].single_int32)`,
+		},
+		{
+			name: "native struct holding populated and nil protobuf wrapper fields",
+			expr: `has(h.WrapInt) && h.WrapInt == 99 && !has(h.NilWrapInt) && h.NilWrapInt == null && !h.?NilWrapInt.hasValue()`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ast, iss := env.Compile(tc.expr)
+			if iss.Err() != nil {
+				t.Fatalf("Compile(%q) failed: %v", tc.expr, iss.Err())
+			}
+			prg, err := env.Program(ast)
+			if err != nil {
+				t.Fatalf("Program(%q) failed: %v", tc.expr, err)
+			}
+			out, _, err := prg.Eval(map[string]any{"h": holder})
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.expr, err)
+			}
+			if out != types.True {
+				t.Errorf("Eval(%q) = %v, wanted true", tc.expr, out)
+			}
+		})
+	}
+}
 

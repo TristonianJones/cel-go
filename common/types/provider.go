@@ -818,6 +818,9 @@ func (p *Registry) NativeToValue(value any) ref.Val {
 	case protoreflect.List:
 		return NewProtoList(p, v)
 	case protoreflect.Message:
+		if v == nil {
+			return UnsupportedRefValConversionErr(v)
+		}
 		return p.NativeToValue(v.Interface())
 	case protoreflect.Value:
 		return p.NativeToValue(v.Interface())
@@ -1113,6 +1116,60 @@ type emptyInterface struct {
 	ptr unsafe.Pointer
 }
 
+// packAny constructs an empty interface value from a raw runtime *_type pointer and data pointer.
+func packAny(typ, ptr unsafe.Pointer) any {
+	var a any
+	e := (*emptyInterface)(unsafe.Pointer(&a))
+	e.typ = typ
+	e.ptr = ptr
+	return a
+}
+
+// unpackAny extracts the raw runtime *_type and data pointers from an empty interface value.
+func unpackAny(v any) emptyInterface {
+	return *(*emptyInterface)(unsafe.Pointer(&v))
+}
+
+// anyDataPtr returns the data pointer word from an empty interface value.
+func anyDataPtr(v any) unsafe.Pointer {
+	return (*emptyInterface)(unsafe.Pointer(&v)).ptr
+}
+
+// runtimeTypePtr returns the Go runtime *_type pointer for the given reflect.Type.
+func runtimeTypePtr(rt reflect.Type) unsafe.Pointer {
+	return unpackAny(reflect.Zero(rt).Interface()).typ
+}
+
+// elemTypePtrFor returns the runtime *_type pointer for T if and only if T is a non-empty
+// raw struct type suitable for zero-copy boxing via packAny(typ, unsafe.Pointer(&elem)).
+//
+// For indirect-interface structs, data points to the struct value and typ is T's *_type.
+// For single-pointer direct-interface structs, data holds the pointer directly at offset 0,
+// so &elem has the exact representation of a *T in an emptyInterface and typ is *T's *_type.
+func elemTypePtrFor[T any]() unsafe.Pointer {
+	t := reflect.TypeFor[T]()
+	if t == nil || t.Kind() != reflect.Struct || t.Size() == 0 || !isQualifyRawStructType(t) {
+		return nil
+	}
+	var z T
+	if e := unpackAny(z); e.ptr != nil {
+		return e.typ
+	}
+	var zp *T
+	return unpackAny(zp).typ
+}
+
+// elemTypePtrForType is the reflect.Type equivalent of elemTypePtrFor.
+func elemTypePtrForType(elemType reflect.Type) unsafe.Pointer {
+	if elemType == nil || elemType.Kind() != reflect.Struct || elemType.Size() == 0 || !isQualifyRawStructType(elemType) {
+		return nil
+	}
+	if isDirectIface(elemType) {
+		return runtimeTypePtr(reflect.PointerTo(elemType))
+	}
+	return runtimeTypePtr(elemType)
+}
+
 // isDirectIface determines whether a type's values fit directly into an interface's data word
 // according to Go runtime conventions (pointers, single-pointer structs/arrays, maps, funcs, chans).
 func isDirectIface(t reflect.Type) bool {
@@ -1172,31 +1229,21 @@ func getDynamicSliceMeta(rt reflect.Type) *dynamicSliceMeta {
 	if v, ok := dynamicSliceMetaCache.Load(rt); ok {
 		return v.(*dynamicSliceMeta)
 	}
-	zeroSlice := reflect.Zero(rt).Interface()
-	sliceTypPtr := (*emptyInterface)(unsafe.Pointer(&zeroSlice)).typ
+	sliceTypPtr := runtimeTypePtr(rt)
 	elemType := rt.Elem()
 	var meta *dynamicSliceMeta
 	switch elemType.Kind() {
 	case reflect.Pointer:
-		zeroElem := reflect.Zero(elemType).Interface()
 		meta = &dynamicSliceMeta{
 			sliceType:     rt,
 			sliceTypePtr:  sliceTypPtr,
-			elemTypePtr:   (*emptyInterface)(unsafe.Pointer(&zeroElem)).typ,
+			elemTypePtr:   runtimeTypePtr(elemType),
 			qualifyRawVal: isQualifyRawStructType(elemType),
 			isPtrElem:     true,
 			supported:     true,
 		}
 	case reflect.Struct:
-		if elemType.Size() > 0 && isQualifyRawStructType(elemType) {
-			var elemTyp unsafe.Pointer
-			if isDirectIface(elemType) {
-				zeroPtr := reflect.Zero(reflect.PointerTo(elemType)).Interface()
-				elemTyp = (*emptyInterface)(unsafe.Pointer(&zeroPtr)).typ
-			} else {
-				zeroVal := reflect.Zero(elemType).Interface()
-				elemTyp = (*emptyInterface)(unsafe.Pointer(&zeroVal)).typ
-			}
+		if elemTyp := elemTypePtrForType(elemType); elemTyp != nil {
 			meta = &dynamicSliceMeta{
 				sliceType:     rt,
 				sliceTypePtr:  sliceTypPtr,

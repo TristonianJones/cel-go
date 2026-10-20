@@ -47,7 +47,9 @@ import (
 	exprpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	descpb "google.golang.org/protobuf/types/descriptorpb"
 	dynamicpb "google.golang.org/protobuf/types/dynamicpb"
+	anypb "google.golang.org/protobuf/types/known/anypb"
 	durationpb "google.golang.org/protobuf/types/known/durationpb"
+	structpb "google.golang.org/protobuf/types/known/structpb"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	wrapperspb "google.golang.org/protobuf/types/known/wrapperspb"
 
@@ -6728,6 +6730,15 @@ func TestProtoMessageComprehensions(t *testing.T) {
 		t.Fatalf("NewEnv() failed: %v", err)
 	}
 
+	anyNested1, err := anypb.New(&proto3pb.TestAllTypes_NestedMessage{Bb: 100})
+	if err != nil {
+		t.Fatalf("anypb.New() failed: %v", err)
+	}
+	anyNested2, err := anypb.New(&proto3pb.TestAllTypes_NestedMessage{Bb: 200})
+	if err != nil {
+		t.Fatalf("anypb.New() failed: %v", err)
+	}
+
 	msg := &proto3pb.TestAllTypes{
 		RepeatedNestedMessage: []*proto3pb.TestAllTypes_NestedMessage{
 			{Bb: 1},
@@ -6737,17 +6748,33 @@ func TestProtoMessageComprehensions(t *testing.T) {
 		MapInt64NestedType: map[int64]*proto3pb.NestedTestAllTypes{
 			1: {
 				Payload: &proto3pb.TestAllTypes{
-					SingleInt32: 10,
+					SingleInt32:        10,
+					SingleInt64Wrapper: wrapperspb.Int64(100),
+					SingleDuration:     durationpb.New(5 * time.Second),
+					SingleTimestamp:    timestamppb.New(time.Unix(1000, 0).UTC()),
+					SingleValue:        structpb.NewStringValue("v1"),
+					SingleAny:          anyNested1,
 					NestedType: &proto3pb.TestAllTypes_SingleNestedMessage{
 						SingleNestedMessage: &proto3pb.TestAllTypes_NestedMessage{Bb: 1},
+					},
+					RepeatedNestedMessage: []*proto3pb.TestAllTypes_NestedMessage{
+						{Bb: 11},
 					},
 				},
 			},
 			2: {
 				Payload: &proto3pb.TestAllTypes{
-					SingleInt32: 20,
+					SingleInt32:        20,
+					SingleInt64Wrapper: wrapperspb.Int64(200),
+					SingleDuration:     durationpb.New(10 * time.Second),
+					SingleTimestamp:    timestamppb.New(time.Unix(2000, 0).UTC()),
+					SingleValue:        structpb.NewStringValue("v2"),
+					SingleAny:          anyNested2,
 					NestedType: &proto3pb.TestAllTypes_SingleNestedMessage{
 						SingleNestedMessage: &proto3pb.TestAllTypes_NestedMessage{Bb: 2},
+					},
+					RepeatedNestedMessage: []*proto3pb.TestAllTypes_NestedMessage{
+						{Bb: 22},
 					},
 				},
 			},
@@ -6786,6 +6813,10 @@ func TestProtoMessageComprehensions(t *testing.T) {
 			name: "2-var proto map message value selection, presence, and optional selection",
 			expr: `msg.map_int64_nested_type.all(k, m, has(m.payload) && m.payload.single_int32 > 0 && has(m.payload.single_nested_message.bb) && m.payload.single_nested_message.bb > 0 && m.?payload.single_nested_message.bb.orValue(0) == k)`,
 		},
+		{
+			name: "2-var proto map message well-known types and nested repeated comprehension",
+			expr: `msg.map_int64_nested_type.all(k, m, m.payload.single_int64_wrapper == k * 100 && m.payload.single_duration >= duration('5s') && m.payload.single_timestamp >= timestamp('1970-01-01T00:00:00Z') && m.payload.single_value != '' && m.payload.single_any.bb == k * 100 && m.payload.repeated_nested_message.all(n, n.bb == k * 11))`,
+		},
 	}
 
 	for _, tc := range tests {
@@ -6808,4 +6839,5 @@ func TestProtoMessageComprehensions(t *testing.T) {
 		})
 	}
 }
+
 

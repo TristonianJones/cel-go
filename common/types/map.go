@@ -645,8 +645,21 @@ func (m *nativeMap[K, V]) valToRefVal(v V) ref.Val {
 	case *[]byte:
 		return Bytes(*(*[]byte)(unsafe.Pointer(&v)))
 	default:
+		if m.valTypePtr != nil {
+			return m.Adapter.NativeToValue(packAny(m.valTypePtr, unsafe.Pointer(&v)))
+		}
 		return m.Adapter.NativeToValue(v)
 	}
+}
+
+func (m *nativeMap[K, V]) rawValToAny(v V) any {
+	if m.valTypePtr != nil {
+		return packAny(m.valTypePtr, unsafe.Pointer(&v))
+	}
+	if m.qualifyRawVal && anyDataPtr(v) == nil {
+		return NullValue
+	}
+	return v
 }
 
 func (m *nativeMap[K, V]) keyToFoldAny(k K) any {
@@ -707,7 +720,7 @@ func (m *nativeMap[K, V]) valToFoldAny(v V) any {
 	case *[]byte:
 		return Bytes(*(*[]byte)(unsafe.Pointer(&v)))
 	default:
-		return v
+		return m.rawValToAny(v)
 	}
 }
 
@@ -859,7 +872,7 @@ func (m *nativeMap[K, V]) Find(key ref.Val) (ref.Val, bool) {
 
 func (m *nativeMap[K, V]) valToQualifyAny(v V) any {
 	if m.qualifyRawVal {
-		return v
+		return m.rawValToAny(v)
 	}
 	return m.valToRefVal(v)
 }
@@ -1023,18 +1036,6 @@ func (m *nativeMap[K, V]) Fold(f traits.Folder) {
 	if kf, ok := f.(interface{ FoldKeyOnly() bool }); ok && kf.FoldKeyOnly() {
 		for k := range m.mapVal {
 			if !f.FoldEntry(m.keyToFoldAny(k), nil) {
-				break
-			}
-		}
-		return
-	}
-	if m.valTypePtr != nil {
-		for k, v := range m.mapVal {
-			var a any
-			e := (*emptyInterface)(unsafe.Pointer(&a))
-			e.typ = m.valTypePtr
-			e.ptr = unsafe.Pointer(&v)
-			if !f.FoldEntry(m.keyToFoldAny(k), a) {
 				break
 			}
 		}
