@@ -201,15 +201,11 @@ func newDynamicBlock(slotExprs []interpreter.InterpretableV2, expr interpreter.I
 	bs.slotActivationPool = &sync.Pool{
 		New: func() any {
 			slotCount := len(slotExprs)
-			sa := &dynamicSlotActivation{
+			return &dynamicSlotActivation{
 				slotExprs: slotExprs,
 				slotCount: slotCount,
-				slotVals:  make([]*slotVal, slotCount),
+				slotVals:  make([]slotVal, slotCount),
 			}
-			for i := 0; i < slotCount; i++ {
-				sa.slotVals[i] = &slotVal{}
-			}
-			return sa
 		},
 	}
 	return bs
@@ -248,15 +244,16 @@ func (b *dynamicBlock) clearSlots(sa *dynamicSlotActivation) {
 }
 
 type slotVal struct {
-	value   *ref.Val
-	visited bool
+	value     ref.Val
+	visited   bool
+	evaluated bool
 }
 
 type dynamicSlotActivation struct {
 	frame     *interpreter.ExecutionFrame
 	slotExprs []interpreter.InterpretableV2
 	slotCount int
-	slotVals  []*slotVal
+	slotVals  []slotVal
 }
 
 // Unwrap returns the underlying activation outside the block.
@@ -286,17 +283,14 @@ func (sa *dynamicSlotActivation) IsLocalVariable(name string) bool {
 // refers to an expression which must be computed only once.
 func (sa *dynamicSlotActivation) ResolveName(name string) (any, bool) {
 	if idx, found := matchSlot(name, sa.slotCount); found {
-		v := sa.slotVals[idx]
+		v := &sa.slotVals[idx]
 		if v.visited {
-			// Return not found if the index expression refers to itself
-			if v.value == nil {
-				return nil, false
-			}
-			return *v.value, true
+			return v.value, v.evaluated
 		}
 		v.visited = true
 		val := sa.slotExprs[idx].Exec(sa.frame)
-		v.value = &val
+		v.value = val
+		v.evaluated = true
 		return val, true
 	}
 	return nil, false
@@ -304,10 +298,7 @@ func (sa *dynamicSlotActivation) ResolveName(name string) (any, bool) {
 
 func (sa *dynamicSlotActivation) reset() {
 	sa.frame = nil
-	for _, sv := range sa.slotVals {
-		sv.visited = false
-		sv.value = nil
-	}
+	clear(sa.slotVals)
 }
 
 func newConstantBlock(slots traits.Lister, expr interpreter.InterpretableV2) interpreter.InterpretableV2 {

@@ -896,6 +896,20 @@ func TestDynamicBlockEval(t *testing.T) {
 	if res.Equal(types.IntOne) != types.True {
 		t.Errorf("db.Eval() = %v, wanted 1", res)
 	}
+
+	slot0 := interpreter.NewConstValue(1, types.IntOne)
+	pooled := newDynamicBlock([]interpreter.InterpretableV2{slot0}, slot0).(*dynamicBlock)
+	sa := pooled.slotActivationPool.Get().(*dynamicSlotActivation)
+	if allocs := testing.AllocsPerRun(100, func() {
+		sa.reset()
+		for i := 0; i < 2; i++ {
+			if val, found := sa.ResolveName("@index0"); !found || val != types.IntOne {
+				t.Fatalf("ResolveName(@index0) = (%v, %v), wanted (1, true)", val, found)
+			}
+		}
+	}); allocs != 0 {
+		t.Errorf("ResolveName allocated %v allocs/run, wanted 0", allocs)
+	}
 }
 
 func TestConstantBlockEval(t *testing.T) {
