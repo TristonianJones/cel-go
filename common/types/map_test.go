@@ -1716,6 +1716,76 @@ func TestNativeMapFindBranches(t *testing.T) {
 	}
 }
 
+// TestNativeMapContainsNoAllocs guards against presence tests (`k in m`) regressing to value
+// conversion. Values are chosen so that converting them to a ref.Val would allocate: ints above
+// the runtime's small-int cache, non-empty strings, and raw structs boxed via packAny.
+func TestNativeMapContainsNoAllocs(t *testing.T) {
+	type rawStruct struct {
+		Name  string
+		Count int
+	}
+	adapter := DefaultTypeAdapter
+	tests := []struct {
+		name   string
+		mapper traits.Mapper
+		hit    ref.Val
+		miss   ref.Val
+	}{
+		{
+			name:   "string_int64",
+			mapper: NewMap(adapter, map[string]int64{"a": 1 << 20}),
+			hit:    String("a"),
+			miss:   String("b"),
+		},
+		{
+			name:   "string_string",
+			mapper: NewMap(adapter, map[string]string{"a": "value"}),
+			hit:    String("a"),
+			miss:   String("b"),
+		},
+		{
+			name:   "string_struct",
+			mapper: NewMap(adapter, map[string]rawStruct{"a": {Name: "n", Count: 1 << 20}}),
+			hit:    String("a"),
+			miss:   String("b"),
+		},
+		{
+			name:   "int_struct",
+			mapper: NewMap(adapter, map[int]rawStruct{1000: {Name: "n", Count: 1 << 20}}),
+			hit:    Int(1000),
+			miss:   Int(1001),
+		},
+		{
+			name:   "uint64_float64",
+			mapper: NewMap(adapter, map[uint64]float64{1000: 1.5}),
+			hit:    Uint(1000),
+			miss:   Uint(1001),
+		},
+		{
+			name:   "refval_refval",
+			mapper: NewRefValMap(adapter, map[ref.Val]ref.Val{Int(1000): String("value")}),
+			hit:    Uint(1000), // exercises the cross-numeric fallback lookup
+			miss:   Int(1001),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.mapper.Contains(tc.hit); got != True {
+				t.Fatalf("Contains(%v) = %v, want true", tc.hit, got)
+			}
+			if got := tc.mapper.Contains(tc.miss); got != False {
+				t.Fatalf("Contains(%v) = %v, want false", tc.miss, got)
+			}
+			if allocs := testing.AllocsPerRun(100, func() {
+				tc.mapper.Contains(tc.hit)
+				tc.mapper.Contains(tc.miss)
+			}); allocs != 0 {
+				t.Errorf("Contains allocated %v allocs/run, want 0", allocs)
+			}
+		})
+	}
+}
+
 func TestProtoMapFullCoverage(t *testing.T) {
 	reg, err := NewRegistry(&proto3pb.TestAllTypes{})
 	if err != nil {
