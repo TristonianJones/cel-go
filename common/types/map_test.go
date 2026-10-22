@@ -1670,6 +1670,7 @@ func TestNativeMapFindBranches(t *testing.T) {
 		{name: "int overflow", mapper: mInt, key: Int(math.MaxInt64), wantVal: nil, wantFound: false},
 		{name: "int underflow", mapper: mInt, key: Int(math.MinInt64), wantVal: nil, wantFound: false},
 		{name: "int miss", mapper: mInt, key: Int(99), wantVal: nil, wantFound: false},
+		{name: "int wrong type", mapper: mInt, key: String("wrong"), wantVal: nil, wantFound: false},
 
 		{name: "int32 hit Int", mapper: mInt32, key: Int(30), wantVal: String("thirty"), wantFound: true},
 		{name: "int32 overflow", mapper: mInt32, key: Int(math.MaxInt64), wantVal: nil, wantFound: false},
@@ -1684,6 +1685,7 @@ func TestNativeMapFindBranches(t *testing.T) {
 		{name: "uint hit Uint", mapper: mUint, key: Uint(50), wantVal: String("fifty"), wantFound: true},
 		{name: "uint overflow", mapper: mUint, key: Uint(math.MaxUint64), wantVal: nil, wantFound: false},
 		{name: "uint miss", mapper: mUint, key: Uint(99), wantVal: nil, wantFound: false},
+		{name: "uint wrong type", mapper: mUint, key: String("wrong"), wantVal: nil, wantFound: false},
 
 		{name: "uint32 hit Uint", mapper: mUint32, key: Uint(60), wantVal: String("sixty"), wantFound: true},
 		{name: "uint32 overflow", mapper: mUint32, key: Uint(math.MaxUint64), wantVal: nil, wantFound: false},
