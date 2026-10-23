@@ -2059,7 +2059,7 @@ func TestEstimateCostAndRuntimeCost(t *testing.T) {
 			}
 			actualCost := details.ActualCost()
 			if actualCost == nil {
-				t.Errorf(`EvalDetails.ActualCost() got nil for "%s" cost, wanted %d`, tc.expr, actualCost)
+				t.Fatalf(`EvalDetails.ActualCost() got nil for %q cost, wanted non-nil`, tc.expr)
 			}
 
 			if est.Min > *actualCost || est.Max < *actualCost {
@@ -2143,7 +2143,7 @@ func TestCostLimit(t *testing.T) {
 			}
 			actualCost := details.ActualCost()
 			if actualCost == nil {
-				t.Errorf(`EvalDetails.ActualCost() got nil for "%s" cost, wanted %d`, tc.expr, actualCost)
+				t.Fatalf(`EvalDetails.ActualCost() got nil for %q cost, wanted non-nil`, tc.expr)
 			}
 			if err == nil {
 				if est.Min > *actualCost || est.Max < *actualCost {

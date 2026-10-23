@@ -82,11 +82,13 @@ func NewCostTracker(estimator ActualCostEstimator, opts ...CostTrackerOption) (*
 	return cost.NewTracker(estimator, allOpts...)
 }
 
-// costTrackPlanOption modifies the cost tracking factory associatied with the CostObserver
-type costTrackPlanOption func(*costTrackerFactory) *costTrackerFactory
+// CostTrackPlanOption modifies the cost tracking factory associated with the CostObserver.
+type CostTrackPlanOption func(*costTrackerFactory) *costTrackerFactory
+
+type costTrackPlanOption = CostTrackPlanOption
 
 // CostTrackerFactory configures the factory method to generate a new cost-tracker per-evaluation.
-func CostTrackerFactory(factory func() (*CostTracker, error)) costTrackPlanOption {
+func CostTrackerFactory(factory func() (*CostTracker, error)) CostTrackPlanOption {
 	return func(fac *costTrackerFactory) *costTrackerFactory {
 		fac.factory = factory
 		return fac
@@ -94,7 +96,7 @@ func CostTrackerFactory(factory func() (*CostTracker, error)) costTrackPlanOptio
 }
 
 // CostObserver provides an observer that tracks runtime cost.
-func CostObserver(opts ...costTrackPlanOption) PlannerOption {
+func CostObserver(opts ...CostTrackPlanOption) PlannerOption {
 	ct := &costTrackerFactory{}
 	for _, o := range opts {
 		ct = o(ct)

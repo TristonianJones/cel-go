@@ -253,7 +253,7 @@ func (l *hmacLib) CompileOptions() []cel.EnvOption {
 	// The digest and equal functions are unbounded in cost: the work is driven by
 	// input sizes the checker cannot bound, so they are reported as unknown at
 	// check time and as the maximum cost at runtime.
-	estimators := make([]cost.CostOption, 0, len(unboundedCostOverloads))
+	estimators := make([]cost.Option, 0, len(unboundedCostOverloads))
 	for _, overloadID := range unboundedCostOverloads {
 		estimators = append(estimators, cost.OverloadCostEstimate(overloadID, estimateUnboundedCost))
 	}

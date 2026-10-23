@@ -313,11 +313,16 @@ func (se SizeEstimate) IsUnknown() bool {
 	return se == unknownSizeEstimate
 }
 
-// CostEstimate represents an estimated cost range and provides add and multiply operations
+// Estimate represents an estimated cost range and provides add and multiply operations
 // that do not overflow.
-type CostEstimate struct {
+type Estimate struct {
 	Min, Max uint64
 }
+
+// CostEstimate is an alias for Estimate.
+//
+// Deprecated: use Estimate.
+type CostEstimate = Estimate
 
 // UnknownCostEstimate returns a cost with an unknown impact.
 func UnknownCostEstimate() CostEstimate {

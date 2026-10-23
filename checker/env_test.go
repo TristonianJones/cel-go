@@ -44,7 +44,11 @@ func TestOverlappingMacro(t *testing.T) {
 
 func TestCopyDeclarations(t *testing.T) {
 	src := common.NewTextSource(`1 + 2 != 3 - 4`)
-	parsedAst, errors := parser.Parse(src)
+	p, err := parser.NewParser()
+	if err != nil {
+		t.Fatalf("parser.NewParser() failed: %v", err)
+	}
+	parsedAst, errors := p.Parse(src)
 	if len(errors.GetErrors()) > 0 {
 		t.Fatalf("Unexpected parse errors: %v", errors.ToDisplayString())
 	}

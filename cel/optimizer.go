@@ -38,6 +38,7 @@ type StaticOptimizer struct {
 	sourceOverride *Source
 }
 
+// OptimizerOption configures a StaticOptimizer instance.
 type OptimizerOption func(*StaticOptimizer) (*StaticOptimizer, error)
 
 // NewStaticOptimizer creates a StaticOptimizer with a sequence of ASTOptimizer's to be applied

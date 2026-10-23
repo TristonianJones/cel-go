@@ -1201,11 +1201,19 @@ func EnableHiddenAccumulatorName(enabled bool) EnvOption {
 	}
 }
 
+type legacyTypeProvider interface {
+	EnumValue(enumName string) ref.Val
+	FindIdent(identName string) (ref.Val, bool)
+	FindType(typeName string) (*exprpb.Type, bool)
+	FindFieldType(messageType, fieldName string) (*ref.FieldType, bool)
+	NewValue(typeName string, fields map[string]ref.Val) ref.Val
+}
+
 func maybeInteropProvider(provider any) (types.Provider, error) {
 	switch p := provider.(type) {
 	case types.Provider:
 		return p, nil
-	case ref.TypeProvider:
+	case legacyTypeProvider:
 		return &interopCELTypeProvider{TypeProvider: p}, nil
 	default:
 		return nil, fmt.Errorf("unsupported type provider: %T", provider)

@@ -755,7 +755,7 @@ func estimateOptionalHasValue(estimator cost.Estimator, target *cost.AstNode, ar
 	}
 	return &cost.CallEstimate{
 		CostEstimate: cost.CostEstimate{Min: minCost, Max: smallestMax}.
-			MultiplyByCostFactor(common.StringTraversalCostFactor),
+			MultiplyByCostFactor(cost.StringTraversalCostFactor),
 	}
 }
 
@@ -775,7 +775,7 @@ func trackOptionalHasValue(args []ref.Val, result ref.Val) *uint64 {
 		return nil
 	}
 	callCost := cost.SafeMultiplyByFactor(
-		min(optionalValueSize(args[0]), optionalValueSize(args[1])), common.StringTraversalCostFactor)
+		min(optionalValueSize(args[0]), optionalValueSize(args[1])), cost.StringTraversalCostFactor)
 	return &callCost
 }
 

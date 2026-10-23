@@ -406,7 +406,7 @@ func TestConcurrentEval(t *testing.T) {
 				),
 			)
 
-			delayedRpcFunc := cel.Function("delayed_rpc",
+			delayedRPCFunc := cel.Function("delayed_rpc",
 				cel.Overload("delayed_rpc_string_int", []*cel.Type{cel.StringType, cel.IntType}, cel.StringType,
 					cel.AsyncBinding(func(ctx context.Context, args ...ref.Val) ref.Val {
 						msg := string(args[0].(types.String))
@@ -425,7 +425,7 @@ func TestConcurrentEval(t *testing.T) {
 				),
 			)
 
-			testOpts := append([]any{asyncInc, dblFunc, rpcFunc, delayedRpcFunc, asyncFailFunc}, tc.opts...)
+			testOpts := append([]any{asyncInc, dblFunc, rpcFunc, delayedRPCFunc, asyncFailFunc}, tc.opts...)
 			if tc.maxConc != 0 {
 				testOpts = append(testOpts, cel.AsyncMaxConcurrency(tc.maxConc))
 			}
@@ -442,7 +442,7 @@ func TestConcurrentEval(t *testing.T) {
 
 			// Count the active goroutines
 			initialCount := runtime.NumGoroutine()
-			res := awaitEval(t, prg, context.Background(), vars)
+			res := awaitEval(context.Background(), t, prg, vars)
 
 			if tc.wantErr != "" {
 				if res.Err == nil || !strings.Contains(res.Err.Error(), tc.wantErr) {
@@ -564,7 +564,7 @@ func TestConcurrentEvalAllowsPartialUnknown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PartialVars() failed: %v", err)
 	}
-	res := awaitEval(t, prg, context.Background(), pvars)
+	res := awaitEval(context.Background(), t, prg, pvars)
 	if res.Err != nil {
 		t.Fatalf("ConcurrentEval() with partial unknown returned error: %v", res.Err)
 	}
@@ -586,7 +586,7 @@ func TestConcurrentEvalAsyncObserver(t *testing.T) {
 		),
 		cel.AsyncCallObserver(obs),
 	)
-	res := awaitEval(t, prg, context.Background(), cel.NoVars())
+	res := awaitEval(context.Background(), t, prg, cel.NoVars())
 	if res.Err != nil {
 		t.Fatalf("ConcurrentEval() error: %v", res.Err)
 	}
@@ -618,7 +618,7 @@ func TestConcurrentEvalProgramThreadSafety(t *testing.T) {
 	errCh := make(chan error, numGoroutines)
 	for i := range numGoroutines {
 		go func(val int64) {
-			res := awaitEval(t, prg, context.Background(), map[string]any{"x": val})
+			res := awaitEval(context.Background(), t, prg, map[string]any{"x": val})
 			if res.Err != nil {
 				errCh <- res.Err
 				return
@@ -916,7 +916,7 @@ func TestConcurrentEvalDrainReady(t *testing.T) {
 
 			start := time.Now()
 			prg := mustProgram(t, tc.expr, opts...)
-			res := awaitEval(t, prg, context.Background(), cel.NoVars())
+			res := awaitEval(context.Background(), t, prg, cel.NoVars())
 			elapsed := time.Since(start)
 
 			if res.Err != nil {
@@ -1049,7 +1049,7 @@ func TestConcurrentEvalRecover(t *testing.T) {
 				ctx, cancel = tc.getCtx()
 				defer cancel()
 			}
-			res := awaitEval(t, prg, ctx, cel.NoVars())
+			res := awaitEval(ctx, t, prg, cel.NoVars())
 			if tc.wantErr != nil {
 				if res.Err == nil {
 					t.Fatalf("ConcurrentEval() error = nil, want %v", tc.wantErr)
@@ -1073,7 +1073,7 @@ func TestConcurrentEvalRecover(t *testing.T) {
 }
 
 // awaitEval runs ConcurrentEval and returns the result or fails on timeout.
-func awaitEval(t *testing.T, prg cel.Program, ctx context.Context, in any) cel.EvalResult {
+func awaitEval(ctx context.Context, t *testing.T, prg cel.Program, in any) cel.EvalResult {
 	t.Helper()
 	select {
 	case res := <-prg.ConcurrentEval(ctx, in):

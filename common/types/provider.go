@@ -1148,7 +1148,7 @@ func runtimeTypePtr(rt reflect.Type) unsafe.Pointer {
 // so &elem has the exact representation of a *T in an emptyInterface and typ is *T's *_type.
 func elemTypePtrFor[T any]() unsafe.Pointer {
 	t := reflect.TypeFor[T]()
-	if t == nil || t.Kind() != reflect.Struct || t.Size() == 0 || !isQualifyRawStructType(t) {
+	if t.Kind() != reflect.Struct || t.Size() == 0 || !isQualifyRawStructType(t) {
 		return nil
 	}
 	var z T
