@@ -481,6 +481,9 @@ func (p *planBuilder) planCallVarArgs(expr ast.Expr,
 
 // planCallEqual generates an equals (==) Interpretable.
 func (p *planBuilder) planCallEqual(expr ast.Expr, args []InterpretableV2) (InterpretableV2, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("invalid argument count for %s: %d, wanted 2", operators.Equals, len(args))
+	}
 	return &evalEq{
 		id:  expr.ID(),
 		lhs: args[0],
@@ -490,6 +493,9 @@ func (p *planBuilder) planCallEqual(expr ast.Expr, args []InterpretableV2) (Inte
 
 // planCallNotEqual generates a not equals (!=) Interpretable.
 func (p *planBuilder) planCallNotEqual(expr ast.Expr, args []InterpretableV2) (InterpretableV2, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("invalid argument count for %s: %d, wanted 2", operators.NotEquals, len(args))
+	}
 	return &evalNe{
 		id:  expr.ID(),
 		lhs: args[0],
@@ -515,6 +521,9 @@ func (p *planBuilder) planCallLogicalOr(expr ast.Expr, args []InterpretableV2) (
 
 // planCallConditional generates a conditional / ternary (c ? t : f) Interpretable.
 func (p *planBuilder) planCallConditional(expr ast.Expr, args []InterpretableV2) (InterpretableV2, error) {
+	if len(args) != 3 {
+		return nil, fmt.Errorf("invalid argument count for %s: %d, wanted 3", operators.Conditional, len(args))
+	}
 	cond := args[0]
 	t := args[1]
 	var tAttr Attribute
@@ -543,6 +552,9 @@ func (p *planBuilder) planCallConditional(expr ast.Expr, args []InterpretableV2)
 // planCallIndex either extends an attribute with the argument to the index operation, or creates
 // a relative attribute based on the return of a function call or operation.
 func (p *planBuilder) planCallIndex(expr ast.Expr, args []InterpretableV2, optional bool) (InterpretableV2, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("invalid argument count for index: %d, wanted 2", len(args))
+	}
 	op := args[0]
 	ind := args[1]
 	opType := p.typeMap[op.ID()]
@@ -813,7 +825,11 @@ func isIdentNamed(e ast.Expr, name string) bool {
 
 // planConst generates a constant valued Interpretable.
 func (p *planBuilder) planConst(expr ast.Expr) (InterpretableV2, error) {
-	return NewConstValue(expr.ID(), expr.AsLiteral()), nil
+	val := expr.AsLiteral()
+	if val == nil {
+		return nil, fmt.Errorf("unsupported constant: %v", expr)
+	}
+	return NewConstValue(expr.ID(), val), nil
 }
 
 // resolveTypeName takes a qualified string constructed at parse time, applies the proto

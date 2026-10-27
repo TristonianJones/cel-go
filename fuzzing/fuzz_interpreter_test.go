@@ -72,9 +72,9 @@ func valueToRefValue(v *exprpb.Value) (ref.Val, bool) {
 	case *exprpb.Value_MapValue:
 		m := make(map[ref.Val]ref.Val)
 		for _, e := range t.MapValue.GetEntries() {
-			key, _ := valueToRefValue(e.GetKey())
-			val, _ := valueToRefValue(e.GetValue())
-			if key != nil {
+			key, keyOk := valueToRefValue(e.GetKey())
+			val, valOk := valueToRefValue(e.GetValue())
+			if keyOk && valOk {
 				switch key.(type) {
 				case types.Bool, types.Int, types.Uint, types.String:
 					m[key] = val
@@ -83,9 +83,11 @@ func valueToRefValue(v *exprpb.Value) (ref.Val, bool) {
 		}
 		return adapter.NativeToValue(m), true
 	case *exprpb.Value_ListValue:
-		l := make([]ref.Val, len(t.ListValue.GetValues()))
-		for i, e := range t.ListValue.GetValues() {
-			l[i], _ = valueToRefValue(e)
+		l := make([]ref.Val, 0, len(t.ListValue.GetValues()))
+		for _, e := range t.ListValue.GetValues() {
+			if elem, ok := valueToRefValue(e); ok {
+				l = append(l, elem)
+			}
 		}
 		return adapter.NativeToValue(l), true
 	case *exprpb.Value_TypeValue:
@@ -132,6 +134,20 @@ func FuzzInterpreter(f *testing.F) {
 				}
 			}
 		}
+	}
+	if b, err := proto.Marshal(&InterpreterFuzzable{
+		CheckedExpr: &exprpb.CheckedExpr{
+			Expr: &exprpb.Expr{
+				Id: 1,
+				ExprKind: &exprpb.Expr_CallExpr{
+					CallExpr: &exprpb.Expr_Call{
+						Function: "_!=_",
+					},
+				},
+			},
+		},
+	}); err == nil {
+		f.Add(b)
 	}
 	f.Fuzz(func(t *testing.T, in []byte) {
 		var p InterpreterFuzzable
