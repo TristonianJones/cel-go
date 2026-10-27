@@ -151,7 +151,7 @@ func TestRegexStaticErrors(t *testing.T) {
 		},
 		{
 			expr: "regex.replace('banana', 'a', 'x', 18446744073709551615)",
-			err:  `ERROR: <input>:1:35: invalid int literal`,
+			err:  `ERROR: <input>:1:35: Syntax error: invalid int literal`,
 		},
 	}
 	env := testRegexEnv(t)

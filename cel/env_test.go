@@ -122,17 +122,14 @@ func TestIssues(t *testing.T) {
 	_, iss := e.Compile("-")
 	_, iss2 := e.Compile("b")
 	iss = iss.Append(iss2)
-	if len(iss.Errors()) != 3 {
-		t.Errorf("iss.Errors() got %v, wanted 3 errors", iss.Errors())
+	if len(iss.Errors()) != 2 {
+		t.Errorf("iss.Errors() got %v, wanted 2 errors", iss.Errors())
 	}
 
 	wantIss := `ERROR: <input>:1:1: undeclared reference to 'b'
  | -
  | ^
-ERROR: <input>:1:2: Syntax error: no viable alternative at input '-'
- | -
- | .^
-ERROR: <input>:1:2: Syntax error: mismatched input '<EOF>' expecting {'[', '{', '(', '.', '-', '!', 'true', 'false', 'null', NUM_FLOAT, NUM_INT, NUM_UINT, STRING, BYTES, IDENTIFIER}
+ERROR: <input>:1:2: Syntax error: mismatched input '<EOF>' expecting expression
  | -
  | .^`
 	if iss.String() != wantIss {
@@ -932,7 +929,7 @@ func TestEnvFromConfig(t *testing.T) {
 				{
 					name: "over limit",
 					expr: "1 + 2 + 3 + 4 + 5",
-					iss:  errors.New("max recursion depth exceeded"),
+					iss:  errors.New("expression recursion limit exceeded: 3"),
 				},
 			},
 		},
@@ -955,6 +952,19 @@ func TestEnvFromConfig(t *testing.T) {
 		},
 		{
 			name: "limits_error_recovery",
+			conf: env.NewConfig("limits").
+				AddLimits(env.NewLimit("cel.limit.parse_error_recovery", 4)),
+			exprs: []exprCase{
+				{
+					name: "over limit",
+					expr: "a ? b ((?))",
+					iss:  errors.New("Syntax error: expected ':' in conditional expression"),
+				},
+			},
+		},
+		{
+			name:       "limits_error_recovery_antlr",
+			beforeOpts: []EnvOption{EnablePrattParser(false)},
 			conf: env.NewConfig("limits").
 				AddLimits(env.NewLimit("cel.limit.parse_error_recovery", 4)),
 			exprs: []exprCase{
@@ -1484,6 +1494,68 @@ func TestEnableHiddenAccumulatorName(t *testing.T) {
 	_, err := NewEnv(EnableHiddenAccumulatorName(true))
 	if err != nil {
 		t.Fatalf("NewEnv(EnableHiddenAccumulatorName(true)) failed: %v", err)
+	}
+}
+
+func TestEnablePrattParser(t *testing.T) {
+	// Default environment uses the Pratt parser (which rejects '[,]' and supports '0X' hex literals).
+	defaultEnv, err := NewEnv()
+	if err != nil {
+		t.Fatalf("NewEnv() failed: %v", err)
+	}
+	if _, iss := defaultEnv.Parse("[,]"); iss.Err() == nil {
+		t.Error("defaultEnv.Parse(\"[,]\") succeeded, wanted error with default Pratt parser")
+	}
+	ast, iss := defaultEnv.Compile("0X10")
+	if iss.Err() != nil {
+		t.Fatalf("defaultEnv.Compile(\"0X10\") failed: %v", iss.Err())
+	}
+	prg, err := defaultEnv.Program(ast)
+	if err != nil {
+		t.Fatalf("defaultEnv.Program() failed: %v", err)
+	}
+	out, _, err := prg.Eval(NoVars())
+	if err != nil || out != types.Int(16) {
+		t.Errorf("prg.Eval() got (%v, %v), wanted 16", out, err)
+	}
+
+	// Extending with EnablePrattParser(false) switches to the ANTLR parser without mutating parent.
+	antlrEnv, err := defaultEnv.Extend(EnablePrattParser(false))
+	if err != nil {
+		t.Fatalf("defaultEnv.Extend(EnablePrattParser(false)) failed: %v", err)
+	}
+	if _, iss := antlrEnv.Parse("[,]"); iss.Err() != nil {
+		t.Errorf("antlrEnv.Parse(\"[,]\") failed: %v", iss.Err())
+	}
+	if _, iss := antlrEnv.Parse("0X10"); iss.Err() == nil {
+		t.Error("antlrEnv.Parse(\"0X10\") succeeded, wanted error with ANTLR parser")
+	}
+	if _, iss := defaultEnv.Parse("[,]"); iss.Err() == nil {
+		t.Error("defaultEnv was mutated by Extend(EnablePrattParser(false))")
+	}
+
+	// Extending back with EnablePrattParser(true) re-enables the Pratt parser.
+	reEnabledEnv, err := antlrEnv.Extend(EnablePrattParser(true))
+	if err != nil {
+		t.Fatalf("antlrEnv.Extend(EnablePrattParser(true)) failed: %v", err)
+	}
+	if _, iss := reEnabledEnv.Parse("[,]"); iss.Err() == nil {
+		t.Error("reEnabledEnv.Parse(\"[,]\") succeeded, wanted error with Pratt parser")
+	}
+	if _, iss := reEnabledEnv.Parse("0X10"); iss.Err() != nil {
+		t.Errorf("reEnabledEnv.Parse(\"0X10\") failed: %v", iss.Err())
+	}
+	if _, iss := antlrEnv.Parse("[,]"); iss.Err() != nil {
+		t.Errorf("antlrEnv was mutated by Extend(EnablePrattParser(true)): %v", iss.Err())
+	}
+
+	// NewCustomEnv also defaults to the Pratt parser.
+	customEnv, err := NewCustomEnv()
+	if err != nil {
+		t.Fatalf("NewCustomEnv() failed: %v", err)
+	}
+	if _, iss := customEnv.Parse("[,]"); iss.Err() == nil {
+		t.Error("customEnv.Parse(\"[,]\") succeeded, wanted error with default Pratt parser")
 	}
 }
 

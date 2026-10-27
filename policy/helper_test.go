@@ -277,16 +277,22 @@ ERROR: testdata/errors/policy.yaml:24:19: undeclared reference to 'spec'
 ERROR: testdata/errors/policy.yaml:25:7: invalid variable declaration: overlapping identifier for name 'variables.want'
  |     - name: want
  | ......^
-ERROR: testdata/errors/policy.yaml:28:50: Syntax error: mismatched input 'resource' expecting ')'
+ERROR: testdata/errors/policy.yaml:28:50: Syntax error: expected ')'
  |       expression: variables.want.filter(l, !(lin resource.labels))
  | .................................................^
-ERROR: testdata/errors/policy.yaml:28:66: Syntax error: extraneous input ')' expecting <EOF>
+ERROR: testdata/errors/policy.yaml:28:66: Syntax error: unexpected token after expression
  |       expression: variables.want.filter(l, !(lin resource.labels))
  | .................................................................^
-ERROR: testdata/errors/policy.yaml:30:27: Syntax error: mismatched input '2' expecting {'}', ','}
+ERROR: testdata/errors/policy.yaml:30:27: Syntax error: expected '}'
  |       expression: "{1:305 2:569}"
  | ..........................^
-ERROR: testdata/errors/policy.yaml:38:75: Syntax error: extraneous input ']' expecting ')'
+ERROR: testdata/errors/policy.yaml:30:32: Syntax error: unexpected token after expression
+ |       expression: "{1:305 2:569}"
+ | ...............................^
+ERROR: testdata/errors/policy.yaml:38:75: Syntax error: mismatched input ']' expecting ')'
+ |         "missing one or more required labels: %s".format(variables.missing])
+ | ..........................................................................^
+ERROR: testdata/errors/policy.yaml:38:75: Syntax error: unexpected token after expression
  |         "missing one or more required labels: %s".format(variables.missing])
  | ..........................................................................^
 ERROR: testdata/errors/policy.yaml:41:67: undeclared reference to 'format'

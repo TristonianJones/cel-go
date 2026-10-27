@@ -1201,6 +1201,16 @@ func EnableHiddenAccumulatorName(enabled bool) EnvOption {
 	}
 }
 
+// EnablePrattParser enables the Pratt parser implementation instead of the ANTLR parser.
+//
+// Enabled by default.
+func EnablePrattParser(enabled bool) EnvOption {
+	return func(e *Env) (*Env, error) {
+		e.prsrOpts = append(e.prsrOpts, parser.EnablePrattParser(enabled))
+		return e, nil
+	}
+}
+
 type legacyTypeProvider interface {
 	EnumValue(enumName string) ref.Val
 	FindIdent(identName string) (ref.Val, bool)
