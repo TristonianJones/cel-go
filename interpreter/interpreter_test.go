@@ -32,6 +32,7 @@ import (
 	"cel.dev/cel-go/common/decls"
 	"cel.dev/cel-go/common/functions"
 	"cel.dev/cel-go/common/operators"
+	"cel.dev/cel-go/common/overloads"
 	"cel.dev/cel-go/common/stdlib"
 	"cel.dev/cel-go/common/types"
 	"cel.dev/cel-go/common/types/ref"
@@ -3233,4 +3234,94 @@ func TestLateBoundInterpretable(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPlanCallInvalidArity(t *testing.T) {
+	reg := newTestRegistry(t)
+	attrs := NewAttributeFactory(containers.DefaultContainer, reg, reg)
+	disp := NewDispatcher()
+	addFunctionBindings(t, disp)
+	interp := NewInterpreter(disp, containers.DefaultContainer, reg, reg, attrs)
+	fac := ast.NewExprFactory()
+
+	tests := []struct {
+		name string
+		expr ast.Expr
+	}{
+		{
+			name: "equals_zero_args",
+			expr: fac.NewCall(1, operators.Equals),
+		},
+		{
+			name: "equals_one_arg",
+			expr: fac.NewCall(1, operators.Equals, fac.NewLiteral(2, types.IntOne)),
+		},
+		{
+			name: "not_equals_zero_args",
+			expr: fac.NewCall(1, operators.NotEquals),
+		},
+		{
+			name: "not_equals_three_args",
+			expr: fac.NewCall(1, operators.NotEquals,
+				fac.NewLiteral(2, types.IntOne),
+				fac.NewLiteral(3, types.IntOne),
+				fac.NewLiteral(4, types.IntOne)),
+		},
+		{
+			name: "conditional_zero_args",
+			expr: fac.NewCall(1, operators.Conditional),
+		},
+		{
+			name: "conditional_two_args",
+			expr: fac.NewCall(1, operators.Conditional,
+				fac.NewLiteral(2, types.True),
+				fac.NewLiteral(3, types.IntOne)),
+		},
+		{
+			name: "index_zero_args",
+			expr: fac.NewCall(1, operators.Index),
+		},
+		{
+			name: "opt_index_one_arg",
+			expr: fac.NewCall(1, operators.OptIndex, fac.NewIdent(2, "a")),
+		},
+		{
+			name: "opt_select_zero_args",
+			expr: fac.NewCall(1, operators.OptSelect),
+		},
+		{
+			name: "nil_literal",
+			expr: fac.NewLiteral(1, nil),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			checked := ast.NewCheckedAST(
+				ast.NewAST(tc.expr, ast.NewSourceInfo(nil)),
+				map[int64]*types.Type{},
+				map[int64]*ast.ReferenceInfo{},
+			)
+			_, err := interp.NewInterpretable(checked)
+			if err == nil {
+				t.Errorf("NewInterpretable(%s) succeeded, wanted error", tc.name)
+			}
+		})
+	}
+
+	t.Run("optimize_in_list_malformed", func(t *testing.T) {
+		for _, expr := range []ast.Expr{
+			fac.NewCall(1, operators.In, fac.NewLiteral(2, types.IntOne)),
+			fac.NewCall(1, operators.In, fac.NewLiteral(2, types.IntOne), fac.NewLiteral(3, types.IntOne)),
+		} {
+			checked := ast.NewCheckedAST(
+				ast.NewAST(expr, ast.NewSourceInfo(nil)),
+				map[int64]*types.Type{},
+				map[int64]*ast.ReferenceInfo{
+					1: ast.NewFunctionReference(overloads.InList),
+				},
+			)
+			_, _ = interp.NewInterpretable(checked, Optimize())
+		}
+	})
 }

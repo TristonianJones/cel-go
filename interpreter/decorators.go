@@ -296,6 +296,9 @@ func maybeBuildMapLiteral(i InterpretableV2, mp *evalMap) (InterpretableV2, erro
 // - the elements are all of primitive type.
 func maybeOptimizeSetMembership(i InterpretableV2, inlist InterpretableCall) (InterpretableV2, error) {
 	args := inlist.Args()
+	if len(args) != 2 {
+		return i, nil
+	}
 	lhs := args[0]
 	rhs := args[1]
 	l, isConst := rhs.(InterpretableConst)
@@ -304,7 +307,10 @@ func maybeOptimizeSetMembership(i InterpretableV2, inlist InterpretableCall) (In
 	}
 	// When the incoming binary call is flagged with as the InList overload, the value will
 	// always be convertible to a `traits.Lister` type.
-	list := l.Value().(traits.Lister)
+	list, isList := l.Value().(traits.Lister)
+	if !isList {
+		return i, nil
+	}
 	if list.Size() == types.IntZero {
 		return NewConstValue(inlist.ID(), types.False), nil
 	}
