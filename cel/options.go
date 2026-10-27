@@ -171,6 +171,9 @@ func ClearMacros() EnvOption {
 // Note: This option must be specified before the Types and TypeDescs options when used together.
 func CustomTypeAdapter(adapter types.Adapter) EnvOption {
 	return func(e *Env) (*Env, error) {
+		if adapter == nil {
+			return nil, errors.New("custom type adapter must not be nil")
+		}
 		e.adapter = adapter
 		return e, nil
 	}
@@ -183,6 +186,9 @@ func CustomTypeAdapter(adapter types.Adapter) EnvOption {
 // Note: This option must be specified before the Types and TypeDescs options when used together.
 func CustomTypeProvider(provider any) EnvOption {
 	return func(e *Env) (*Env, error) {
+		if provider == nil {
+			return nil, errors.New("custom type provider must not be nil")
+		}
 		var err error
 		e.provider, err = maybeInteropProvider(provider)
 		return e, err
