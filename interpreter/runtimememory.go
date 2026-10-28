@@ -93,7 +93,7 @@ func (mt *memoryTrackerFactory) Observe(vars Activation, id int64, programStep a
 	tracker := frame.ctx.memory
 	switch programStep.(type) {
 	case InterpretableAttribute, InterpretableConst, InterpretableCall, InterpretableConstructor, *evalFold:
-		if frame.parent != nil {
+		if frame.parent != nil || frame.foldDepth > 0 {
 			tracker.Sample(id, val)
 		} else {
 			tracker.Track(val)

@@ -28,5 +28,8 @@ go_test(
     ],
     deps = [
         "//cel:go_default_library",
+        "//common/types:go_default_library",
+        "//ext:go_default_library",
+        "@dev_cel_expr//conformance/proto3:go_default_library",
     ],
 )

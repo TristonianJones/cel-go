@@ -209,6 +209,7 @@ func TestBindingsImmutability(t *testing.T) {
 		`optional.of([]).optFlatMap(x, optional.of([x + [1], x + [2]])) == optional.of([[1], [2]])`,
 		`[[1], [2]].map(x, x.map(y, y + 1)) == [[2], [3]]`,
 		`{'a': 1, 'b': 2}.transformMap(k, v, v + 1) == {'a': 2, 'b': 3}`,
+		`cel.bind(x, [1, 2, 3].map(y, y + 1), [4, 5, 6].map(z, x[0] + z)) == [6, 7, 8]`,
 	}
 	env, err := cel.NewEnv(Bindings(), TwoVarComprehensions(), cel.OptionalTypes())
 	if err != nil {
@@ -1128,3 +1129,76 @@ func TestBindingsLateBoundFunctions(t *testing.T) {
 		})
 	}
 }
+
+func TestBlockLazySlotWithInnerComprehensionPreservesSlots(t *testing.T) {
+	// Construct a cel.@block AST directly:
+	// cel.@block(
+	//   [[1, 2, 3].map(y, y + 1)],          // @index0: lazy slot containing a comprehension
+	//   [4, 5, 6].map(z, @index0[0] + z)    // body: comprehension referencing @index0 inside loop
+	// )
+	// @index0 is planned first (comprehension y), then the body (comprehension z).
+	// At runtime, z's loop starts first, and on the first iteration @index0 is lazily evaluated,
+	// running y's comprehension while z's comprehension is active. Monotonic slot allocation
+	// ensures y and z do not collide on slots.
+	env, err := cel.NewEnv(Bindings())
+	if err != nil {
+		t.Fatalf("cel.NewEnv() failed: %v", err)
+	}
+	slot0AST, iss := env.Compile("[1, 2, 3].map(y, y + 1)")
+	if iss.Err() != nil {
+		t.Fatalf("Compile(slot0) failed: %v", iss.Err())
+	}
+	fac := ast.NewExprFactory()
+	// Build [4, 5, 6].map(z, @index0[0] + z) as a comprehension:
+	// iterRange: [4, 5, 6]
+	// iterVar: "z", accuVar: "@result"
+	// accuInit: []
+	// loopCondition: @not_strictly_false(true)
+	// loopStep: @result + [@index0[0] + z]
+	// result: @result
+	bodyComp := fac.NewComprehension(
+		100,
+		fac.NewList(101, []ast.Expr{
+			fac.NewLiteral(102, types.Int(4)),
+			fac.NewLiteral(103, types.Int(5)),
+			fac.NewLiteral(104, types.Int(6)),
+		}, []int32{}),
+		"z",
+		"@result",
+		fac.NewList(105, []ast.Expr{}, []int32{}),
+		fac.NewCall(106, operators.NotStrictlyFalse, fac.NewLiteral(107, types.True)),
+		fac.NewCall(108, operators.Add,
+			fac.NewIdent(109, "@result"),
+			fac.NewList(110, []ast.Expr{
+				fac.NewCall(111, operators.Add,
+					fac.NewCall(112, operators.Index,
+						fac.NewIdent(113, "@index0"),
+						fac.NewLiteral(114, types.Int(0)),
+					),
+					fac.NewIdent(115, "z"),
+				),
+			}, []int32{}),
+		),
+		fac.NewIdent(116, "@result"),
+	)
+	blockExpr := fac.NewCall(
+		200, "cel.@block",
+		fac.NewList(201, []ast.Expr{slot0AST.NativeRep().Expr()}, []int32{}),
+		bodyComp,
+	)
+	blockAST := ast.NewAST(blockExpr, nil)
+	prg, err := env.PlanProgram(blockAST, cel.EvalOptions(cel.OptOptimize))
+	if err != nil {
+		t.Fatalf("PlanProgram() failed: %v", err)
+	}
+	out, _, err := prg.Eval(cel.NoVars())
+	if err != nil {
+		t.Fatalf("Eval() failed: %v", err)
+	}
+	// @index0 = [2, 3, 4], @index0[0] = 2 -> [2+4, 2+5, 2+6] = [6, 7, 8]
+	want := types.DefaultTypeAdapter.NativeToValue([]int64{6, 7, 8})
+	if out.Equal(want) != types.True {
+		t.Errorf("Eval() got %v, wanted %v", out, want)
+	}
+}
+

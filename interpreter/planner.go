@@ -24,6 +24,7 @@ import (
 	"cel.dev/cel-go/common/operators"
 	"cel.dev/cel-go/common/types"
 	"cel.dev/cel-go/common/types/ref"
+	"cel.dev/cel-go/common/types/traits"
 )
 
 // mapInsertFunction is the name of the internal function used by comprehension macros to insert
@@ -67,10 +68,16 @@ type planner struct {
 	costTrackerFactory func() (*CostTracker, error)
 }
 
+type localVar struct {
+	name string
+	slot int
+}
+
 type planBuilder struct {
 	*planner
 
-	localVars map[string]int
+	localVars []localVar
+	nextSlot  int
 }
 
 // Plan implements the interpretablePlanner interface. This implementation of the Plan method also
@@ -85,7 +92,7 @@ func (p *planner) Plan(expr ast.Expr) (InterpretableV2, error) {
 		// leave it alone, silently dropping the second observer's observations.
 		p.decorators = append(p.decorators, decObserveEval(observeAll(p.observers)))
 	}
-	pb := &planBuilder{planner: p, localVars: make(map[string]int)}
+	pb := &planBuilder{planner: p}
 	i, err := pb.plan(expr)
 	if err != nil {
 		return nil, err
@@ -149,6 +156,20 @@ func (p *planBuilder) decorate(i InterpretableV2, err error) (InterpretableV2, e
 	return i, nil
 }
 
+func (p *planBuilder) planLocalIdent(id int64, name string, slot int) InterpretableV2 {
+	attr := p.attrFactory.AbsoluteAttribute(id, name)
+	if matcher, ok := attr.(*attributeMatcher); ok {
+		attr = matcher.NamespacedAttribute
+	}
+	attr.(*identAttribute).slot = slot
+	return &evalAttr{
+		adapter: p.adapter,
+		attr:    attr,
+		slot:    slot,
+		hasSlot: true,
+	}
+}
+
 // planIdent creates an Interpretable that resolves an identifier from an Activation.
 func (p *planBuilder) planIdent(expr ast.Expr) (InterpretableV2, error) {
 	// Establish whether the identifier is in the reference map.
@@ -157,11 +178,8 @@ func (p *planBuilder) planIdent(expr ast.Expr) (InterpretableV2, error) {
 	}
 	// Create the possible attribute list for the unresolved reference.
 	ident := expr.AsIdent()
-	if p.isLocalVar(ident) {
-		return &evalAttr{
-			adapter: p.adapter,
-			attr:    p.attrFactory.AbsoluteAttribute(expr.ID(), ident),
-		}, nil
+	if slot, found := p.lookupComprehensionSlot(ident); found {
+		return p.planLocalIdent(expr.ID(), ident, slot), nil
 	}
 	return &evalAttr{
 		adapter: p.adapter,
@@ -184,6 +202,10 @@ func (p *planBuilder) planCheckedIdent(id int64, identRef *ast.ReferenceInfo) (I
 			return nil, fmt.Errorf("reference to undefined type: %s", identRef.Name)
 		}
 		return NewConstValue(id, cVal), nil
+	}
+
+	if slot, found := p.lookupComprehensionSlot(identRef.Name); found {
+		return p.planLocalIdent(id, identRef.Name, slot), nil
 	}
 
 	// Otherwise, return the attribute for the resolved identifier name.
@@ -439,12 +461,26 @@ func (p *planBuilder) planCallBinary(expr ast.Expr,
 		trait = impl.OperandTrait
 		nonStrict = impl.NonStrict
 	}
+	var rhsElem InterpretableV2
+	if function == operators.Add {
+		switch rhs := args[1].(type) {
+		case *evalList:
+			if len(rhs.elems) == 1 && !rhs.hasOptionals {
+				rhsElem = rhs.elems[0]
+			}
+		case *evalConst:
+			if l, ok := rhs.val.(traits.Lister); ok && l.Size() == types.IntOne {
+				rhsElem = NewConstValue(rhs.ID(), l.Get(types.IntZero))
+			}
+		}
+	}
 	return &evalBinary{
 		id:        expr.ID(),
 		function:  function,
 		overload:  overload,
 		lhs:       args[0],
 		rhs:       args[1],
+		rhsElem:   rhsElem,
 		trait:     trait,
 		impl:      fn,
 		nonStrict: nonStrict,
@@ -688,15 +724,30 @@ func (p *planBuilder) planCreateStruct(expr ast.Expr) (InterpretableV2, error) {
 // planComprehension generates an Interpretable fold operation.
 func (p *planBuilder) planComprehension(expr ast.Expr) (InterpretableV2, error) {
 	fold := expr.AsComprehension()
-	accu, err := p.plan(fold.AccuInit())
-	if err != nil {
-		return nil, err
-	}
 	iterRange, err := p.plan(fold.IterRange())
 	if err != nil {
 		return nil, err
 	}
-	p.pushLocalVars(fold.AccuVar(), fold.IterVar(), fold.IterVar2())
+	accu, err := p.plan(fold.AccuInit())
+	if err != nil {
+		return nil, err
+	}
+
+	accuSlot := p.nextSlot
+	iterSlot := p.nextSlot + 1
+	p.nextSlot += 2
+	iter2Slot := -1
+	if fold.IterVar2() != "" {
+		iter2Slot = p.nextSlot
+		p.nextSlot++
+	}
+
+	base := len(p.localVars)
+	p.localVars = append(p.localVars,
+		localVar{fold.AccuVar(), accuSlot},
+		localVar{fold.IterVar(), iterSlot},
+		localVar{fold.IterVar2(), iter2Slot},
+	)
 	cond, err := p.plan(fold.LoopCondition())
 	if err != nil {
 		return nil, err
@@ -705,19 +756,21 @@ func (p *planBuilder) planComprehension(expr ast.Expr) (InterpretableV2, error) 
 	if err != nil {
 		return nil, err
 	}
-	p.popLocalVars(fold.IterVar(), fold.IterVar2())
+	p.localVars = p.localVars[:base+1]
 	result, err := p.plan(fold.Result())
 	if err != nil {
 		return nil, err
 	}
-	p.popLocalVars(fold.AccuVar())
+	p.localVars = p.localVars[:base]
+
 	return &evalFold{
 		id:          expr.ID(),
-		accuVar:     fold.AccuVar(),
-		accu:        accu,
-		iterVar:     fold.IterVar(),
-		iterVar2:    fold.IterVar2(),
+		accuSlot:    accuSlot,
+		iterSlot:    iterSlot,
+		iter2Slot:   iter2Slot,
+		maxSlot:     max(accuSlot, iterSlot, iter2Slot),
 		iterRange:   iterRange,
+		accu:        accu,
 		cond:        cond,
 		step:        step,
 		result:      result,
@@ -964,35 +1017,19 @@ func (p *planBuilder) toQualifiedName(operand ast.Expr) (string, bool) {
 	return "", false
 }
 
-func (p *planBuilder) pushLocalVars(names ...string) {
-	for _, name := range names {
-		if name == "" {
-			continue
-		}
-		if cnt, found := p.localVars[name]; found {
-			p.localVars[name] = cnt + 1
-		} else {
-			p.localVars[name] = 1
+// lookupComprehensionSlot resolves an identifier against active comprehension variables from
+// innermost to outermost.
+//
+// Leading-dot identifiers (e.g. `.x`) explicitly disambiguate to the global scope and never match
+// comprehension slots.
+func (p *planBuilder) lookupComprehensionSlot(name string) (int, bool) {
+	if name == "" || strings.HasPrefix(name, ".") {
+		return -1, false
+	}
+	for i := len(p.localVars) - 1; i >= 0; i-- {
+		if p.localVars[i].name == name {
+			return p.localVars[i].slot, true
 		}
 	}
-}
-
-func (p *planBuilder) popLocalVars(names ...string) {
-	for _, name := range names {
-		if name == "" {
-			continue
-		}
-		if cnt, found := p.localVars[name]; found {
-			if cnt == 1 {
-				delete(p.localVars, name)
-			} else {
-				p.localVars[name] = cnt - 1
-			}
-		}
-	}
-}
-
-func (p *planBuilder) isLocalVar(name string) bool {
-	_, found := p.localVars[name]
-	return found
+	return -1, false
 }

@@ -187,6 +187,7 @@ func (r *attrFactory) AbsoluteAttribute(id int64, names ...string) NamespacedAtt
 			adapter:                r.adapter,
 			provider:               r.provider,
 			fac:                    r,
+			slot:                   -1,
 			errorOnBadPresenceTest: r.errorOnBadPresenceTest,
 		}
 	}
@@ -357,7 +358,7 @@ func (a *absoluteAttribute) Resolve(vars Activation) (any, error) {
 	// to the expression in the event that we need to disambiguate between global and local
 	// variables.
 	//
-	// Presently, only dynamic and constant slot activations created during comprehensions
+	// Presently, only dynamic and constant slot activations created during cel.@block
 	// support 'unwrapping', which is consistent with how local variables are introduced into CEL.
 	var inputVars Activation
 	if a.disambiguateNames {
@@ -432,6 +433,7 @@ type identAttribute struct {
 	adapter                types.Adapter
 	provider               types.Provider
 	fac                    AttributeFactory
+	slot                   int
 	errorOnBadPresenceTest bool
 }
 
@@ -485,7 +487,16 @@ func (a *identAttribute) String() string {
 // Resolve returns the resolved Attribute value given the Activation, or error if the Attribute
 // variable is not found, or if its Qualifiers cannot be applied successfully.
 func (a *identAttribute) Resolve(vars Activation) (any, error) {
-	obj, found := vars.ResolveName(a.name)
+	var obj any
+	var found bool
+	if a.slot >= 0 {
+		if frame, ok := vars.(*ExecutionFrame); ok {
+			obj, found = frame.getSlot(a.slot), true
+		}
+	}
+	if !found {
+		obj, found = vars.ResolveName(a.name)
+	}
 	if found {
 		if celErr, ok := obj.(*types.Err); ok {
 			return nil, celErr
@@ -570,7 +581,12 @@ func (a *conditionalAttribute) QualifyIfPresent(vars Activation, obj any, presen
 
 // Resolve evaluates the condition, and then resolves the truthy or falsy branch accordingly.
 func (a *conditionalAttribute) Resolve(vars Activation) (any, error) {
-	val := a.expr.Eval(vars)
+	var val ref.Val
+	if frame, ok := vars.(*ExecutionFrame); ok {
+		val = a.expr.Exec(frame)
+	} else {
+		val = a.expr.Eval(vars)
+	}
 	if val == types.True {
 		return a.truthy.Resolve(vars)
 	}

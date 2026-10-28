@@ -73,10 +73,10 @@ type evalContext struct {
 // The execution frame must not be stored in any fashion as its lifecycle is completely
 // controlled by the CEL evaluation process.
 type ExecutionFrame struct {
-	// parent provides the context for parent scopes (used for comprehension iterators and nested blocks).
+	// parent provides the context for parent scopes (used for nested blocks).
 	parent *ExecutionFrame
 
-	// scope provides the local activation for this frame (e.g. comprehension folder, block slots, or input Activation).
+	// scope provides the local activation for this frame (e.g. block slots or input Activation).
 	scope Activation
 
 	// functions supplies the late-bound function implementations for the evaluation, resolved
@@ -89,6 +89,19 @@ type ExecutionFrame struct {
 
 	// lazyVars caches evaluations of lazy variables (func() any / func() ref.Val) in vars.
 	lazyVars map[string]any
+
+	// slots holds indexed comprehension variables for this evaluation, avoiding
+	// per-comprehension child frame allocations and name-based scope walks.
+	slots []any
+
+	// slotBuf provides inline backing storage for common comprehension nesting depths.
+	slotBuf [16]any
+
+	// maxSlot tracks the high-water mark of comprehension slot indices written during evaluation.
+	maxSlot int
+
+	// foldDepth tracks the current comprehension nesting depth for memory sampling.
+	foldDepth int
 
 	// ctx provides the shared evaluation state across frames.
 	ctx *evalContext
@@ -202,8 +215,35 @@ func (f *ExecutionFrame) Close() {
 		f.vars = nil
 		clear(f.lazyVars)
 	}
+	if f.maxSlot > 0 {
+		clear(f.slots[:f.maxSlot])
+		f.maxSlot = 0
+	}
+	if cap(f.slots) != len(f.slotBuf) {
+		f.slots = f.slotBuf[:]
+	}
+	f.foldDepth = 0
 	f.scope = nil
 	frameStack.Put(f)
+}
+
+func (f *ExecutionFrame) ensureSlots(minLen int) {
+	if minLen > f.maxSlot {
+		f.maxSlot = minLen
+	}
+	if minLen > len(f.slots) {
+		newSlots := make([]any, max(minLen, len(f.slots)*2))
+		copy(newSlots, f.slots)
+		f.slots = newSlots
+	}
+}
+
+func (f *ExecutionFrame) getSlot(slot int) any {
+	val := f.slots[slot]
+	if fld, ok := val.(*folder); ok {
+		return fld.initAccu()
+	}
+	return val
 }
 
 // Push pushes the given activation onto the activation stack and returns the new frame.
@@ -216,6 +256,9 @@ func (f *ExecutionFrame) Push(activation Activation) *ExecutionFrame {
 	child.ctx = f.ctx
 	child.costTracker = f.costTracker
 	child.scope = activation
+	child.slots = f.slots
+	child.maxSlot = f.maxSlot
+	child.foldDepth = f.foldDepth
 	// Scopes pushed during evaluation never supply late-bound functions, so the child inherits
 	// the bindings resolved for the evaluation rather than searching its own hierarchy.
 	child.functions = f.functions
@@ -228,11 +271,16 @@ func (f *ExecutionFrame) Pop() *ExecutionFrame {
 		return f
 	}
 	parent := f.parent
+	parent.slots = f.slots
+	parent.maxSlot = f.maxSlot
 	f.scope = nil
 	f.parent = nil
 	f.functions = nil
 	f.ctx = nil
 	f.costTracker = nil
+	f.slots = f.slotBuf[:]
+	f.maxSlot = 0
+	f.foldDepth = 0
 	if f.vars != nil {
 		f.vars = nil
 		clear(f.lazyVars)
@@ -301,15 +349,22 @@ func (f *ExecutionFrame) ResolveFunction(name string) (functions.LateBoundOp, bo
 	return f.functions.ResolveFunction(name)
 }
 
-// AsPartialActivation implements the PartialActivation interface by proxying to the internal scope or parent.
-func (f *ExecutionFrame) AsPartialActivation() (PartialActivation, bool) {
+func (f *ExecutionFrame) findPartialActivation() (PartialActivation, bool) {
 	if f.scope != nil {
 		if pa, ok := AsPartialActivation(f.scope); ok {
 			return pa, true
 		}
 	}
 	if f.parent != nil {
-		return f.parent.AsPartialActivation()
+		return f.parent.findPartialActivation()
+	}
+	return nil, false
+}
+
+// AsPartialActivation implements the PartialActivation interface by proxying to the internal scope or parent.
+func (f *ExecutionFrame) AsPartialActivation() (PartialActivation, bool) {
+	if _, ok := f.findPartialActivation(); ok {
+		return f, true
 	}
 	return nil, false
 }
@@ -317,7 +372,7 @@ func (f *ExecutionFrame) AsPartialActivation() (PartialActivation, bool) {
 // UnknownAttributePatterns implements the PartialActivation interface returning the unknown patterns
 // if they were provided to the input activation, or an empty set if the frame is not partial.
 func (f *ExecutionFrame) UnknownAttributePatterns() []*AttributePattern {
-	if pa, ok := f.AsPartialActivation(); ok {
+	if pa, ok := f.findPartialActivation(); ok {
 		return pa.UnknownAttributePatterns()
 	}
 	return []*AttributePattern{}
@@ -474,7 +529,9 @@ func (f *ExecutionFrame) SetAsyncMaxConcurrency(n int) error {
 // frameStack provides a synchronized pool of ExecutionFrames.
 var frameStack = &sync.Pool{
 	New: func() any {
-		return &ExecutionFrame{}
+		f := &ExecutionFrame{}
+		f.slots = f.slotBuf[:]
+		return f
 	},
 }
 

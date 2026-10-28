@@ -32,5 +32,6 @@ type Lister interface {
 // value is not directly observable within the user-authored CEL expression.
 type MutableLister interface {
 	Lister
+	Append(ref.Val)
 	ToImmutableList() Lister
 }

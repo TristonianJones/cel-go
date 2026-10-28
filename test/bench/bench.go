@@ -188,7 +188,7 @@ var (
 				ext.Strings(),
 			},
 			In:  map[string]any{},
-			Out: types.String(`formatted list: ["abc", "cde"], size: 2`),
+			Out: types.String(`formatted list: [abc, cde], size: 2`),
 		},
 	}
 	// ReferenceDynamicEnvCases represent CEL expressions compiled in an extended environment.

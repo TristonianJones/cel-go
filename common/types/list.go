@@ -156,9 +156,19 @@ func NewJSONList(adapter Adapter, l *structpb.ListValue) traits.Lister {
 
 // NewMutableList creates a new mutable list whose internal state can be modified.
 func NewMutableList(adapter Adapter) traits.MutableLister {
+	return NewMutableListSized(adapter, 0)
+}
+
+// NewMutableListSized creates a new mutable list pre-sized to capHint.
+func NewMutableListSized(adapter Adapter, capHint int) traits.MutableLister {
+	var elems []ref.Val
+	if capHint > 0 {
+		elems = make([]ref.Val, 0, capHint)
+	}
 	return &mutableList{
-		sliceList: &sliceList[ref.Val]{
+		sliceList: sliceList[ref.Val]{
 			Adapter: adapter,
+			elems:   elems,
 		},
 	}
 }
@@ -448,7 +458,13 @@ func (l *baseList) format(sb *strings.Builder) {
 
 // mutableList aggregates values into its internal storage. For use with internal CEL variables only.
 type mutableList struct {
-	*sliceList[ref.Val]
+	sliceList[ref.Val]
+}
+
+// Append appends a single element to the internal storage of the mutable list.
+func (l *mutableList) Append(val ref.Val) {
+	l.elems = append(l.elems, val)
+	atomic.StoreUint32(&l.aggSize, 0)
 }
 
 // Add copies elements from the other list into the internal storage of the mutable list.

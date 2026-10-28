@@ -700,6 +700,7 @@ type evalBinary struct {
 	overload  string
 	lhs       InterpretableV2
 	rhs       InterpretableV2
+	rhsElem   InterpretableV2
 	trait     int
 	impl      functions.BinaryOp
 	nonStrict bool
@@ -730,6 +731,14 @@ func (bin *evalBinary) Exec(frame *ExecutionFrame) ref.Val {
 			if costs := frame.CostTracker(); costs != nil {
 				costs.EvalBinary(frame, bin.id, bin, lVal, rVal, lVal)
 			}
+			return lVal
+		}
+		if ml, ok := lVal.(traits.MutableLister); ok && bin.rhsElem != nil && frame.CostTracker() == nil {
+			elemVal := bin.rhsElem.Exec(frame)
+			if types.IsUnknownOrError(elemVal) {
+				return elemVal
+			}
+			ml.Append(elemVal)
 			return lVal
 		}
 	}
@@ -1338,9 +1347,10 @@ func (o *evalObj) Type() ref.Type {
 
 type evalFold struct {
 	id        int64
-	accuVar   string
-	iterVar   string
-	iterVar2  string
+	accuSlot  int
+	iterSlot  int
+	iter2Slot int
+	maxSlot   int
 	iterRange InterpretableV2
 	accu      InterpretableV2
 	cond      InterpretableV2
@@ -1367,20 +1377,26 @@ func (fold *evalFold) ID() int64 {
 
 // Exec implements the InterpretableV2 interface method.
 func (fold *evalFold) Exec(frame *ExecutionFrame) ref.Val {
-	f := newFolder(fold, frame)
 	foldRange := fold.iterRange.Exec(frame)
 
 	// Early return if the folder is an error or unknown.
 	if types.IsUnknownOrError(foldRange) {
-		releaseFolder(f)
 		return foldRange
 	}
 
-	// Short-circuit the iteration if the range is empty.
-	if sizer, ok := foldRange.(traits.Sizer); ok && sizer.Size() == types.IntZero {
-		res := f.evalResult()
-		releaseFolder(f)
-		return res
+	f := newFolder(fold, frame)
+
+	// Short-circuit the iteration if the range is empty, and record the range size hint when known.
+	if sizer, ok := foldRange.(traits.Sizer); ok {
+		size := sizer.Size()
+		if size == types.IntZero {
+			res := f.evalResult()
+			releaseFolder(f)
+			return res
+		}
+		if n, ok := size.(types.Int); ok && n > 0 {
+			f.rangeHint = int(n)
+		}
 	}
 
 	// Otherwise, attempt a two variable fold.
@@ -1388,18 +1404,19 @@ func (fold *evalFold) Exec(frame *ExecutionFrame) ref.Val {
 	switch r := foldRange.(type) {
 	case traits.Foldable:
 		foldable = r
-		if fold.iterVar2 == "" {
+		if fold.iter2Slot < 0 {
 			_, f.listV1Fold = foldRange.(traits.Lister)
 		}
 	case traits.Mapper:
 		foldable = types.ToFoldableMap(r)
 	case traits.Lister:
-		if fold.iterVar2 == "" {
+		if fold.iter2Slot < 0 {
 			f.listV1Fold = true
 		}
 		foldable = types.ToFoldableList(r)
 	default:
-		if fold.iterVar2 != "" {
+		if fold.iter2Slot >= 0 {
+			releaseFolder(f)
 			return types.NewErrWithNodeID(fold.ID(), "unsupported comprehension range type: %T", foldRange)
 		}
 	}
@@ -1833,7 +1850,9 @@ func (cond *evalExhaustiveConditional) Eval(ctx Activation) ref.Val {
 type evalAttr struct {
 	adapter  types.Adapter
 	attr     Attribute
+	slot     int
 	optional bool
+	hasSlot  bool
 }
 
 var _ InterpretableAttribute = &evalAttr{}
@@ -1847,6 +1866,7 @@ func (a *evalAttr) ID() int64 {
 func (a *evalAttr) AddQualifier(qual Qualifier) (Attribute, error) {
 	attr, err := a.attr.AddQualifier(qual)
 	a.attr = attr
+	a.hasSlot = false
 	return attr, err
 }
 
@@ -1862,6 +1882,19 @@ func (a *evalAttr) Adapter() types.Adapter {
 
 // Exec implements the InterpretableV2 interface method.
 func (a *evalAttr) Exec(frame *ExecutionFrame) ref.Val {
+	if a.hasSlot {
+		v := frame.getSlot(a.slot)
+		res, ok := v.(ref.Val)
+		if !ok {
+			res = a.adapter.NativeToValue(v)
+		} else if celErr, isErr := res.(*types.Err); isErr {
+			res = types.LabelErrNode(a.attr.ID(), celErr)
+		}
+		if costs := frame.CostTracker(); costs != nil {
+			costs.EvalAttribute(a.attr.ID(), false, res)
+		}
+		return res
+	}
 	v, err := a.attr.Resolve(frame)
 	var res ref.Val
 	if err != nil {
@@ -1945,7 +1978,12 @@ func invalidOptionalElementInit(value ref.Val) ref.Val {
 func newFolder(eval *evalFold, frame *ExecutionFrame) *folder {
 	f := folderPool.Get().(*folder)
 	f.evalFold = eval
-	f.frame = frame.Push(f)
+	f.frame = frame
+	frame.foldDepth++
+	if eval.maxSlot >= frame.maxSlot {
+		frame.ensureSlots(eval.maxSlot + 1)
+	}
+	frame.slots[eval.accuSlot] = f
 	return f
 }
 
@@ -1957,8 +1995,8 @@ func releaseFolder(f *folder) {
 
 // folder tracks the state associated with folding a list or map with a comprehension v2 style macro.
 //
-// The folder embeds an interpreter.Activation and Interpretable evalFold value as well as implements
-// the traits.Folder interface methods.
+// The folder embeds an Interpretable evalFold value and implements the traits.Folder interface
+// methods.
 //
 // Instances of a folder are intended to be pooled to minimize allocation overhead with this temporary
 // bookkeeping object which supports lazy evaluation of the accumulator init expression which is useful
@@ -1969,11 +2007,10 @@ type folder struct {
 	frame *ExecutionFrame
 
 	// fold state objects.
-	accuVal     ref.Val
-	iterVar1Val any
-	iterVar2Val any
+	accuVal   ref.Val
+	rangeHint int
 
-	// bookkeeping flags to modify Activation and fold behaviors.
+	// bookkeeping flags to modify fold behaviors.
 	initialized   bool
 	mutableValue  bool
 	interrupted   bool
@@ -1984,44 +2021,29 @@ type folder struct {
 func (f *folder) foldIterable(iterable traits.Iterable) ref.Val {
 	it := iterable.Iterator()
 	for it.HasNext() == types.True {
-		f.iterVar1Val = it.Next()
-
-		cond := f.cond.Exec(f.frame)
-		if f.interrupted {
-			return f.evalResult()
-		}
-		if !f.exhaustive && cond != types.True {
-			if isError(cond) {
-				f.interrupted = true
-			}
-			return f.evalResult()
-		}
-
-		// Update the accumulation value and check for eval interruption.
-		f.accuVal = f.step.Exec(f.frame)
-		f.initialized = true
-		if f.interruptable && f.frame.CheckInterrupt() {
-			f.interrupted = true
-			return f.evalResult()
+		if !f.FoldEntry(it.Next(), nil) {
+			break
 		}
 	}
 	return f.evalResult()
 }
 
 // FoldKeyOnly reports whether the folder only consumes the entry key (e.g. 1-variable map
-// comprehensions where iterVar2 is empty and listV1Fold is false).
+// comprehensions where iter2Slot is unset and listV1Fold is false).
 func (f *folder) FoldKeyOnly() bool {
-	return f.iterVar2 == "" && !f.listV1Fold
+	return f.iter2Slot < 0 && !f.listV1Fold
 }
 
-// FoldEntry will either fold comprehension v1 style macros if iterVar2 is unset, or comprehension v2 style
-// macros if both the iterVar and iterVar2 are set to non-empty strings.
+// FoldEntry will either fold comprehension v1 style macros if iter2Slot is unset, or comprehension v2 style
+// macros if both iterSlot and iter2Slot are set.
 func (f *folder) FoldEntry(key, val any) bool {
 	if f.listV1Fold {
-		f.iterVar1Val = val
+		f.frame.slots[f.iterSlot] = val
 	} else {
-		f.iterVar1Val = key
-		f.iterVar2Val = val
+		f.frame.slots[f.iterSlot] = key
+		if f.iter2Slot >= 0 {
+			f.frame.slots[f.iter2Slot] = val
+		}
 	}
 
 	// Terminate evaluation if evaluation is interrupted or the condition is not true and exhaustive
@@ -2040,6 +2062,7 @@ func (f *folder) FoldEntry(key, val any) bool {
 	// Update the accumulation value and check for eval interruption.
 	f.accuVal = f.step.Exec(f.frame)
 	f.initialized = true
+	f.frame.slots[f.accuSlot] = f.accuVal
 	if f.interruptable && f.frame.CheckInterrupt() {
 		f.interrupted = true
 		return false
@@ -2047,86 +2070,30 @@ func (f *folder) FoldEntry(key, val any) bool {
 	return true
 }
 
-// ResolveName overrides the default Activation lookup to perform lazy initialization of the accumulator
-// and specialized lookups of iteration values with consideration for whether the final result is being
-// computed and the iteration variables should be ignored.
-func (f *folder) ResolveName(name string) (any, bool) {
-	if name == f.accuVar {
-		if !f.initialized {
-			f.initialized = true
-			initVal := f.accu.Exec(f.frame.parent)
-			// Only substitute a mutable accumulator when the planner has proven that the
-			// accumulator cannot be aliased, and when evaluation is not exhaustive since
-			// exhaustive evaluation would apply in-place updates from untaken branches.
-			if f.mutableAccu && !f.exhaustive {
-				if l, isList := initVal.(traits.Lister); isList && l.Size() == types.IntZero {
-					initVal = types.NewMutableList(f.adapter)
-					f.mutableValue = true
-				}
-				if m, isMap := initVal.(traits.Mapper); isMap && m.Size() == types.IntZero {
-					initVal = types.NewMutableMap(f.adapter, map[ref.Val]ref.Val{})
-					f.mutableValue = true
-				}
-			}
-			f.accuVal = initVal
-		}
-		return f.accuVal, true
+func (f *folder) initAccu() ref.Val {
+	if f.initialized {
+		return f.accuVal
 	}
-	if !f.computeResult {
-		if name == f.iterVar {
-			return f.iterVar1Val, true
+	f.initialized = true
+	f.frame.foldDepth--
+	initVal := f.accu.Exec(f.frame)
+	f.frame.foldDepth++
+	// Only substitute a mutable accumulator when the planner has proven that the
+	// accumulator cannot be aliased, and when evaluation is not exhaustive since
+	// exhaustive evaluation would apply in-place updates from untaken branches.
+	if f.mutableAccu && !f.exhaustive && !f.computeResult {
+		if l, isList := initVal.(traits.Lister); isList && l.Size() == types.IntZero {
+			initVal = types.NewMutableListSized(f.adapter, f.rangeHint)
+			f.mutableValue = true
 		}
-		if name == f.iterVar2 {
-			return f.iterVar2Val, true
+		if m, isMap := initVal.(traits.Mapper); isMap && m.Size() == types.IntZero {
+			initVal = types.NewMutableMapSized(f.adapter, f.rangeHint)
+			f.mutableValue = true
 		}
 	}
-	return f.frame.parent.ResolveName(name)
-}
-
-// Parent returns the activation embedded into the folder.
-func (f *folder) Parent() Activation {
-	return f.frame.parent
-}
-
-// Unwrap returns the parent activation, thus omitting access to local state
-func (f *folder) Unwrap() Activation {
-	return f.frame.parent
-}
-
-// IsLocalVariable reports whether the variable name is locally bound by the folder scope.
-func (f *folder) IsLocalVariable(name string) bool {
-	if name == f.accuVar {
-		return true
-	}
-	if !f.computeResult && (name == f.iterVar || name == f.iterVar2) {
-		return true
-	}
-	if varHolder, ok := f.Parent().(localVariableHolder); ok {
-		if varHolder.IsLocalVariable(name) {
-			return true
-		}
-	}
-	return false
-}
-
-// UnknownAttributePatterns implements the PartialActivation interface returning the unknown patterns
-// if they were provided to the input activation, or an empty set if the proxied activation is not partial.
-func (f *folder) UnknownAttributePatterns() []*AttributePattern {
-	if f.frame.parent != nil {
-		if partial, isPartial := f.frame.parent.AsPartialActivation(); isPartial {
-			return partial.UnknownAttributePatterns()
-		}
-	}
-	return []*AttributePattern{}
-}
-
-func (f *folder) AsPartialActivation() (PartialActivation, bool) {
-	if f.frame.parent != nil {
-		if _, isPartial := f.frame.parent.AsPartialActivation(); isPartial {
-			return f, true
-		}
-	}
-	return nil, false
+	f.accuVal = initVal
+	f.frame.slots[f.accuSlot] = initVal
+	return initVal
 }
 
 // evalResult computes the final result of the fold after all entries have been folded and accumulated.
@@ -2139,11 +2106,11 @@ func (f *folder) evalResult() ref.Val {
 	// Convert a mutable list or map to an immutable one if the comprehension has generated a list or
 	// map as a result.
 	if !types.IsUnknownOrError(res) && f.mutableValue {
-		if _, ok := res.(traits.MutableLister); ok {
-			res = res.(traits.MutableLister).ToImmutableList()
+		if ml, ok := res.(traits.MutableLister); ok {
+			res = ml.ToImmutableList()
 		}
-		if _, ok := res.(traits.MutableMapper); ok {
-			res = res.(traits.MutableMapper).ToImmutableMap()
+		if mm, ok := res.(traits.MutableMapper); ok {
+			res = mm.ToImmutableMap()
 		}
 	}
 	return res
@@ -2151,12 +2118,16 @@ func (f *folder) evalResult() ref.Val {
 
 // reset clears any state associated with folder evaluation.
 func (f *folder) reset() {
+	if f.frame != nil {
+		f.frame.foldDepth--
+		if f.evalFold != nil {
+			f.frame.slots[f.accuSlot] = nil
+		}
+		f.frame = nil
+	}
 	f.evalFold = nil
-	f.frame.Pop()
-	f.frame = nil
 	f.accuVal = nil
-	f.iterVar1Val = nil
-	f.iterVar2Val = nil
+	f.rangeHint = 0
 
 	f.initialized = false
 	f.mutableValue = false

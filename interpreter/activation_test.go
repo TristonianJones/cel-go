@@ -132,34 +132,39 @@ func TestAsPartialActivation(t *testing.T) {
 	}
 }
 
+type testLocalActivation struct {
+	vars map[string]any
+}
+
+func (a *testLocalActivation) ResolveName(name string) (any, bool) {
+	v, ok := a.vars[name]
+	return v, ok
+}
+
+func (a *testLocalActivation) Parent() Activation {
+	return nil
+}
+
+func (a *testLocalActivation) IsLocalVariable(name string) bool {
+	_, ok := a.vars[name]
+	return ok
+}
+
 func TestIsLocalVariableNested(t *testing.T) {
 	parentAct := EmptyActivation()
 	frame := mustNewExecutionFrame(t, parentAct)
 	defer frame.Close()
 
-	// Outer comprehension scope (e.g. fold1)
-	fold1 := &evalFold{
-		accuVar:  "accu1",
-		iterVar:  "iter1",
-		iterVar2: "iter1_2",
+	scope1 := &testLocalActivation{
+		vars: map[string]any{"accu1": 1, "iter1": 2, "iter1_2": 3},
 	}
-	fld1 := newFolder(fold1, frame)
-	defer releaseFolder(fld1)
-
-	// Push outer scope
-	frame1 := frame.Push(fld1)
+	frame1 := frame.Push(scope1)
 	defer frame1.Pop()
 
-	// Inner comprehension scope (e.g. fold2)
-	fold2 := &evalFold{
-		accuVar: "accu2",
-		iterVar: "iter2",
+	scope2 := &testLocalActivation{
+		vars: map[string]any{"accu2": 4, "iter2": 5},
 	}
-	fld2 := newFolder(fold2, frame1)
-	defer releaseFolder(fld2)
-
-	// Push inner scope
-	frame2 := frame1.Push(fld2)
+	frame2 := frame1.Push(scope2)
 	defer frame2.Pop()
 
 	// Verify localVariableHolder implementations and recursive checks

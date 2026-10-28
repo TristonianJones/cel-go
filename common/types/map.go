@@ -99,9 +99,19 @@ func NewMutableMap(adapter Adapter, mutableValues map[ref.Val]ref.Val) traits.Mu
 	mutableCopy := make(map[ref.Val]ref.Val, len(mutableValues))
 	maps.Copy(mutableCopy, mutableValues)
 	return &mutableMap{
-		nativeMap: &nativeMap[ref.Val, ref.Val]{
+		nativeMap: nativeMap[ref.Val, ref.Val]{
 			Adapter: adapter,
 			mapVal:  mutableCopy,
+		},
+	}
+}
+
+// NewMutableMapSized constructs an empty mutable map pre-sized to capHint.
+func NewMutableMapSized(adapter Adapter, capHint int) traits.MutableMapper {
+	return &mutableMap{
+		nativeMap: nativeMap[ref.Val, ref.Val]{
+			Adapter: adapter,
+			mapVal:  make(map[ref.Val]ref.Val, max(capHint, 0)),
 		},
 	}
 }
@@ -393,7 +403,7 @@ func (m *baseMap) Value() any {
 
 // mutableMap holds onto a set of mutable values which are used for intermediate computations.
 type mutableMap struct {
-	*nativeMap[ref.Val, ref.Val]
+	nativeMap[ref.Val, ref.Val]
 }
 
 // Insert implements the traits.MutableMapper interface method, returning true if the key insertion

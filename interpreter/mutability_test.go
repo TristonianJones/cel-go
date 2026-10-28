@@ -21,6 +21,9 @@ import (
 	"cel.dev/cel-go/common/ast"
 	"cel.dev/cel-go/common/containers"
 	"cel.dev/cel-go/common/types"
+	"cel.dev/cel-go/common/types/ref"
+	"cel.dev/cel-go/common/types/traits"
+	"cel.dev/cel-go/interpreter/functions"
 	"cel.dev/cel-go/parser"
 )
 
@@ -201,6 +204,9 @@ func TestComprehensionAccumulatorImmutability(t *testing.T) {
 		`[[1], [2]].map(x, x.map(y, y + 1)) == [[2], [3]]`,
 		`[1, 2, 3].filter(x, x > 1) == [2, 3]`,
 		`[1, 2, 3].map(x, x % 2 == 1, x * 10) == [10, 30]`,
+		`bind(x, [1, 2, 3].map(y, y + 1), [4, 5, 6].map(z, x[0] + z)) == [6, 7, 8]`,
+		`compre(x, acc, [1, 2], 0, true, acc + compre(x, innerAcc, [10, 20], 0, true, innerAcc + x, innerAcc + x), acc) == 63`,
+		`compre(i, a, [1, 2, 3], [], true, a + [compre(j, n, a, 0, true, n + 1, n)], a) == [0, 1, 2]`,
 	}
 	// Loop conditions are ignored during exhaustive evaluation, so these are only tested with
 	// short-circuiting plans.
@@ -254,3 +260,128 @@ func TestComprehensionAccumulatorImmutability(t *testing.T) {
 		}
 	}
 }
+
+func TestFusedStepFallback(t *testing.T) {
+	cont := containers.DefaultContainer
+	reg := newTestRegistry(t)
+	attrs := NewAttributeFactory(cont, reg, reg)
+	disp := NewDispatcher()
+	addFunctionBindings(t, disp)
+	if err := disp.Add(&functions.Overload{
+		Operator: mapInsertFunction,
+		Function: func(args ...ref.Val) ref.Val {
+			m, ok := args[0].(traits.Mapper)
+			if !ok {
+				return types.MaybeNoSuchOverloadErr(args[0])
+			}
+			return types.InsertMapKeyValue(m, args[1], args[2])
+		},
+	}); err != nil {
+		t.Fatalf("disp.Add(cel.@mapInsert) failed: %v", err)
+	}
+	interp := NewInterpreter(disp, cont, reg, reg, attrs)
+
+	tests := []struct {
+		name    string
+		expr    string
+		in      any
+		wantErr bool
+		wantUnk bool
+		wantVal any
+	}{
+		{
+			name:    "list_map_elem_error",
+			expr:    `[1, 0, 2].map(x, 10 / x)`,
+			wantErr: true,
+		},
+		{
+			name:    "list_filter_cond_error",
+			expr:    `[1, 0, 2].filter(x, 10 / x > 1)`,
+			wantErr: true,
+		},
+		{
+			name:    "list_filter_cond_non_bool",
+			expr:    `[1, 2].filter(x, x)`,
+			wantErr: true,
+		},
+		{
+			name:    "list_map_elem_unknown",
+			expr:    `[1, 2].map(x, x == 2 ? unk : x)`,
+			in:      map[string]any{"unk": types.NewUnknown(99, nil)},
+			wantUnk: true,
+		},
+		{
+			name:    "list_filter_cond_unknown",
+			expr:    `[1, 2].filter(x, x == 2 ? unk : true)`,
+			in:      map[string]any{"unk": types.NewUnknown(99, nil)},
+			wantUnk: true,
+		},
+		{
+			name:    "map_insert_duplicate_key_error",
+			expr:    `compre2(k, v, a, {1: 10, 2: 20}, {}, true, insert(a, 1, v), a)`,
+			wantErr: true,
+		},
+		{
+			name:    "map_insert_key_error",
+			expr:    `compre2(k, v, a, {1: 10, 0: 20}, {}, true, insert(a, 10 / k, v), a)`,
+			wantErr: true,
+		},
+		{
+			name:    "map_insert_val_error",
+			expr:    `compre2(k, v, a, {1: 10, 0: 20}, {}, true, insert(a, k, 10 / k), a)`,
+			wantErr: true,
+		},
+		{
+			name:    "map_insert_cond_error",
+			expr:    `compre2(k, v, a, {1: 10, 0: 20}, {}, true, 10 / k > 1 ? insert(a, k, v) : a, a)`,
+			wantErr: true,
+		},
+		{
+			name:    "map_insert_key_unknown",
+			expr:    `compre2(k, v, a, {1: 10, 2: 20}, {}, true, insert(a, k == 2 ? unk : k, v), a)`,
+			in:      map[string]any{"unk": types.NewUnknown(99, nil)},
+			wantUnk: true,
+		},
+		{
+			name:    "map_insert_val_unknown",
+			expr:    `compre2(k, v, a, {1: 10, 2: 20}, {}, true, insert(a, k, k == 2 ? unk : v), a)`,
+			in:      map[string]any{"unk": types.NewUnknown(99, nil)},
+			wantUnk: true,
+		},
+		{
+			name:    "map_insert_success",
+			expr:    `compre2(k, v, a, {1: 10, 2: 20}, {}, true, k > 1 ? insert(a, k, v * 2) : a, a) == {2: 40}`,
+			wantVal: types.True,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed := parseMutabilityExpr(t, tc.expr)
+			prg, err := interp.NewInterpretable(parsed)
+			if err != nil {
+				t.Fatalf("NewInterpretable(%s) failed: %v", tc.expr, err)
+			}
+			act := EmptyActivation()
+			if tc.in != nil {
+				act, err = NewActivation(tc.in)
+				if err != nil {
+					t.Fatalf("NewActivation() failed: %v", err)
+				}
+			}
+			for i := 0; i < 3; i++ {
+				out := prg.Eval(act)
+				if tc.wantErr && !types.IsError(out) {
+					t.Errorf("Eval(%s) got %v, wanted error", tc.expr, out)
+				}
+				if tc.wantUnk && !types.IsUnknown(out) {
+					t.Errorf("Eval(%s) got %v, wanted unknown", tc.expr, out)
+				}
+				if tc.wantVal != nil && out != tc.wantVal {
+					t.Errorf("Eval(%s) got %v, wanted %v", tc.expr, out, tc.wantVal)
+				}
+			}
+		})
+	}
+}
+
