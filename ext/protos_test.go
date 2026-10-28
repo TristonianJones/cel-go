@@ -185,12 +185,9 @@ func TestProtosParseErrors(t *testing.T) {
 		},
 		{
 			expr: `ExampleType{}.in`,
-			err: `ERROR: <input>:1:15: Syntax error: no viable alternative at input '.in'
+			err: `ERROR: <input>:1:15: Syntax error: expected identifier after '.'
 			| ExampleType{}.in
-			| ..............^
-		   ERROR: <input>:1:17: Syntax error: mismatched input '<EOF>' expecting {'[', '{', '(', '.', '-', '!', 'true', 'false', 'null', NUM_FLOAT, NUM_INT, NUM_UINT, STRING, BYTES, IDENTIFIER}
-			| ExampleType{}.in
-			| ................^`,
+			| ..............^`,
 		},
 	}
 	env := testProtosEnv(t)

@@ -3099,21 +3099,24 @@ func TestTimeZoneOffsetOutOfRange(t *testing.T) {
 
 func TestParserRecursionLimit(t *testing.T) {
 	testCases := []struct {
-		expr        string
-		errorSubstr string
-		out         ref.Val
+		expr             string
+		errorSubstr      string
+		antlrErrorSubstr string
+		out              ref.Val
 	}{
 		{
-			expr:        `0 + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10 + 11`,
-			errorSubstr: "max recursion depth exceeded",
+			expr:             `0 + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10 + 11`,
+			errorSubstr:      "expression recursion limit exceeded: 10",
+			antlrErrorSubstr: "max recursion depth exceeded",
 		},
 		{
 			expr: `0 + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10`,
 			out:  types.Int(55),
 		},
 		{
-			expr:        `0 + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10 == 45`,
-			errorSubstr: "max recursion depth exceeded",
+			expr:             `0 + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10 == 45`,
+			errorSubstr:      "expression recursion limit exceeded: 10",
+			antlrErrorSubstr: "max recursion depth exceeded",
 		},
 		{
 			// Operator precedence means that '==' is the root.
@@ -3121,25 +3124,34 @@ func TestParserRecursionLimit(t *testing.T) {
 			out:  types.True,
 		},
 	}
-	for _, tc := range testCases {
-		t.Run(tc.expr, func(t *testing.T) {
-			env := testEnv(t, ParserRecursionLimit(10))
-			out, err := interpret(t, env,
-				tc.expr, map[string]any{})
+	for _, pratt := range []bool{true, false} {
+		t.Run(fmt.Sprintf("enablePrattParser=%t", pratt), func(t *testing.T) {
+			for _, tc := range testCases {
+				t.Run(tc.expr, func(t *testing.T) {
+					opts := []EnvOption{ParserRecursionLimit(10)}
+					wantErr := tc.errorSubstr
+					if !pratt {
+						opts = append(opts, EnablePrattParser(false))
+						wantErr = tc.antlrErrorSubstr
+					}
+					env := testEnv(t, opts...)
+					out, err := interpret(t, env,
+						tc.expr, map[string]any{})
 
-			if tc.errorSubstr != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.errorSubstr) {
-					t.Fatalf("prg.Eval() wanted error containing '%s' got %v", tc.errorSubstr, err)
-				}
-			}
+					if wantErr != "" {
+						if err == nil || !strings.Contains(err.Error(), wantErr) {
+							t.Fatalf("prg.Eval() wanted error containing '%s' got %v", wantErr, err)
+						}
+					}
 
-			if tc.out != nil {
-				if tc.out != out {
-					t.Errorf("prg.Eval() wanted %v got %v", tc.out, out)
-				}
+					if tc.out != nil {
+						if tc.out != out {
+							t.Errorf("prg.Eval() wanted %v got %v", tc.out, out)
+						}
+					}
+				})
 			}
 		})
-
 	}
 }
 

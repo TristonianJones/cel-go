@@ -33,6 +33,7 @@ func NewParser(opts ...Option) (*Parser, error) {
 	p := &Parser{}
 	p.enableHiddenAccumulatorName = true
 	p.enableIdentEscapeSyntax = true
+	p.enablePrattParser = true
 	for _, opt := range opts {
 		if err := opt(&p.options); err != nil {
 			return nil, err

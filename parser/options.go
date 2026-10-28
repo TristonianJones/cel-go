@@ -178,6 +178,8 @@ func EnableVariadicOperatorASTs(varArgASTs bool) Option {
 }
 
 // EnablePrattParser enables the Pratt parser implementation instead of the ANTLR parser.
+//
+// Enabled by default.
 func EnablePrattParser(enablePrattParser bool) Option {
 	return func(opts *options) error {
 		opts.enablePrattParser = enablePrattParser

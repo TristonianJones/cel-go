@@ -705,7 +705,7 @@ func (p *prattParserWorker) extractStructName(expr ast.Expr) (string, bool) {
 
 func (p *prattParserWorker) parseStruct(objID int64, structName string) ast.Expr {
 	p.nextToken() // consumes {
-	var fields []ast.EntryExpr
+	fields := []ast.EntryExpr{}
 	p.lastParsedDepth = 0
 	for p.peekTok.kind != tokRightBrace && p.peekTok.kind != tokEnd {
 		optional := false
@@ -899,8 +899,8 @@ func (p *prattParserWorker) parsePrimary(canBeStructName *bool) ast.Expr {
 func (p *prattParserWorker) parseList() ast.Expr {
 	openTok := p.nextToken()
 	listID := p.nextID(openTok)
-	var elems []ast.Expr
-	var optionals []int32
+	elems := []ast.Expr{}
+	optionals := []int32{}
 	p.lastParsedDepth = 0
 	for p.peekTok.kind != tokRightBracket && p.peekTok.kind != tokEnd {
 		optional := false
@@ -932,7 +932,7 @@ func (p *prattParserWorker) parseList() ast.Expr {
 func (p *prattParserWorker) parseMap() ast.Expr {
 	openTok := p.nextToken()
 	mapID := p.nextID(openTok)
-	var entries []ast.EntryExpr
+	entries := []ast.EntryExpr{}
 	p.lastParsedDepth = 0
 	for p.peekTok.kind != tokRightBrace && p.peekTok.kind != tokEnd {
 		optional := false
@@ -1014,7 +1014,7 @@ func (p *prattParserWorker) parseIdentOrCall(canBeStructName *bool) ast.Expr {
 }
 
 func (p *prattParserWorker) parseArguments(closeTok tokenKind) []ast.Expr {
-	var args []ast.Expr
+	args := []ast.Expr{}
 	p.lastParsedDepth = 0
 	if p.peekTok.kind != closeTok && p.peekTok.kind != tokEnd {
 		for {

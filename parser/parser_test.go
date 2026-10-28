@@ -3920,6 +3920,30 @@ func TestParseErrorData(t *testing.T) {
 	}
 }
 
+func TestEnablePrattParserDefault(t *testing.T) {
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser() failed: %v", err)
+	}
+	if !p.enablePrattParser {
+		t.Error("NewParser() got enablePrattParser=false, want true")
+	}
+	if _, errs := p.Parse(common.NewTextSource("[,]")); len(errs.GetErrors()) == 0 {
+		t.Error("default parser accepted '[,]', expected Pratt parser error")
+	}
+
+	pAntlr, err := NewParser(EnablePrattParser(false))
+	if err != nil {
+		t.Fatalf("NewParser(EnablePrattParser(false)) failed: %v", err)
+	}
+	if pAntlr.enablePrattParser {
+		t.Error("NewParser(EnablePrattParser(false)) got enablePrattParser=true, want false")
+	}
+	if _, errs := pAntlr.Parse(common.NewTextSource("[,]")); len(errs.GetErrors()) != 0 {
+		t.Errorf("ANTLR parser rejected '[,]': %s", errs.ToDisplayString())
+	}
+}
+
 func newTestParser(t *testing.T, options ...Option) *Parser {
 	t.Helper()
 	defaultOpts := []Option{
