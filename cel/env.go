@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 
+	"cel.dev/cel-go/cel/runtime"
 	"cel.dev/cel-go/checker"
 	chkdecls "cel.dev/cel-go/checker/decls"
 	"cel.dev/cel-go/common"
@@ -143,8 +144,7 @@ type Env struct {
 	functions       map[string]*decls.FunctionDecl
 	macros          []Macro
 	contextProto    protoreflect.MessageDescriptor
-	adapter         types.Adapter
-	provider        types.Provider
+	rt              *runtime.Env
 	features        map[int]bool
 	appliedFeatures map[int]bool
 	limits          map[limitID]int
@@ -446,17 +446,16 @@ func NewEnv(opts ...EnvOption) (*Env, error) {
 // See the EnvOption helper functions for the options that can be used to configure the
 // environment.
 func NewCustomEnv(opts ...EnvOption) (*Env, error) {
-	registry, err := types.NewRegistry()
+	rt, err := runtime.NewCustomEnv()
 	if err != nil {
 		return nil, err
 	}
 	return (&Env{
+		rt:              rt,
 		variables:       []*decls.VariableDecl{},
 		functions:       map[string]*decls.FunctionDecl{},
 		macros:          []parser.Macro{},
-		Container:       containers.DefaultContainer,
-		adapter:         registry,
-		provider:        registry,
+		Container:       rt.Container,
 		features:        map[int]bool{},
 		appliedFeatures: map[int]bool{},
 		limits:          map[limitID]int{},
@@ -609,48 +608,26 @@ func (e *Env) Extend(opts ...EnvOption) (*Env, error) {
 	validatorsCopy := slices.Clone(e.validators)
 	costOptsCopy := slices.Clone(e.costOptions)
 
-	// Copy the adapter / provider if they appear to be mutable.
-	adapter := e.adapter
-	provider := e.provider
-	adapterReg, isAdapterReg := e.adapter.(*types.Registry)
-	providerReg, isProviderReg := e.provider.(*types.Registry)
-	// In most cases the provider and adapter will be a ref.TypeRegistry;
-	// however, in the rare cases where they are not, they are assumed to
-	// be immutable. Since it is possible to set the TypeProvider separately
-	// from the TypeAdapter, the possible configurations which could use a
-	// TypeRegistry as the base implementation are captured below.
-	if isAdapterReg && isProviderReg {
-		reg := providerReg.Copy()
-		provider = reg
-		// If the adapter and provider are the same object, set the adapter
-		// to the same ref.TypeRegistry as the provider.
-		if adapterReg == providerReg {
-			adapter = reg
-		} else {
-			// Otherwise, make a copy of the adapter.
-			adapter = adapterReg.Copy()
-		}
-	} else if isProviderReg {
-		provider = providerReg.Copy()
-	} else if isAdapterReg {
-		adapter = adapterReg.Copy()
+	rt, err := e.rt.Extend()
+	if err != nil {
+		return nil, err
 	}
+	rt.Container = e.Container
 
 	ext := &Env{
 		parent:          e,
-		Container:       e.Container,
+		rt:              rt,
+		Container:       rt.Container,
 		variables:       varsCopy,
 		functions:       e.functions,
 		macros:          macsCopy,
 		contextProto:    e.contextProto,
 		progOpts:        progOptsCopy,
-		adapter:         adapter,
 		features:        e.features,
 		limits:          e.limits,
 		appliedFeatures: e.appliedFeatures,
 		libraries:       e.libraries,
 		validators:      validatorsCopy,
-		provider:        provider,
 		chkOpts:         chkOptsCopy,
 		prsrOpts:        prsrOptsCopy,
 		costOptions:     costOptsCopy,
@@ -853,31 +830,38 @@ func (e *Env) initDispatcher() (interpreter.Dispatcher, bool, error) {
 	return e.sharedDispatcher, e.hasAsync, e.dispErr
 }
 
+func (e *Env) applyRuntime(opt runtime.EnvOption) error {
+	rt, err := opt(e.rt)
+	if err != nil {
+		return err
+	}
+	e.rt = rt
+	e.Container = rt.Container
+	return nil
+}
+
 // CELTypeAdapter returns the `types.Adapter` configured for the environment.
 func (e *Env) CELTypeAdapter() types.Adapter {
-	return e.adapter
+	return e.rt.CELTypeAdapter()
 }
 
 // CELTypeProvider returns the `types.Provider` configured for the environment.
 func (e *Env) CELTypeProvider() types.Provider {
-	return e.provider
+	return e.rt.CELTypeProvider()
 }
 
 // TypeAdapter returns the `ref.TypeAdapter` configured for the environment.
 //
 // Deprecated: use CELTypeAdapter()
 func (e *Env) TypeAdapter() ref.TypeAdapter {
-	return e.adapter
+	return e.rt.TypeAdapter()
 }
 
 // TypeProvider returns the `ref.TypeProvider` configured for the environment.
 //
 // Deprecated: use CELTypeProvider()
 func (e *Env) TypeProvider() ref.TypeProvider {
-	if legacyProvider, ok := e.provider.(ref.TypeProvider); ok {
-		return legacyProvider
-	}
-	return &interopLegacyTypeProvider{Provider: e.provider}
+	return e.rt.TypeProvider()
 }
 
 // UnknownVars returns a PartialActivation which marks all variables declared in the Env as
@@ -1047,14 +1031,8 @@ func (e *Env) configure(opts []EnvOption) (*Env, error) {
 		return nil, err
 	}
 
-	// Enable JSON field names is using a proto-based *types.Registry
-	if e.HasFeature(featureJSONFieldNames) {
-		reg, isReg := e.provider.(*types.Registry)
-		if !isReg {
-			return nil, fmt.Errorf("JSONFieldNames() option is only compatible with *types.Registry providers")
-		}
-		err := reg.WithJSONFieldNames(true)
-		if err != nil {
+	if enabled, isSet := e.features[featureJSONFieldNames]; isSet {
+		if err := e.applyRuntime(runtime.JSONFieldNames(enabled)); err != nil {
 			return nil, err
 		}
 	}
@@ -1120,7 +1098,7 @@ func (e *Env) initChecker() (*checker.Env, error) {
 			chkOpts = append(chkOpts, checker.ValidatedDeclarations(parentChk))
 		}
 
-		ce, err := checker.NewEnv(e.Container, e.provider, chkOpts...)
+		ce, err := checker.NewEnv(e.Container, e.CELTypeProvider(), chkOpts...)
 		if err != nil {
 			e.setCheckerOrError(nil, err)
 			return
@@ -1267,98 +1245,6 @@ func getStdEnv() (*Env, error) {
 		stdEnv, stdEnvErr = NewCustomEnv(StdLib(), EagerlyValidateDeclarations(true))
 	})
 	return stdEnv, stdEnvErr
-}
-
-// interopCELTypeProvider layers support for the types.Provider interface on top of a ref.TypeProvider.
-type interopCELTypeProvider struct {
-	ref.TypeProvider
-}
-
-// FindStructType returns a types.Type instance for the given fully-qualified typeName if one exists.
-//
-// This method proxies to the underlying ref.TypeProvider's FindType method and converts protobuf type
-// into a native type representation. If the conversion fails, the type is listed as not found.
-func (p *interopCELTypeProvider) FindStructType(typeName string) (*types.Type, bool) {
-	if et, found := p.FindType(typeName); found {
-		t, err := types.ExprTypeToType(et)
-		if err != nil {
-			return nil, false
-		}
-		return t, true
-	}
-	return nil, false
-}
-
-// FindStructFieldNames returns an empty set of field for the interop provider.
-//
-// To inspect the field names, migrate to a `types.Provider` implementation.
-func (p *interopCELTypeProvider) FindStructFieldNames(typeName string) ([]string, bool) {
-	return []string{}, false
-}
-
-// FindStructFieldType returns a types.FieldType instance for the given fully-qualified typeName and field
-// name, if one exists.
-//
-// This method proxies to the underlying ref.TypeProvider's FindFieldType method and converts protobuf type
-// into a native type representation. If the conversion fails, the type is listed as not found.
-func (p *interopCELTypeProvider) FindStructFieldType(structType, fieldName string) (*types.FieldType, bool) {
-	if ft, found := p.FindFieldType(structType, fieldName); found {
-		t, err := types.ExprTypeToType(ft.Type)
-		if err != nil {
-			return nil, false
-		}
-		return &types.FieldType{
-			Type:        t,
-			IsSet:       ft.IsSet,
-			GetFrom:     ft.GetFrom,
-			IsJSONField: ft.IsJSONField,
-		}, true
-	}
-	return nil, false
-}
-
-// interopLegacyTypeProvider layers support for the ref.TypeProvider interface on top of a types.Provider.
-type interopLegacyTypeProvider struct {
-	types.Provider
-}
-
-// FindType retruns the protobuf Type representation for the input type name if one exists.
-//
-// This method proxies to the underlying types.Provider FindStructType method and converts the types.Type
-// value to a protobuf Type representation.
-//
-// Failure to convert the type will result in the type not being found.
-func (p *interopLegacyTypeProvider) FindType(typeName string) (*exprpb.Type, bool) {
-	if t, found := p.FindStructType(typeName); found {
-		et, err := types.TypeToExprType(t)
-		if err != nil {
-			return nil, false
-		}
-		return et, true
-	}
-	return nil, false
-}
-
-// FindFieldType returns the protobuf-based FieldType representation for the input type name and field,
-// if one exists.
-//
-// This call proxies to the types.Provider FindStructFieldType method and converts the types.FIeldType
-// value to a protobuf-based ref.FieldType representation if found.
-//
-// Failure to convert the FieldType will result in the field not being found.
-func (p *interopLegacyTypeProvider) FindFieldType(structType, fieldName string) (*ref.FieldType, bool) {
-	if cft, found := p.FindStructFieldType(structType, fieldName); found {
-		et, err := types.TypeToExprType(cft.Type)
-		if err != nil {
-			return nil, false
-		}
-		return &ref.FieldType{
-			Type:    et,
-			IsSet:   cft.IsSet,
-			GetFrom: cft.GetFrom,
-		}, true
-	}
-	return nil, false
 }
 
 var (

@@ -1463,20 +1463,19 @@ type mockTypeProvider struct {
 }
 
 func TestMaybeInteropProvider_Error(t *testing.T) {
-	_, err := maybeInteropProvider(123)
-	if err == nil {
-		t.Error("maybeInteropProvider(int) should return error")
+	if _, err := NewCustomEnv(CustomTypeProvider(123)); err == nil {
+		t.Error("CustomTypeProvider(int) should return error")
 	}
 }
 
 func TestMaybeInteropProvider_LegacyTypeProvider(t *testing.T) {
 	tp := &mockTypeProvider{}
-	p, err := maybeInteropProvider(tp)
+	e, err := NewCustomEnv(CustomTypeProvider(tp))
 	if err != nil {
-		t.Fatalf("maybeInteropProvider(mockTypeProvider) failed: %v", err)
+		t.Fatalf("CustomTypeProvider(mockTypeProvider) failed: %v", err)
 	}
-	if _, ok := p.(*interopCELTypeProvider); !ok {
-		t.Errorf("expected *interopCELTypeProvider, got %T", p)
+	if e.CELTypeProvider() == nil {
+		t.Error("CELTypeProvider() returned nil")
 	}
 }
 

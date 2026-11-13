@@ -20,25 +20,21 @@ import (
 	"reflect"
 
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"cel.dev/cel-go/cel/async"
-	"cel.dev/cel-go/common/containers"
+	"cel.dev/cel-go/cel/runtime"
 	"cel.dev/cel-go/common/cost"
 	"cel.dev/cel-go/common/decls"
 	"cel.dev/cel-go/common/env"
 	"cel.dev/cel-go/common/functions"
 	"cel.dev/cel-go/common/types"
-	"cel.dev/cel-go/common/types/pb"
 	"cel.dev/cel-go/common/types/ref"
 	"cel.dev/cel-go/interpreter"
 	"cel.dev/cel-go/parser"
 
 	exprpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
-	descpb "google.golang.org/protobuf/types/descriptorpb"
 )
 
 // These constants beginning with "Feature" enable optional behavior in
@@ -170,11 +166,7 @@ func ClearMacros() EnvOption {
 // Note: This option must be specified before the Types and TypeDescs options when used together.
 func CustomTypeAdapter(adapter types.Adapter) EnvOption {
 	return func(e *Env) (*Env, error) {
-		if adapter == nil {
-			return nil, errors.New("custom type adapter must not be nil")
-		}
-		e.adapter = adapter
-		return e, nil
+		return e, e.applyRuntime(runtime.CustomTypeAdapter(adapter))
 	}
 }
 
@@ -185,12 +177,7 @@ func CustomTypeAdapter(adapter types.Adapter) EnvOption {
 // Note: This option must be specified before the Types and TypeDescs options when used together.
 func CustomTypeProvider(provider any) EnvOption {
 	return func(e *Env) (*Env, error) {
-		if provider == nil {
-			return nil, errors.New("custom type provider must not be nil")
-		}
-		var err error
-		e.provider, err = maybeInteropProvider(provider)
-		return e, err
+		return e, e.applyRuntime(runtime.CustomTypeProvider(provider))
 	}
 }
 
@@ -278,12 +265,7 @@ func Macros(macros ...Macro) EnvOption {
 // `Expr{expression: 'a < b'}` instead of having to write `google.type.Expr{...}`.
 func Container(name string) EnvOption {
 	return func(e *Env) (*Env, error) {
-		cont, err := e.Container.Extend(containers.Name(name))
-		if err != nil {
-			return nil, err
-		}
-		e.Container = cont
-		return e, nil
+		return e, e.applyRuntime(runtime.Container(name))
 	}
 }
 
@@ -330,12 +312,7 @@ func Container(name string) EnvOption {
 // preserved between compilations even as the container evolves.
 func Abbrevs(qualifiedNames ...string) EnvOption {
 	return func(e *Env) (*Env, error) {
-		cont, err := e.Container.Extend(containers.Abbrevs(qualifiedNames...))
-		if err != nil {
-			return nil, err
-		}
-		e.Container = cont
-		return e, nil
+		return e, e.applyRuntime(runtime.Abbrevs(qualifiedNames...))
 	}
 }
 
@@ -357,146 +334,20 @@ func NativeTypeFor[T any](opts ...NativeTypeOption) *NativeTypeDesc {
 
 // protoTypeRegistry is an internal-only interface containing the minimum methods required to support
 // custom types. It is a subset of methods from ref.TypeRegistry.
-type protoTypeRegistry interface {
-	RegisterDescriptor(protoreflect.FileDescriptor) error
-	RegisterType(...ref.Type) error
-}
-
-type nativeTypeRegistry interface {
-	RegisterNativeType(reflect.Type, ...types.NativeTypeOption) error
-	RegisterNativeTypeDesc(*types.NativeTypeDesc) error
-}
-
 // Types adds one or more type declarations to the environment, allowing for construction of
 // type-literals whose definitions are included in the common expression built-in set.
-//
-// The input types may either be instances of `proto.Message`, `ref.Type`, `reflect.Type`, or `*NativeTypeDesc`.
-// Any other type provided to this option will result in an error.
-//
-// Well-known protobuf types within the `google.protobuf.*` package are included in the standard
-// environment by default.
-//
-// Note: This option must be specified after the CustomTypeProvider option when used together.
 func Types(addTypes ...any) EnvOption {
 	return func(e *Env) (*Env, error) {
-		reg, isReg := e.provider.(protoTypeRegistry)
-		if !isReg {
-			return nil, fmt.Errorf("custom types not supported by provider: %T", e.provider)
-		}
-		for _, t := range addTypes {
-			switch v := t.(type) {
-			case proto.Message:
-				fdMap := pb.CollectFileDescriptorSet(v)
-				for _, fd := range fdMap {
-					err := reg.RegisterDescriptor(fd)
-					if err != nil {
-						return nil, err
-					}
-				}
-			case ref.Type:
-				err := reg.RegisterType(v)
-				if err != nil {
-					return nil, err
-				}
-			case reflect.Type:
-				nreg, isNReg := e.provider.(nativeTypeRegistry)
-				if !isNReg {
-					return nil, fmt.Errorf("native types not supported by provider: %T", e.provider)
-				}
-				err := nreg.RegisterNativeType(v)
-				if err != nil {
-					return nil, err
-				}
-			case *types.NativeTypeDesc:
-				nreg, isNReg := e.provider.(nativeTypeRegistry)
-				if !isNReg {
-					return nil, fmt.Errorf("native types not supported by provider: %T", e.provider)
-				}
-				err := nreg.RegisterNativeTypeDesc(v)
-				if err != nil {
-					return nil, err
-				}
-			default:
-				return nil, fmt.Errorf("unsupported type: %T", t)
-			}
-		}
-		return e, nil
+		return e, e.applyRuntime(runtime.Types(addTypes...))
 	}
 }
 
 // TypeDescs adds type declarations from any protoreflect.FileDescriptor, protoregistry.Files,
 // google.protobuf.FileDescriptorProto or google.protobuf.FileDescriptorSet provided.
-//
-// Note that messages instantiated from these descriptors will be *dynamicpb.Message values
-// rather than the concrete message type.
-//
-// TypeDescs are hermetic to a single Env object, but may be copied to other Env values via
-// extension or by re-using the same EnvOption with another NewEnv() call.
 func TypeDescs(descs ...any) EnvOption {
 	return func(e *Env) (*Env, error) {
-		reg, isReg := e.provider.(protoTypeRegistry)
-		if !isReg {
-			return nil, fmt.Errorf("custom types not supported by provider: %T", e.provider)
-		}
-		// Scan the input descriptors for FileDescriptorProto messages and accumulate them into a
-		// synthetic FileDescriptorSet as the FileDescriptorProto messages may refer to each other
-		// and will not resolve properly unless they are part of the same set.
-		var fds *descpb.FileDescriptorSet
-		for _, d := range descs {
-			switch f := d.(type) {
-			case *descpb.FileDescriptorProto:
-				if fds == nil {
-					fds = &descpb.FileDescriptorSet{
-						File: []*descpb.FileDescriptorProto{},
-					}
-				}
-				fds.File = append(fds.File, f)
-			}
-		}
-		if fds != nil {
-			if err := registerFileSet(reg, fds); err != nil {
-				return nil, err
-			}
-		}
-		for _, d := range descs {
-			switch f := d.(type) {
-			case *protoregistry.Files:
-				if err := registerFiles(reg, f); err != nil {
-					return nil, err
-				}
-			case protoreflect.FileDescriptor:
-				if err := reg.RegisterDescriptor(f); err != nil {
-					return nil, err
-				}
-			case *descpb.FileDescriptorSet:
-				if err := registerFileSet(reg, f); err != nil {
-					return nil, err
-				}
-			case *descpb.FileDescriptorProto:
-				// skip, handled as a synthetic file descriptor set.
-			default:
-				return nil, fmt.Errorf("unsupported type descriptor: %T", d)
-			}
-		}
-		return e, nil
+		return e, e.applyRuntime(runtime.TypeDescs(descs...))
 	}
-}
-
-func registerFileSet(reg protoTypeRegistry, fileSet *descpb.FileDescriptorSet) error {
-	files, err := protodesc.NewFiles(fileSet)
-	if err != nil {
-		return fmt.Errorf("protodesc.NewFiles(%v) failed: %v", fileSet, err)
-	}
-	return registerFiles(reg, files)
-}
-
-func registerFiles(reg protoTypeRegistry, files *protoregistry.Files) error {
-	var err error
-	files.RangeFiles(func(fd protoreflect.FileDescriptor) bool {
-		err = reg.RegisterDescriptor(fd)
-		return err == nil
-	})
-	return err
 }
 
 // JSONFieldNames supports accessing protocol buffer fields by json-name.
@@ -509,74 +360,34 @@ func JSONFieldNames(enabled bool) EnvOption {
 }
 
 // ProgramOption is a functional interface for configuring evaluation bindings and behaviors.
-type ProgramOption func(p *prog) (*prog, error)
+type ProgramOption = runtime.ProgramOption
 
 // CustomDecorator appends an InterpreterDecorator to the program.
 //
-// InterpretableDecorators can be used to inspect, alter, or replace the Program plan.
+// Deprecated: Use CustomDecoratorV2 instead.
 func CustomDecorator(dec interpreter.InterpretableDecorator) ProgramOption {
-	return func(p *prog) (*prog, error) {
-		p.plannerOptions = append(p.plannerOptions, interpreter.CustomDecorator(dec))
-		return p, nil
-	}
+	return runtime.CustomDecorator(dec)
 }
 
-// CustomDecoratorV2 appends an InterpreterDecoratorV2 to the program.
+// CustomDecoratorV2 appends an InterpretableDecoratorV2 to the program.
 func CustomDecoratorV2(dec interpreter.InterpretableDecoratorV2) ProgramOption {
-	return func(p *prog) (*prog, error) {
-		p.plannerOptions = append(p.plannerOptions, interpreter.CustomDecoratorV2(dec))
-		return p, nil
-	}
+	return runtime.CustomDecoratorV2(dec)
 }
 
-// Functions adds function overloads that extend or override the set of CEL built-ins.
-//
-// Deprecated: use Function() instead to declare the function, its overload signatures,
-// and the overload implementations.
+// Functions adds function overloads to the program.
 func Functions(funcs ...*functions.Overload) ProgramOption {
-	return func(p *prog) (*prog, error) {
-		if err := p.dispatcher.Add(funcs...); err != nil {
-			return nil, err
-		}
-		return p, nil
-	}
+	return runtime.Functions(funcs...)
 }
 
-// Globals sets the global variable values for a given program. These values may be shadowed by
-// variables with the same name provided to the Eval() call. If Globals is used in a Library with
-// a Lib EnvOption, vars may shadow variables provided by previously added libraries.
-//
-// The vars value may either be an `cel.Activation` instance or a `map[string]any`.
-//
-// The vars value may supply late-bound function implementations, e.g. via FunctionVars, in which
-// case they apply to every evaluation of the program. Only one source of function bindings is
-// permitted, so an error is returned when Globals is applied more than once and more than one of
-// the activations supplies them.
+// Globals configures default global variables for the program, which may be shadowed by input
+// variables supplied to Eval.
 func Globals(vars any) ProgramOption {
-	return func(p *prog) (*prog, error) {
-		defaultVars, err := NewActivation(vars)
-		if err != nil {
-			return nil, err
-		}
-		if p.defaultVars != nil {
-			defaultVars = interpreter.NewHierarchicalActivation(p.defaultVars, defaultVars)
-		}
-		if _, err := interpreter.FindFunctionActivation(defaultVars); err != nil {
-			return nil, err
-		}
-		p.defaultVars = defaultVars
-		return p, nil
-	}
+	return runtime.Globals(vars)
 }
 
-// OptimizeRegex provides a way to replace the InterpretableCall for regex functions. This can be used
-// to compile regex string constants at program creation time and report any errors and then use the
-// compiled regex for all regex function invocations.
+// OptimizeRegex registers regex optimizations for constant pattern arguments at program creation.
 func OptimizeRegex(regexOptimizations ...*interpreter.RegexOptimization) ProgramOption {
-	return func(p *prog) (*prog, error) {
-		p.regexOptimizations = append(p.regexOptimizations, regexOptimizations...)
-		return p, nil
-	}
+	return runtime.OptimizeRegex(regexOptimizations...)
 }
 
 // ConfigOptionFactory declares a signature which accepts a configuration element, e.g. env.Extension
@@ -755,128 +566,36 @@ func handleExtendedConfigOption(conf any, optFactories []ConfigOptionFactory) (E
 
 // EvalOption indicates an evaluation option that may affect the evaluation behavior or information
 // in the output result.
-type EvalOption int
+type EvalOption = runtime.EvalOption
 
 const (
-	// OptTrackState will cause the runtime to return an immutable EvalState value in the Result.
-	OptTrackState EvalOption = 1 << iota
-
-	// OptExhaustiveEval causes the runtime to disable short-circuits and track state.
-	OptExhaustiveEval EvalOption = 1<<iota | OptTrackState
-
-	// OptOptimize precomputes functions and operators with constants as arguments at program
-	// creation time. It also pre-compiles regex pattern constants passed to 'matches', reports any compilation errors
-	// at program creation and uses the compiled regex pattern for all 'matches' function invocations.
-	// This flag is useful when the expression will be evaluated repeatedly against
-	// a series of different inputs.
-	OptOptimize EvalOption = 1 << iota
-
-	// OptPartialEval enables the evaluation of a partial state where the input data that may be
-	// known to be missing, either as top-level variables, or somewhere within a variable's object
-	// member graph.
-	//
-	// By itself, OptPartialEval does not change evaluation behavior unless the input to the
-	// Program Eval() call is created via PartialVars().
-	OptPartialEval EvalOption = 1 << iota
-
-	// OptTrackCost enables the runtime cost calculation while validation and return cost within evalDetails
-	// cost calculation is available via func ActualCost()
-	OptTrackCost EvalOption = 1 << iota
-
-	// OptCheckStringFormat enables compile-time checking of string.format calls for syntax/cardinality.
-	//
-	// Deprecated: use ext.StringsValidateFormatCalls() as this option is now a no-op.
-	OptCheckStringFormat EvalOption = 1 << iota
-
-	// OptTrackMemory enables the runtime peak memory tracking and returns the peak watermark within
-	// evalDetails via func PeakMemory()
-	OptTrackMemory EvalOption = 1 << iota
-
-	// OptTraceIterations tracks state and additionally records, in evaluation order, the start of
-	// each comprehension iteration with its list index or map key, and each observed value with the
-	// iteration in which it was observed.
-	//
-	// The records of the EvalState returned from EvalDetails.State() are available from
-	// interpreter.TraceRecords. Combine with OptExhaustiveEval to observe every iteration rather
-	// than only the iterations evaluated before the result was determined.
-	//
-	// Tracing is intended for diagnosing an evaluation result, e.g. re-evaluating an input which
-	// failed a policy, and adds overhead proportional to the number of observed values.
-	OptTraceIterations EvalOption = 1<<iota | OptTrackState
+	OptTrackState        EvalOption = runtime.OptTrackState
+	OptExhaustiveEval    EvalOption = runtime.OptExhaustiveEval
+	OptOptimize          EvalOption = runtime.OptOptimize
+	OptPartialEval       EvalOption = runtime.OptPartialEval
+	OptTrackCost         EvalOption = runtime.OptTrackCost
+	OptCheckStringFormat EvalOption = runtime.OptCheckStringFormat
+	OptTrackMemory       EvalOption = runtime.OptTrackMemory
+	OptTraceIterations   EvalOption = runtime.OptTraceIterations
 )
 
-// EvalOptions sets one or more evaluation options which may affect the evaluation or Result.
-func EvalOptions(opts ...EvalOption) ProgramOption {
-	return func(p *prog) (*prog, error) {
-		for _, opt := range opts {
-			p.evalOpts |= opt
-		}
-		return p, nil
-	}
-}
-
-// InterruptCheckFrequency configures the number of iterations within a comprehension to evaluate
-// before checking whether the function evaluation has been interrupted.
+func EvalOptions(opts ...EvalOption) ProgramOption { return runtime.EvalOptions(opts...) }
 func InterruptCheckFrequency(checkFrequency uint) ProgramOption {
-	return func(p *prog) (*prog, error) {
-		p.interruptCheckFrequency = checkFrequency
-		return p, nil
-	}
+	return runtime.InterruptCheckFrequency(checkFrequency)
 }
-
-// AsyncCallObserver sets the observer for monitoring asynchronous function calls during ConcurrentEval.
 func AsyncCallObserver(observer async.Observer) ProgramOption {
-	return func(p *prog) (*prog, error) {
-		p.asyncObserver = observer
-		return p, nil
-	}
+	return runtime.AsyncCallObserver(observer)
 }
-
-// AsyncCompletionBufferSize sets the size of the buffer for the async completion channel.
-// By default, the channel is unbuffered.
 func AsyncCompletionBufferSize(size int) ProgramOption {
-	return func(p *prog) (*prog, error) {
-		p.asyncCompletionBufferSize = size
-		return p, nil
-	}
+	return runtime.AsyncCompletionBufferSize(size)
 }
-
-// AsyncMaxConcurrency sets the maximum number of concurrently launched async calls during
-// ConcurrentEval. This bounds the number of in-flight async goroutines, so a wide fan-out (such
-// as an async call inside a comprehension over a large list) cannot exhaust memory.
-//
-// A value of 0 (unset) applies a built-in default bound. A positive value sets an explicit bound.
-// A negative value disables the limiter (unbounded launches) and should only be used when
-// concurrency is bounded by other means.
 func AsyncMaxConcurrency(maxConcurrency int) ProgramOption {
-	return func(p *prog) (*prog, error) {
-		p.asyncMaxConcurrency = maxConcurrency
-		return p, nil
-	}
+	return runtime.AsyncMaxConcurrency(maxConcurrency)
 }
-
-// ConcurrentDrainStrategy configures the strategy for when to re-evaluate the program
-// during a ConcurrentEval call after receiving asynchronous completion signals.
-// By default, the program re-evaluates immediately after every completion.
 func ConcurrentDrainStrategy(strategy async.DrainStrategy) ProgramOption {
-	return func(p *prog) (*prog, error) {
-		p.drainStrategy = strategy
-		return p, nil
-	}
+	return runtime.ConcurrentDrainStrategy(strategy)
 }
-
-// BypassAsyncProtection allows for the bypass of hasAsync protection in Eval and ContextEval if present.
-//
-// By default, expressions in an environment with asynchronous functions will reject calls to
-// Eval and ContextEval, requiring ConcurrentEval instead. This option bypasses that check, allowing
-// synchronous evaluation of expressions that do not actually call asynchronous functions (such as
-// constant validations).
-func BypassAsyncProtection() ProgramOption {
-	return func(p *prog) (*prog, error) {
-		p.hasAsync = false
-		return p, nil
-	}
-}
+func BypassAsyncProtection() ProgramOption { return runtime.BypassAsyncProtection() }
 
 // CostEstimatorOptions configure type-check time options for estimating expression cost.
 func CostEstimatorOptions(costOpts ...cost.CostOption) EnvOption {
@@ -948,66 +667,17 @@ func CostModelVersion(version uint32) EnvOption {
 	}
 }
 
-// CostTrackerOptions configures a set of options for cost-tracking.
-//
-// Note, CostTrackerOptions is a no-op unless CostTracking is also enabled.
 func CostTrackerOptions(costOpts ...cost.TrackerOption) ProgramOption {
-	return func(p *prog) (*prog, error) {
-		p.costOptions = append(p.costOptions, costOpts...)
-		return p, nil
-	}
+	return runtime.CostTrackerOptions(costOpts...)
 }
-
-// CostTracking enables cost tracking and registers a ActualCostEstimator that can optionally provide a runtime cost estimate for any function calls.
 func CostTracking(costEstimator cost.ActualCostEstimator) ProgramOption {
-	return func(p *prog) (*prog, error) {
-		p.callCostEstimator = costEstimator
-		p.evalOpts |= OptTrackCost
-		return p, nil
-	}
+	return runtime.CostTracking(costEstimator)
 }
-
-// MemoryTracking enables peak memory tracking during evaluation with an optional set of
-// types.MemoryTrackerOption values to configure the tracker's size calculator, sample
-// interval, and limit behaviors.
-//
-// Peak memory is measured in aggregate element counts as computed by a types.SizeCalculator
-// and is observed at the points where values materialize during evaluation: resolved
-// attributes, call results, constructed aggregates, and comprehension results. The peak
-// watermark is available via the EvalDetails.PeakMemory() method.
 func MemoryTracking(memOpts ...types.MemoryTrackerOption) ProgramOption {
-	return func(p *prog) (*prog, error) {
-		p.memoryOptions = append(p.memoryOptions, memOpts...)
-		p.evalOpts |= OptTrackMemory
-		return p, nil
-	}
+	return runtime.MemoryTracking(memOpts...)
 }
-
-// MemoryLimit enables memory tracking and configures program evaluation to exit early with a
-// "memory limit exceeded" error if the peak tracked memory exceeds the limit.
-//
-// The MemoryLimit is a metric that corresponds to the aggregate element counts of the values
-// observed during evaluation. It is indicative of memory usage, not CPU usage; see CostLimit
-// for bounding compute.
-func MemoryLimit(memLimit uint32) ProgramOption {
-	return func(p *prog) (*prog, error) {
-		p.memoryLimit = &memLimit
-		p.evalOpts |= OptTrackMemory
-		return p, nil
-	}
-}
-
-// CostLimit enables cost tracking and sets configures program evaluation to exit early with a
-// "runtime cost limit exceeded" error if the runtime cost exceeds the costLimit.
-// The CostLimit is a metric that corresponds to the number and estimated expense of operations
-// performed while evaluating an expression. It is indicative of CPU usage, not memory usage.
-func CostLimit(costLimit uint64) ProgramOption {
-	return func(p *prog) (*prog, error) {
-		p.costLimit = &costLimit
-		p.evalOpts |= OptTrackCost
-		return p, nil
-	}
-}
+func MemoryLimit(memLimit uint32) ProgramOption { return runtime.MemoryLimit(memLimit) }
+func CostLimit(costLimit uint64) ProgramOption  { return runtime.CostLimit(costLimit) }
 
 func fieldToCELType(field protoreflect.FieldDescriptor) (*Type, error) {
 	if field.Kind() == protoreflect.MessageKind || field.Kind() == protoreflect.GroupKind {
@@ -1087,47 +757,8 @@ func DeclareContextProto(descriptor protoreflect.MessageDescriptor) EnvOption {
 	}
 }
 
-// ContextProtoVars uses the fields of the input proto.Messages as top-level variables within an Activation.
-//
-// Consider using with `DeclareContextProto` to simplify variable type declarations and publishing when using
-// protocol buffers.
-//
-// Use the types.JSONFieldNames(true) option to populate the context proto vars using the JSON field names.
 func ContextProtoVars(ctx proto.Message, opts ...types.RegistryOption) (Activation, error) {
-	if ctx == nil || !ctx.ProtoReflect().IsValid() {
-		return interpreter.EmptyActivation(), nil
-	}
-	regOpts := []types.RegistryOption{types.ProtoTypeDefs(ctx)}
-	regOpts = append(regOpts, opts...)
-	var ro []any
-	for _, opt := range regOpts {
-		ro = append(ro, opt)
-	}
-	reg, err := types.NewRegistry(ro...)
-	if err != nil {
-		return nil, err
-	}
-	pbRef := ctx.ProtoReflect()
-	typeName := string(pbRef.Descriptor().FullName())
-	fields := pbRef.Descriptor().Fields()
-	vars := make(map[string]any, fields.Len())
-	for i := 0; i < fields.Len(); i++ {
-		field := fields.Get(i)
-		fieldName := field.TextName()
-		if reg.JSONFieldNames() {
-			fieldName = field.JSONName()
-		}
-		sft, found := reg.FindStructFieldType(typeName, fieldName)
-		if !found {
-			return nil, fmt.Errorf("no such field: %s", fieldName)
-		}
-		fieldVal, err := sft.GetFrom(ctx)
-		if err != nil {
-			return nil, err
-		}
-		vars[fieldName] = fieldVal
-	}
-	return NewActivation(vars)
+	return runtime.ContextProtoVars(ctx, opts...)
 }
 
 // EnableMacroCallTracking ensures that call expressions which are replaced by macros
@@ -1294,24 +925,5 @@ func EnablePrattParser(enabled bool) EnvOption {
 	return func(e *Env) (*Env, error) {
 		e.prsrOpts = append(e.prsrOpts, parser.EnablePrattParser(enabled))
 		return e, nil
-	}
-}
-
-type legacyTypeProvider interface {
-	EnumValue(enumName string) ref.Val
-	FindIdent(identName string) (ref.Val, bool)
-	FindType(typeName string) (*exprpb.Type, bool)
-	FindFieldType(messageType, fieldName string) (*ref.FieldType, bool)
-	NewValue(typeName string, fields map[string]ref.Val) ref.Val
-}
-
-func maybeInteropProvider(provider any) (types.Provider, error) {
-	switch p := provider.(type) {
-	case types.Provider:
-		return p, nil
-	case legacyTypeProvider:
-		return &interopCELTypeProvider{TypeProvider: p}, nil
-	default:
-		return nil, fmt.Errorf("unsupported type provider: %T", provider)
 	}
 }
